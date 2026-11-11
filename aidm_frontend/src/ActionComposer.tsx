@@ -66,6 +66,9 @@ export type ActionComposerProps = {
   openingDelayed?: boolean
   // The server's reason for refusing an out-of-turn action, shown as given.
   turnRejectionMessage?: string
+  // An action sent while the previous turn was finishing, sent by itself when it unlocks ('' when none).
+  heldActionText?: string
+  cancelHeldAction?: () => void
   retryRecoverableSubmission: () => boolean
   clearQueuedAction: () => void
   updateTurnControl: (mode: TurnControlMode, activePlayerId?: number | null, source?: TurnControlSource) => void

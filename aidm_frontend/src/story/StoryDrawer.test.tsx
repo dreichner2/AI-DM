@@ -185,6 +185,28 @@ describe('StoryDrawer', () => {
     expect(within(table).getByText('typing…')).toBeInTheDocument()
   })
 
+  it('offers a hero, and nothing of a sheet, while this adventure has none', async () => {
+    mockViewportWidth(1440)
+    const { inspector } = await renderDrawer({ inspector: testInspector({ selectedPlayerId: null, playersCount: 0 }) })
+    const panel = screen.getByRole('tabpanel')
+
+    expect(panel).toHaveTextContent('No hero yet.')
+    expect(panel).not.toHaveTextContent(/player/i)
+    expect(within(panel).queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(panel.querySelector('.story-abilities, .story-vitals')).toBeNull()
+    expect(within(panel).getAllByRole('button').map((button) => button.textContent)).toEqual(['Create a hero'])
+    fireEvent.click(within(panel).getByRole('button', { name: 'Create a hero' }))
+    expect(inspector.createDefaultPlayer).toHaveBeenCalledTimes(1)
+    cleanup()
+
+    const joinable = await renderDrawer({ inspector: testInspector({ selectedPlayerId: null, playersCount: 2 }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Choose a hero' }))
+    expect(joinable.inspector.loadPlayer).toHaveBeenCalledTimes(1)
+    // The other tabs still open.
+    fireEvent.click(screen.getByRole('tab', { name: 'Journal' }))
+    await waitFor(() => expect(screen.getByRole('tabpanel')).not.toHaveTextContent('No hero yet.'))
+  })
+
   it('signs the proficiency bonus and initiative and shows HP against its maximum when one is known', async () => {
     mockViewportWidth(1440)
     const vital = (label: string) => screen.getByText(label, { selector: 'dt' }).nextElementSibling

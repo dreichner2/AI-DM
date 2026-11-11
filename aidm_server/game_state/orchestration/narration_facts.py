@@ -28,6 +28,7 @@ from aidm_server.combat.modifiers import range_band
 from aidm_server.combat.positioning import in_melee_reach
 from aidm_server.combat.state import combat_turn_context, normalize_combat_state, participant_is_targetable
 from aidm_server.game_state.campaign_pack_encounters import catalog_record
+from aidm_server.game_state.orchestration.search_take import TAKEN_BY_SEARCH
 from aidm_server.price_list import normalize_price
 
 DEFAULT_LABEL_VERBS = {
@@ -139,11 +140,18 @@ def object_facts(
     applied_changes: Iterable[dict[str, Any]],
     actor_id: str,
 ) -> list[dict[str, Any]]:
-    """One record per object action the hero took this turn."""
+    """One record per object action the hero took this turn; what a search or an opening revealed and the hero
+    took there and then is its ``taken``."""
 
+    applied_changes = [change for change in applied_changes if isinstance(change, dict)]
+    taken_ids = {
+        _text(change.get('itemId'))
+        for change in applied_changes
+        if change.get('type') == 'scene.item.remove' and change.get(TAKEN_BY_SEARCH)
+    }
     facts = []
     for change in applied_changes:
-        if not isinstance(change, dict) or change.get('type') != 'scene.interactable.action':
+        if change.get('type') != 'scene.interactable.action':
             continue
         event = change.get('event') if isinstance(change.get('event'), dict) else {}
         action = _text(change.get('objectAction') or event.get('action')).lower()
@@ -171,8 +179,12 @@ def object_facts(
         if not failed and action in {'inspect', 'search'}:
             fact['description'] = '' if told else description
             fact['nothingNew'] = told
+        revealed = [item for item in event.get('revealedItems') or [] if isinstance(item, dict)]
+        taken = [item_phrase(item) for item in revealed if _text(item.get('id')) in taken_ids]
+        if taken and not failed:
+            fact['taken'] = taken
         if not failed and action == 'search':
-            fact['found'] = [item_phrase(item) for item in event.get('revealedItems') or [] if isinstance(item, dict)]
+            fact['found'] = [item_phrase(item) for item in revealed if _text(item.get('id')) not in taken_ids]
             fact['uncovered'] = [
                 name
                 for revealed_id in event.get('revealedTargetIds') or []
@@ -234,7 +246,13 @@ def plain_results(state_after: dict[str, Any], applied_changes: Iterable[dict[st
             results['arrival'] = _text(location.get('name')) or _text(change.get('locationName')) or _text(
                 (state_after.get('currentScene') or {}).get('name')
             )
-        elif change_type == 'scene.item.remove' and change.get('source') == PICKUP_SOURCE and isinstance(change.get('item'), dict):
+        elif (
+            change_type == 'scene.item.remove'
+            and change.get('source') == PICKUP_SOURCE
+            and isinstance(change.get('item'), dict)
+            and not change.get(TAKEN_BY_SEARCH)
+        ):
+            # What a search took there and then is told with the search.
             taken.append(_taken_phrase(change['item']))
         elif change_type == 'rest.complete' and _text(change.get('actorId')) == actor_id:
             results['rest'] = {'restType': _text(change.get('restType')), 'hp': int(change.get('actualAmount') or 0)}

@@ -130,3 +130,36 @@ describe('BetaIncidentPanel support bundle export', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:support-bundle')
   })
 })
+
+describe('BetaIncidentPanel time to act', () => {
+  afterEach(() => {
+    cleanup()
+    apiFetchMock.mockReset()
+  })
+
+  it('shows the session’s median and 90th-percentile time to act, one row per turn kind', async () => {
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path.startsWith('/api/beta/incidents?')) return Promise.resolve({ summary: {}, incidents: [] })
+      return Promise.resolve({
+        session: { session_id: 42, name: 'Lantern Fight' },
+        summary: {},
+        provider_model_turn_counts: [],
+        operator_summary: {},
+        time_to_act: [
+          { kind: 'fight_action', label: 'Fight action', turn_count: 6, median_ms: 4200, p90_ms: 6100 },
+          { kind: 'end_turn', label: 'End turn', turn_count: 4, median_ms: 140, p90_ms: 310 },
+        ],
+      })
+    })
+
+    render(<BetaIncidentPanel baseUrl="" auth="" selectedSessionId={42} />)
+
+    const table = await screen.findByRole('table', { name: 'Time to act by turn kind' })
+    const rows = within(table).getAllByRole('row').map((row) => row.textContent)
+    expect(rows).toEqual([
+      'Time to actMedian90thTurns',
+      'Fight action4200 ms6100 ms6',
+      'End turn140 ms310 ms4',
+    ])
+  })
+})

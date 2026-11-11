@@ -317,6 +317,17 @@ export type CombatTurnOrderEntry = {
   isCurrent: boolean
 }
 
+/** The finishing blow a hero has yet to tell (`combat.pendingFinisher` in the player view). */
+export type CombatPendingFinisher = {
+  heroId: string
+  heroName: string
+  enemyName: string
+  /** What the other players see meanwhile: "Corin Ashby is deciding how it ends…". */
+  waitingLine: string
+  /** Only in the finishing hero's own view: `Describe how you end it` (with its `prompt`), then `Let the story tell it`. */
+  offeredActions: Array<{ id: string; kind: string; label: string; prompt: string }>
+}
+
 export type CombatStatePanel = {
   active: boolean
   status: string
@@ -339,6 +350,16 @@ export type CombatStatePanel = {
   turnOrder?: CombatTurnOrderEntry[]
   /** Who is acting now (`combat.flags.activeActorId`), when the server says. */
   activeActorId?: string
+  /** A finishing blow waiting to be told, during the fight or just after it. */
+  pendingFinisher?: CombatPendingFinisher
+}
+
+/** An enemy a fight left captured or yielded, held in the scene, with what may be said to it. */
+export type WorldCaptiveSummary = {
+  id: string
+  name: string
+  /** Spoken actions the server offers (`Question the Ashmarked Cutthroat`), sent as the player's words. */
+  offeredActions: Array<{ kind: string; label: string }>
 }
 
 export type WorldClockSummary = {
@@ -381,6 +402,7 @@ export type WorldStatePanel = {
   clock?: WorldClockSummary
   /** Merchants open for trade in the current scene (the server projects only those). */
   merchants?: WorldMerchantSummary[]
+  captives?: WorldCaptiveSummary[]
   /** Completed and failed quests. */
   finishedQuests?: WorldQuestSummary[]
   clues?: WorldRecordSummary[]
@@ -724,6 +746,26 @@ function combatLegalActionBundle(bundle: JsonRecord): CombatLegalActionBundle | 
 
 const ACTIVE_COMBAT_STATUSES = ['starting', 'active']
 
+function pendingFinisherFromCombat(combat: JsonRecord): CombatPendingFinisher | null {
+  const finisher = isRecord(combat.pendingFinisher) ? combat.pendingFinisher : null
+  const heroId = stringValue(finisher?.heroId)
+  if (!finisher || !heroId) return null
+  return {
+    heroId,
+    heroName: stringValue(finisher.heroName),
+    enemyName: stringValue(finisher.enemyName),
+    waitingLine: stringValue(finisher.waitingLine),
+    offeredActions: recordArray(finisher.offeredActions)
+      .map((action) => ({
+        id: stringValue(action.id),
+        kind: stringValue(action.kind),
+        label: stringValue(action.label),
+        prompt: stringValue(action.prompt),
+      }))
+      .filter((action) => Boolean(action.label)),
+  }
+}
+
 function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const combat = isRecord(snapshot.combat) ? snapshot.combat : {}
   const status = stringValue(combat.status, 'none')
@@ -740,6 +782,7 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const enemies = participants.filter((participant) => participant.team === 'enemy')
   const allies = participants.filter((participant) => participant.team !== 'enemy')
   const telegraphs = enemies.map((enemy) => enemy.telegraph).filter(Boolean).slice(0, 4)
+  const pendingFinisher = pendingFinisherFromCombat(combat)
   return {
     active: ACTIVE_COMBAT_STATUSES.includes(status) && enemies.length > 0,
     status,
@@ -781,6 +824,7 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
       }))
       .filter((entry) => Boolean(entry.id)),
     ...(activeActorId ? { activeActorId } : {}),
+    ...(pendingFinisher ? { pendingFinisher } : {}),
   }
 }
 
@@ -1657,6 +1701,15 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
     return Boolean(currentLocationId && id === currentLocationId) ||
       Boolean(currentLocationName && normalizedLookup(location.name) === currentLocationName)
   })
+  const captives = recordArray(scene.captives)
+    .map((captive) => ({
+      id: stringValue(captive.id),
+      name: stringValue(captive.name),
+      offeredActions: recordArray(captive.offeredActions)
+        .map((action) => ({ kind: stringValue(action.kind), label: stringValue(action.label) }))
+        .filter((action) => Boolean(action.label)),
+    }))
+    .filter((captive) => Boolean(captive.name))
   const connectedLocationIds = new Set(
     Array.isArray(currentLocation?.connectedLocationIds)
       ? currentLocation.connectedLocationIds.map((value) => stringValue(value)).filter(Boolean)
@@ -1690,6 +1743,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
     combat: combatStateFromSnapshot(root),
     clock: worldClockFromSnapshot(root),
     merchants: recordArray(scene.merchants).map(merchantSummary).filter((merchant) => Boolean(merchant.id)),
+    ...(captives.length ? { captives } : {}),
     finishedQuests: quests.filter(finished).map(questSummary),
     clues: discoveredRecords(root.clues),
     handouts: discoveredRecords(root.handouts),

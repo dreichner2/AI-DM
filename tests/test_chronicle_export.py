@@ -243,3 +243,38 @@ def test_chronicle_epilogue_is_the_latest_recap_or_place_and_narration_never_the
     # The campaign's epilogue is its latest chapter that has either.
     assert 'The North Road — Wheels creak in the fog.' in _epilogue(campaign_html)
     assert all('SUMMARY_ONLY' not in html for html in (first_html, second_html, silent_html, campaign_html))
+
+
+def test_chronicle_lists_what_a_level_gave_as_plain_lines(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        turn = _add_turn(ids['session_id'], ids['campaign_id'], ids['player_id'], 'I strike.', 'The lantern falls.')
+        turn.metadata_json = safe_json_dumps({
+            'storyBeats': [
+                {'kind': 'reward', 'text': '+150 XP'},
+                {'kind': 'level', 'text': 'Level 3 reached', 'level': {
+                    'hero': 'Seren Ashgrove', 'level': 3,
+                    'maxHp': {'from': 17, 'to': 24},
+                    'proficiencyBonus': {'from': 2, 'to': 3},
+                    'features': [{'name': 'Channel Divinity', 'text': 'Turn the restless dead.'}, {'name': 'Bare Name'}],
+                    'spellSlots': [{'level': 1, 'from': 3, 'to': 4}, {'level': 2, 'from': 0, 'to': 2}],
+                    'spells': ['Aid', 'Hold Person'], 'more': 4,
+                }},
+                {'kind': 'level', 'text': 'Level 2 reached'},
+            ],
+        }, {})
+        db.session.commit()
+
+    html = client.get(f"/api/sessions/{ids['session_id']}/chronicle").get_data(as_text=True)
+
+    assert html.count('class="level-up"') == 1
+    for line in (
+        'Level 3 — Seren Ashgrove',
+        'Max HP 17 → 24',
+        'Proficiency bonus +2 → +3',
+        'Channel Divinity — Turn the restless dead.',
+        'Bare Name<br>',
+        'Spell slots — 1st level 3 → 4, 2nd level 0 → 2',
+        'New spells — Aid, Hold Person and 4 more',
+    ):
+        assert line in html

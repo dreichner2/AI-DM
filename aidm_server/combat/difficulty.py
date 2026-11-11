@@ -89,6 +89,33 @@ def normalize_combat_difficulty_ai(value: Any = None) -> dict[str, Any]:
     return settings
 
 
+# The settings that let a model pick an enemy's move. ``allowBossTacticsHelper`` is not one of them: it also gives
+# a boss its signature ability as a candidate, which the engine scores itself; ``maxLlmCallsPerRound`` 0 keeps the
+# boss-tactics models out.
+ENEMY_TACTICS_MODEL_SETTINGS = (
+    'allowSentientEnemyBrain',
+    'allowFreeformEnemyTactics',
+    'allowBossWarmPlanner',
+    'forceSentientEnemyBrain',
+    'forceFreeformEnemyTactics',
+)
+
+
+def pack_combat_difficulty_ai(value: Any = None) -> dict[str, Any]:
+    """The enemy-tactics settings of a fight in a pack adventure.
+
+    Enemies there act from their authored abilities and goals and the engine's own scoring. No model is asked to
+    pick a move: that call was made on every hero action, cost the table a second or more each time, and chose
+    among the same candidates. A table opts back in with ``combatDifficultyAI.enemyTacticsModel: true``.
+    """
+
+    difficulty = normalize_combat_difficulty_ai(value)
+    if not (isinstance(value, dict) and value.get('enemyTacticsModel') is True):
+        difficulty.update({key: False for key in ENEMY_TACTICS_MODEL_SETTINGS})
+        difficulty['maxLlmCallsPerRound'] = 0
+    return difficulty
+
+
 def combat_difficulty_from_state(combat_state: dict[str, Any] | None) -> dict[str, Any]:
     flags = combat_state.get('flags') if isinstance(combat_state, dict) and isinstance(combat_state.get('flags'), dict) else {}
     return normalize_combat_difficulty_ai(flags.get('combatDifficultyAI') or flags.get('combat_difficulty_ai'))

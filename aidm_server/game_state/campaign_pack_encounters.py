@@ -20,7 +20,7 @@ import math
 from typing import Any
 
 from aidm_server.combat.attacks import ability_attack_bonus, ability_damage, ability_save
-from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
+from aidm_server.combat.difficulty import pack_combat_difficulty_ai
 from aidm_server.combat.end_conditions import combat_end_change
 from aidm_server.combat.state import (
     combat_ability_resolution_mode,
@@ -600,7 +600,7 @@ def triggered_encounter_start(
                     'combatStartedBy': TRIGGER_STARTED_BY,
                     'initiativeRequired': True,
                     'initiativeSeed': f"combat:{state.get('sessionId')}:{turn_id}:{TRIGGER_STARTED_BY}:{encounter_id}",
-                    'combatDifficultyAI': normalize_combat_difficulty_ai(settings.get('combatDifficultyAI')),
+                    'combatDifficultyAI': pack_combat_difficulty_ai(settings.get('combatDifficultyAI')),
                     'resolverMethod': 'campaign_pack',
                     'creatureSource': 'campaign_pack',
                 },

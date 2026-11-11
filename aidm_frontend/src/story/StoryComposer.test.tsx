@@ -59,13 +59,39 @@ describe('StoryComposer', () => {
     expect(submitAction).toHaveBeenNthCalledWith(1)
   })
 
-  it('keeps Send disabled for an empty draft or while the Dungeon Master is working', () => {
+  it('keeps Send disabled for an empty draft, and lets a draft go while the Dungeon Master is working', () => {
     renderComposer({ composer: { actionText: '   ' } })
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     cleanup()
 
-    renderComposer({ board: { streamingTurnActive: true }, composer: { actionText: 'Wait.' } })
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    const { props } = renderComposer({ board: { streamingTurnActive: true }, composer: { actionText: 'I draw my blade.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(props.board.actionComposerProps.submitAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows an action held for the end of the turn as one quiet line, with Cancel', () => {
+    const cancelHeldAction = vi.fn()
+    const { container } = renderComposer({
+      board: { sendPending: true },
+      composer: { heldActionText: 'I draw my blade.', cancelHeldAction },
+    })
+
+    expect(statusLine(container)).toBe('Waiting for the story to catch up — "I draw my blade."Cancel')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(cancelHeldAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends what may be said to a captive as the player’s own words', () => {
+    const { props } = renderComposer({
+      board: {
+        worldState: testWorld({
+          captives: [{ id: 'cutthroat', name: 'Ashmarked Cutthroat', offeredActions: [{ kind: 'talk', label: 'Question the Ashmarked Cutthroat' }] }],
+        }),
+      },
+    })
+
+    fireEvent.click(within(screen.getByRole('group', { name: 'Suggestions' })).getByRole('button', { name: 'Question the Ashmarked Cutthroat' }))
+    expect(props.board.actionComposerProps.submitAction).toHaveBeenCalledWith('Question the Ashmarked Cutthroat')
   })
 
   it('opens the action tray with "/" on an empty input and closes it with Escape', () => {
@@ -541,6 +567,40 @@ describe('StoryComposer', () => {
     expect(screen.getByRole('region', { name: 'Combat, round 2' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Speak out of character' }))
     expect(props.board.actionComposerProps.applyComposerMode).toHaveBeenCalledWith('ooc')
+  })
+
+  it('asks the finishing hero how it ends, and shows the others who is deciding without blocking them', () => {
+    const finisher = {
+      heroId: 'player_30',
+      heroName: 'Ysolde',
+      enemyName: 'Ashmarked Cutthroat',
+      waitingLine: 'Ysolde is deciding how it ends…',
+      offeredActions: [
+        { id: 'finisher.describe', kind: 'finisher', label: 'Describe how you end it', prompt: 'How do you end it?' },
+        { id: 'finisher.story', kind: 'finisher', label: 'Let the story tell it', prompt: '' },
+      ],
+    }
+    const { props } = renderComposer({ board: { worldState: testWorld({ combat: { ...testCombat(), pendingFinisher: finisher } }) } })
+    const row = screen.getByRole('group', { name: 'The finishing blow' })
+    const input = screen.getByLabelText('Your Action')
+    expect(input).toHaveAttribute('placeholder', 'How do you end it?')
+    expect(screen.queryByRole('group', { name: 'Combat actions' })).not.toBeInTheDocument()
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Describe how you end it' }))
+    expect(input).toHaveFocus()
+    expect(props.board.actionComposerProps.submitAction).not.toHaveBeenCalled()
+    fireEvent.click(within(row).getByRole('button', { name: 'Let the story tell it' }))
+    expect(props.board.actionComposerProps.submitAction).toHaveBeenCalledWith('Let the story tell it')
+    cleanup()
+
+    const { container } = renderComposer({
+      board: { worldState: testWorld({ combat: { ...testCombat(), active: false, pendingFinisher: { ...finisher, heroId: 'player_31', heroName: 'Corin Ashby', waitingLine: 'Corin Ashby is deciding how it ends…', offeredActions: [] } } }) },
+      composer: { actionText: 'I bind my wound.' },
+    })
+    expect(statusLine(container)).toBe('Corin Ashby is deciding how it ends…')
+    expect(screen.queryByRole('group', { name: 'The finishing blow' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Your Action')).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled()
   })
 
   it('shows the keyboard hint until three actions have been sent from this browser', () => {

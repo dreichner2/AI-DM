@@ -473,9 +473,9 @@ def test_the_careful_route_restores_the_oath_stone(table):
     bed = table.act('gate_abandoned_wagon', 'search', 'Abandoned Wagon')
     assert table.last_check() == ('investigation', 10, 'success')
     assert bed.clues == {'clue_black_feather_arrow'}
-    assert flagship._scene_items(bed) == ['black_feather_arrow', 'gate_abandoned_wagon_coins']
-    assert table.take('black_feather_arrow', 'Black-Feathered Arrow').items['Black-Feathered Arrow'] == 1
-    assert table.take('gate_abandoned_wagon_coins', '6 gp').gp == 6
+    # The search takes what it finds.
+    assert (flagship._scene_items(bed), bed.items['Black-Feathered Arrow'], bed.gp) == ([], 1, 6)
+    assert 'You find and take 6 gp and a Black-Feathered Arrow.' in table.narration()
     tracks = table.act('gate_road_tracks', 'inspect', 'Tracks in the Road Mud')
     assert table.last_check() == ('survival', 11, 'success')
     assert (tracks.flags, tracks.places) == ({'courier_trail_found': True}, {MARSH[0]: 'discovered'})
@@ -486,8 +486,7 @@ def test_the_careful_route_restores_the_oath_stone(table):
     corner = table.act('pony_corner_table', 'search', 'Corner Table')
     assert table.last_check() == ('investigation', 11, 'success')
     assert corner.flags == {'inn_rumors_heard': True}
-    assert flagship._scene_items(corner) == ['muddy_road_sketch']
-    assert table.take('muddy_road_sketch', 'Muddy Road-Sketch').items['Muddy Road-Sketch'] == 1
+    assert (flagship._scene_items(corner), corner.items['Muddy Road-Sketch']) == ([], 1)
     rubbing = table.act('pony_road_stone_rubbing', 'inspect', "Borin's Road-Stone Rubbing")
     assert (rubbing.flags, rubbing.clues) == ({'stone_marks_seen': True}, {'clue_greenway_stone_marks'})
     assert rubbing.places == {TOWER[0]: 'discovered'}
@@ -525,10 +524,8 @@ def test_the_careful_route_restores_the_oath_stone(table):
     hide = table.act('marsh_reed_hide', 'search', 'Reed Hide')
     assert (hide.flags, hide.clues) == ({'seal_recovered': True}, {'clue_broken_seal'})
     assert hide.objectives == {'obj_recover_broken_seal': 'completed'}
-    assert flagship._scene_items(hide) == ['broken_seal_of_the_north', 'hadrins_torn_message']
+    assert flagship._scene_items(hide) == []
     assert 'npc_hadrin_courier' in {npc['id'] for npc in hide.snapshot['knownNpcs']}
-    table.take('broken_seal_of_the_north', 'Broken Seal of the North')
-    table.take('hadrins_torn_message', "Hadrin's Torn Message")
     assert {'broken_seal_of_the_north', 'hadrins_torn_message'} <= _item_ids(table.last)
 
     tower = table.travel(*TOWER)
@@ -541,9 +538,7 @@ def test_the_careful_route_restores_the_oath_stone(table):
     assert lintel.objectives == {'obj_decode_watchtower_marks': 'completed'}
     assert 'tower_rangers_cache' in flagship._visible_objects(lintel.snapshot)
     cache = table.act('tower_rangers_cache', 'search', "Rangers' Cache")
-    assert flagship._scene_items(cache) == ['tower_rangers_cache_potion_of_healing', 'tower_rangers_cache_coins']
-    assert table.take('tower_rangers_cache_coins', '10 gp').gp == 10
-    assert table.take('tower_rangers_cache_potion_of_healing', 'Potion of Healing').items['Potion of Healing'] == 1
+    assert (flagship._scene_items(cache), cache.gp, cache.items['Potion of Healing']) == ([], 10, 1)
     name = table.act('tower_name_stone', 'inspect', 'Cracked Name-Stone')
     assert (name.flags, name.clues) == ({'true_name_known': True}, {'clue_saereth_true_name_fragment'})
 
@@ -596,8 +591,7 @@ def test_the_careful_route_restores_the_oath_stone(table):
         ('use', True, True), ('trigger', True, True), ('inspect', None, True), ('lock', True, True), ('break', True, True),
     ]
     relics = table.act('camp_stolen_relics', 'search', 'Stolen Relics')
-    assert flagship._scene_items(relics) == ['camp_stolen_relics_potion_of_healing', 'camp_stolen_relics_coins']
-    assert table.take('camp_stolen_relics_coins', '60 gp').gp == 60
+    assert (flagship._scene_items(relics), relics.gp, relics.items['Potion of Healing']) == ([], 60, 1)
 
     restored = table.act(OATH_STONE['id'], 'use', OATH_STONE['name'])
     assert OATH_STONE['actionText']['use'] in table.narration()
@@ -632,6 +626,7 @@ def test_the_careful_route_restores_the_oath_stone(table):
         'broken_seal_of_the_north',
         'hadrins_torn_message',
         'tower_rangers_cache_potion_of_healing',
+        'camp_stolen_relics_potion_of_healing',
         'rangers_star_token',
     }
     table.reads_cleanly()
@@ -742,7 +737,7 @@ def test_without_the_road_song_the_wight_rises_on_arrival_and_the_gold_then_cost
 
     assert robbed.flags == {'barrow_robbed': True}
     assert (robbed.encounter, robbed.snapshot['combat']['status']) == (None, 'ended')
-    assert table.take('barrow_open_mound_coins', '40 gp').gp == 40
+    assert robbed.gp == 40
     assert flagship._rewards(table.snapshot()) == [('enc_barrow_cold_memory', 'victory')]
     table.reads_cleanly()
 

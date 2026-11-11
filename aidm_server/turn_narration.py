@@ -58,6 +58,8 @@ class NarrationResult:
     emergency_fallback: dict[str, Any] | None = None
     # The hygiene pass took out a roll request for something the engine rolls itself.
     engine_rolls_removed: bool = False
+    # From the first narration chunk sent to the last.
+    narration_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -209,11 +211,15 @@ class TurnNarrationService:
         provider_started = time.perf_counter()
         first_token_recorded = False
         chunk_count = 0
+        first_chunk_at: float | None = None
+        last_chunk_at: float | None = None
 
         def emit_chunk(chunk: str) -> None:
-            nonlocal chunk_count
+            nonlocal chunk_count, first_chunk_at, last_chunk_at
             self._emit_chunk(request, chunk, chunk_count)
             chunk_count += 1
+            last_chunk_at = time.perf_counter()
+            first_chunk_at = last_chunk_at if first_chunk_at is None else first_chunk_at
 
         # Only providers that share a lock with background canon work wait for
         # a running canon job; HTTP providers start at once. Context DB work has
@@ -365,6 +371,7 @@ class TurnNarrationService:
             model=narration_model,
             emergency_fallback=emergency_fallback,
             engine_rolls_removed=engine_rolls_removed,
+            narration_ms=0 if first_chunk_at is None or last_chunk_at is None else int(round((last_chunk_at - first_chunk_at) * 1000)),
         )
 
     def _emit_chunk(self, request: NarrationRequest, chunk: str, index: int) -> None:

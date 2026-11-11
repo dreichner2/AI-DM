@@ -531,6 +531,28 @@ describe('useSessionSocket connection lifetime', () => {
     expect(rollPlayback('t9-2')).not.toBeNull()
   })
 
+  it('ends the pending send of a turn told without narration (End turn) when it is saved, and loads the next turn', async () => {
+    const options = hookOptions()
+    renderHook(() => useSessionSocket(options))
+
+    act(() => {
+      latestSocket().fire('new_message', { message: 'Thalion ends their turn.', speaker: 'Thalion', turn_id: 12, client_message_id: 'end-12' })
+      latestSocket().fire('turn_status', { session_id: 20, turn_id: 12, status: 'received', details: {} })
+      latestSocket().fire('turn_status', { session_id: 20, turn_id: 12, status: 'saving', details: {} })
+    })
+    expect(options.setSendPending).not.toHaveBeenCalledWith(false)
+    expect(options.setStreamingTurn).not.toHaveBeenCalled()
+
+    act(() => latestSocket().fire('turn_status', { session_id: 20, turn_id: 12, status: 'saved', details: { stage: 'post_turn', storyBeats: [] } }))
+    expect(options.setSendPending).toHaveBeenLastCalledWith(false)
+
+    await act(async () => {
+      latestSocket().fire('session_log_update', { session_id: 20, turn_id: 12 })
+      await Promise.resolve()
+    })
+    expect(options.loadSessionData).toHaveBeenCalledWith(20)
+  })
+
   it('tells the composer when a new_message echoes a client message id', () => {
     const options = hookOptions()
     renderHook(() => useSessionSocket(options))

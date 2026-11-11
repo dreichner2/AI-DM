@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from aidm_server.database import db
-from aidm_server.models import Campaign, CampaignSegment, Player, Session, World
+from aidm_server.models import Campaign, CampaignSegment, DmTurn, Player, Session, World
+from aidm_server.time_utils import utc_now
 
 
 def seed_world_campaign_player_session(app):
@@ -56,3 +57,21 @@ def seed_segment(app, campaign_id: int, trigger_condition: str):
         db.session.add(segment)
         db.session.commit()
         return segment.segment_id
+
+
+def seed_played_turn(app, session_id: int) -> int:
+    """A completed turn in the session, so it is a chapter that has been played."""
+
+    with app.app_context():
+        session_obj = db.session.get(Session, session_id)
+        turn = DmTurn(
+            session_id=session_id,
+            campaign_id=session_obj.campaign_id,
+            player_input='I look around.',
+            dm_output='The road runs on into the dusk.',
+            status='completed',
+            completed_at=utc_now(),
+        )
+        db.session.add(turn)
+        db.session.commit()
+        return turn.turn_id

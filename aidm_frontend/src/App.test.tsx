@@ -2894,7 +2894,8 @@ describe('App user workflow regressions', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New adventure' })).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getAllByText('Crystal Road').length).toBeGreaterThan(0))
-    expect(await screen.findByRole('dialog', { name: 'Choose your character' })).toBeInTheDocument()
+    // Begun without a hero, and with none to join, the adventure opens the hero creator.
+    expect(await screen.findByRole('dialog', { name: /^A new hero/ })).toBeInTheDocument()
     expect(appTestState.fetchCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ method: 'POST', path: '/api/worlds', body: expect.objectContaining({ name: 'Crystal Road' }) }),

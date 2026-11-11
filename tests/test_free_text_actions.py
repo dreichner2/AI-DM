@@ -10,6 +10,7 @@ import requests
 from aidm_server.database import db
 from aidm_server.game_state.extraction.free_text_actions import free_text_action
 from aidm_server.models import DmTurn, Session, safe_json_loads
+from tests.test_search_and_take import leave_where_it_lies
 
 
 KEY = {'id': 'caravan_strongbox_key', 'name': 'Caravan Strongbox Key', 'type': 'quest', 'quantity': 1, 'playerKnown': True}
@@ -352,6 +353,9 @@ STEPS = [
 
 def test_typed_words_give_the_same_state_as_the_buttons(app, client, socketio, safe_mode):
     typed, words = Hero(app, client, socketio), Hero(app, client, socketio, fresh=True)
+    # The bench's search leaves the key lying there, so the next step takes it.
+    for hero in (typed, words):
+        leave_where_it_lies(app, hero.ids['session_id'], 'caravan_strongbox_key')
 
     for message, intent in STEPS:
         typed.send(message, intent)
@@ -377,6 +381,7 @@ def test_typed_words_give_the_same_state_as_the_buttons(app, client, socketio, s
 
 def test_the_narration_tells_what_the_words_did(app, client, socketio, safe_mode):
     hero = Hero(app, client, socketio)
+    leave_where_it_lies(app, hero.ids['session_id'], 'caravan_strongbox_key')
 
     ledger = hero.send('read the ledger and ring the bell')
     again = hero.send('Read the caravan ledger')
@@ -404,7 +409,8 @@ def test_a_sentence_with_a_lead_in_searches_the_object_through_the_socket(app, c
     turn = hero.turn()
 
     assert hero.state()['objects']['inn_drivers_bench']['searched'] is True
-    assert 'caravan_strongbox_key' in hero.state()['sceneItems']
+    # The search takes what it finds.
+    assert 'Caravan Strongbox Key' in hero.state()['heroItems']
     recorded = turn['metadata']['action_intent']['object']
     assert (recorded['id'], recorded['action']) == ('inn_drivers_bench', 'search')
     assert turn['requires_roll'] is False
@@ -416,6 +422,7 @@ def test_a_sentence_with_a_lead_in_searches_the_object_through_the_socket(app, c
 
 def test_a_pickup_is_taken_and_the_search_after_it_deferred_through_the_socket(app, client, socketio, safe_mode):
     hero = Hero(app, client, socketio)
+    leave_where_it_lies(app, hero.ids['session_id'], 'caravan_strongbox_key')
     hero.send("search under the driver's bench")
 
     text = hero.send('I pocket the key and climb into the lead wagon to search it.')

@@ -3,13 +3,13 @@
 import '@testing-library/jest-dom/vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionBoardProps } from '../SessionBoard'
 import type { JsonRecord, TimelineEntry } from '../types'
 import { testBoard, testWorld } from './dockTestFixtures'
 import { makeBoardFixture } from './preview/fixtures'
-import { playRolls, resetRollPlayback } from './rollPlayback'
+import { D20_CYCLE_MS, PLAY_LIMIT_MS, SETTLE_MS, playRolls, resetRollPlayback } from './rollPlayback'
 import type { RollCardRecord } from './storyRolls'
 import { StoryComposer } from './StoryComposer'
 import { StoryFeed } from './StoryFeed'
@@ -341,6 +341,28 @@ describe('StoryFeed', () => {
     expect(screen.queryByText('Previously')).toBeNull()
   })
 
+  it('never recalls a Previously in a first chapter', () => {
+    const fixture = board()
+    const session = fixture.activeSession
+    if (!session) throw new Error('the fixture has an open chapter')
+    render(
+      <StoryFeed
+        board={board({
+          activeSession: { ...session, chapter_number: 1 },
+          sessionRecap: 'The adventure began. Evening mist gathers over the road.',
+          turnRows: [
+            entry('log-1', 'system', 'System', '**Welcome to the table. Choose your opening move when you are ready.**', { kind: 'session_welcome' }),
+            entry('log-2', 'dm', 'DM', 'Evening mist gathers over the road.', { turn_id: 1 }),
+          ],
+        })}
+        textSize="default"
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Chapter 1')).toBeInTheDocument()
+    expect(screen.queryByText('Previously')).toBeNull()
+  })
+
   it('ends the feed with the epilogue once the adventure reaches its ending, and can be dismissed for the session', () => {
     window.sessionStorage.clear()
     const onExitToTitle = vi.fn()
@@ -667,5 +689,71 @@ describe('StoryFeed roll cards', () => {
       <StoryFeed board={board({ turnRows: rows })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
     )
     expect(reduced.container.querySelector('.roll-card')).toHaveAttribute('data-phase', 'done')
+  })
+
+  describe('the dice land before the story tells', () => {
+    const NOW = new Date('2026-11-11T12:00:00.000Z').getTime()
+    const told = (metadata: JsonRecord = {}) => [
+      entry('socket-player-client-9', 'player', 'Arden Vale', 'I step toward the lantern.', { turn_id: 9 }),
+      entry('stream-9', 'dm', 'DM', 'The light slides off you.', {
+        turn_id: 9,
+        storyRolls: [save],
+        storyBeats: [{ kind: 'item_gained', text: 'Taken — Lantern Glass' }],
+        ...metadata,
+      }),
+    ]
+    const shown = (container: HTMLElement) =>
+      [...container.querySelectorAll('.story-beat')].map((element) => element.className.replace('story-beat ', ''))
+
+    it('holds a turn’s narration and its beats until its cards have landed', () => {
+      vi.useFakeTimers({ now: NOW })
+      playRolls(9, [save], NOW)
+      const { container } = render(
+        <StoryFeed board={board({ turnRows: told() })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
+      )
+      expect(shown(container)).toEqual(['story-action', 'story-roll-card-beat'])
+
+      act(() => vi.advanceTimersByTime(D20_CYCLE_MS + SETTLE_MS - 1))
+      expect(shown(container)).toEqual(['story-action', 'story-roll-card-beat'])
+      act(() => vi.advanceTimersByTime(1))
+      expect(shown(container)).toEqual(['story-action', 'story-roll-card-beat', 'story-narration', 'story-changes'])
+      expect(container).toHaveTextContent('The light slides off you.')
+    })
+
+    it('waits at most 2.5 s after the first card appeared', () => {
+      vi.useFakeTimers({ now: NOW })
+      const many = Array.from({ length: 4 }, (_, index) => ({ ...save, id: `t9-${index + 1}` }))
+      playRolls(9, many, NOW)
+      const { container } = render(
+        <StoryFeed board={board({ turnRows: told({ storyRolls: many }) })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
+      )
+      act(() => vi.advanceTimersByTime(PLAY_LIMIT_MS - 1))
+      expect(container).not.toHaveTextContent('The light slides off you.')
+      act(() => vi.advanceTimersByTime(1))
+      expect(container).toHaveTextContent('The light slides off you.')
+    })
+
+    it('holds nothing read from history, with reduced motion, or for a turn without cards', () => {
+      vi.useFakeTimers({ now: NOW })
+      const { container, unmount } = render(
+        <StoryFeed board={board({ turnRows: told() })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
+      )
+      expect(container).toHaveTextContent('The light slides off you.')
+      unmount()
+
+      playRolls(9, [save], NOW)
+      window.localStorage.setItem('aidm:storyReduceMotion', 'true')
+      const reduced = render(
+        <StoryFeed board={board({ turnRows: told() })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
+      )
+      expect(reduced.container).toHaveTextContent('The light slides off you.')
+      reduced.unmount()
+      window.localStorage.removeItem('aidm:storyReduceMotion')
+
+      const plain = render(
+        <StoryFeed board={board({ turnRows: told({ storyRolls: [], turn_id: 10 }) })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
+      )
+      expect(plain.container).toHaveTextContent('The light slides off you.')
+    })
   })
 })

@@ -26,13 +26,16 @@ SKIPPED_METRIC = 'state_pipeline.post_dm.skipped_total'
 ENGINE_RESOLVED_READ = ('skipped', 'engine_resolved', 'post_dm_skipped_engine_resolved')
 ROAD = {'id': 'loc_old_north_road', 'name': 'The Old North Road'}
 BENCH_SEARCH = "I search under the driver's bench."
+# The search takes the key it finds there and then, so the typed pickup takes something left lying in the inn.
+TYPED_PICKUP = 'I pick up the lantern hook.'
+LANTERN_HOOK = {'id': 'inn_lantern_hook', 'name': 'Lantern Hook', 'type': 'gear', 'quantity': 1}
 INN = 'loc_lantern_post_inn'
 NO_FIGHT = ([], 'none')
 # The bench search as Safe Mode plays it; the hero starts with 25 gp.
 BENCH_SEARCHED = {
-    'beats': ['Investigation check: 15 — success'],
+    'beats': ['Investigation check: 15 — success', 'Taken — Caravan Strongbox Key'],
     'place': INN,
-    'looseItems': ['caravan_strongbox_key'],
+    'looseItems': [],
     'gp': 25,
     'fight': NO_FIGHT,
 }
@@ -158,6 +161,15 @@ def _roll_for(table: AiTable) -> dict:
     return {'kind': 'roll', 'source': 'dice_tray', 'text': 'I roll.', 'roll': roll}
 
 
+def _leave_lantern_hook(client, table: AiTable) -> None:
+    response = client.post(
+        f"/api/sessions/{table.ids['session_id']}/combat/apply-state-changes",
+        json={'changes': [{'type': 'scene.item.add', 'item': LANTERN_HOOK}]},
+    )
+    assert response.status_code == 200, response.get_json()
+    assert response.get_json()['validation']['rejected'] == []
+
+
 def _ally_radan(client, table: AiTable) -> None:
     """Radan's alliance keeps the lanterns off the road, so arriving there starts no fight."""
 
@@ -173,7 +185,7 @@ def _ally_radan(client, table: AiTable) -> None:
 ENGINE_RESOLVED_TURNS = [
     (_object_action('inn_lead_wagon', 'search', 'Lead Wagon'), {**BENCH_SEARCHED, 'beats': ['Clue — Ash Marks on the Road'], 'looseItems': []}),
     ((BENCH_SEARCH, {}), BENCH_SEARCHED),
-    (('I pick up the key.', {}), {**BENCH_SEARCHED, 'beats': ['Taken — Caravan Strongbox Key'], 'looseItems': []}),
+    ((TYPED_PICKUP, {}), {**BENCH_SEARCHED, 'beats': ['Taken — Lantern Hook'], 'looseItems': []}),
     (
         _travel(ROAD),
         {
@@ -214,6 +226,8 @@ def test_turns_the_engine_resolved_make_no_second_call_and_do_what_safe_mode_doe
     _ally_radan(client, table)
     made, read, results = [], [], []
     for (message, extra), _expected in ENGINE_RESOLVED_TURNS:
+        if message == TYPED_PICKUP:
+            _leave_lantern_hook(client, table)
         made.append(calls.made_by(lambda: table.send(message, **extra), must_skip=True))
         read.append(_post_dm_read(table))
         results.append(_engine_results(table))
@@ -238,7 +252,7 @@ def test_talk_and_an_improvised_action_have_their_narration_read_once(table, cal
 
 
 @pytest.mark.parametrize('table', ['ai', 'safe_mode'], indirect=True)
-def test_turns_in_a_fight_and_the_arrival_that_opens_one_read_the_narration_as_before(table, calls):
+def test_the_arrival_that_opens_a_fight_is_read_as_before_and_a_clicked_fight_action_is_the_engines(table, calls):
     message, extra = _travel(ROAD)
     arrival = calls.made_by(lambda: table.send(message, **extra))
     arrival_read = _post_dm_read(table)
@@ -252,9 +266,13 @@ def test_turns_in_a_fight_and_the_arrival_that_opens_one_read_the_narration_as_b
     )
 
     assert opening_enemy_turns is True
-    assert (arrival, end_turn) == ((1, 1), (1, 1))
+    # The narration of the arrival is read once. A fight action taken from the offered actions (and the enemy
+    # turns it hands over to) is resolved by the engine from roll to result: no model reads its narration.
+    assert (arrival, end_turn) == ((1, 1), (0, 0))
     assert arrival_read[:2] == ('heuristic', None)
-    assert _post_dm_read(table)[:2] == ('heuristic', None)
+    source, reason, _note = _post_dm_read(table)
+    assert (source, reason in {'engine_fight_action', 'engine_told'}) == ('skipped', True)
+    assert _pipeline(table)['preDmExtraction']['debug']['reason'] == 'engine_fight_action'
     # The arrival starts the road's fight exactly as in Safe Mode.
     assert (arrival_results['place'], arrival_results['fight']) == ('loc_old_north_road', (['enc_pale_lantern_detour'], 'active'))
     assert _engine_results(table)['fight'] == (['enc_pale_lantern_detour'], 'active')

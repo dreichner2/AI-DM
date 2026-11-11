@@ -135,8 +135,14 @@ function workspaceStoreReducer(
   action: WorkspaceStoreAction,
 ): WorkspaceStoreState {
   switch (action.type) {
-    case 'setSelectedCampaignId':
-      return { ...state, selectedCampaignId: resolveValue(state.selectedCampaignId, action.value) }
+    case 'setSelectedCampaignId': {
+      const selectedCampaignId = resolveValue(state.selectedCampaignId, action.value)
+      if (selectedCampaignId === state.selectedCampaignId) return state
+      // A hero plays in one adventure: one known to belong to another never carries over to this one.
+      const hero = state.selectedPlayerId === null ? undefined : state.cache.playersById[state.selectedPlayerId]
+      const selectedPlayerId = hero && hero.campaign_id !== selectedCampaignId ? null : state.selectedPlayerId
+      return { ...state, selectedCampaignId, selectedPlayerId }
+    }
     case 'setSelectedSessionId': {
       const selectedSessionId = resolveValue(state.selectedSessionId, action.value)
       if (selectedSessionId === state.selectedSessionId) return state

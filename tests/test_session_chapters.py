@@ -37,7 +37,7 @@ from aidm_server.services.session_chapters import (
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.turn_events import DM_RESPONSE_EVENT, SESSION_ENDED_EVENT, SESSION_STARTED_EVENT, record_turn_event
-from tests.helpers import seed_world_campaign_player_session
+from tests.helpers import seed_played_turn, seed_world_campaign_player_session
 from tests.test_flagship_adventure import table  # noqa: F401 - the Play Now table fixture
 
 NOW_ISO = '2026-11-10T12:00:00+00:00'
@@ -130,6 +130,7 @@ def _seed_chapter_one(app, *, customize=None, rolling_summary: str = 'They reach
             )
         )
         db.session.commit()
+    seed_played_turn(app, ids['session_id'])
     return ids
 
 
@@ -167,6 +168,14 @@ def _import_bleakmoor(client) -> dict:
     response = client.post('/api/campaigns/example-packs/bleakmoor_intro/import', json={})
     assert response.status_code == 201
     return response.get_json()
+
+
+def _import_played_bleakmoor(client, app) -> dict:
+    """The Bleakmoor pack with a turn played in its first chapter."""
+
+    imported = _import_bleakmoor(client)
+    seed_played_turn(app, imported['session_id'])
+    return imported
 
 
 def _post_in_thread(app, path: str, payload: dict) -> dict:
@@ -302,6 +311,56 @@ def test_first_chapter_keeps_todays_welcome_and_empty_world(client, app):
         assert db.session.get(Session, payload['session_id']).name is None
 
 
+def test_an_imported_adventure_begins_in_its_own_first_chapter_until_a_turn_is_played(client, app):
+    imported = _import_bleakmoor(client)
+    chapter_one_id = imported['session_id']
+    opening = _snapshot(app, chapter_one_id)
+
+    response = client.post('/api/sessions/start', json={'campaign_id': imported['campaign_id'], 'client_session_id': 'begin-1'})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['session_id'] == chapter_one_id
+    assert payload['idempotent_replay'] is True
+    assert payload['chapter_number'] == 1
+    assert payload['status'] == 'active'
+    assert payload['is_current'] is True
+    assert _session_count(app, imported['campaign_id']) == 1
+    assert _snapshot(app, chapter_one_id) == opening
+    assert CHAPTER_CLOSED not in _log_messages(app, chapter_one_id)
+
+    seed_played_turn(app, chapter_one_id)
+    next_chapter = client.post('/api/sessions/start', json={'campaign_id': imported['campaign_id']})
+
+    assert next_chapter.status_code == 201
+    assert next_chapter.get_json()['chapter_number'] == 2
+    assert _session_status(app, chapter_one_id) == 'ended'
+
+
+def test_starting_again_before_the_first_turn_returns_the_same_first_chapter(client, app):
+    with app.app_context():
+        world = World(name='Empty World', description='No sessions yet')
+        db.session.add(world)
+        db.session.flush()
+        campaign = Campaign(title='Fresh Campaign', world_id=world.world_id)
+        db.session.add(campaign)
+        db.session.commit()
+        campaign_id = campaign.campaign_id
+    first = client.post('/api/sessions/start', json={'campaign_id': campaign_id})
+
+    again = client.post('/api/sessions/start', json={'campaign_id': campaign_id, 'continuity': 'fresh'})
+
+    assert first.status_code == 201
+    assert again.status_code == 200
+    assert again.get_json()['session_id'] == first.get_json()['session_id']
+    assert again.get_json()['idempotent_replay'] is True
+    assert again.get_json()['chapter_number'] == 1
+    assert _session_count(app, campaign_id) == 1
+    assert _log_messages(app, first.get_json()['session_id']) == [
+        '**Welcome to the table. Choose your opening move when you are ready.**'
+    ]
+
+
 def test_continue_carries_the_world_into_the_next_chapter(client, app):
     ids = _seed_chapter_one(app)
 
@@ -400,7 +459,7 @@ def test_without_a_recap_or_narration_the_next_chapter_has_no_previously_line(cl
 
 
 def test_continue_carries_campaign_pack_progress_rows(client, app):
-    imported = _import_bleakmoor(client)
+    imported = _import_played_bleakmoor(client, app)
     chapter_one_id = imported['session_id']
     assert client.post(
         f'/api/sessions/{chapter_one_id}/campaign-pack/progress',
@@ -693,7 +752,7 @@ def test_idempotent_replay_returns_the_same_chapter_without_closing_or_copying_a
 
 
 def test_fresh_on_a_pack_campaign_reseeds_the_opening_and_starting_checkpoint(client, app):
-    imported = _import_bleakmoor(client)
+    imported = _import_played_bleakmoor(client, app)
     chapter_one_id = imported['session_id']
     opening = _snapshot(app, chapter_one_id)
     assert client.post(
@@ -797,6 +856,7 @@ def test_play_now_replay_opens_the_current_chapter(client, app):
     assert first.status_code == 201
     chapter_one_id = first.get_json()['session_id']
     campaign_id = first.get_json()['campaign_id']
+    seed_played_turn(app, chapter_one_id)
     chapter_two_id = client.post('/api/sessions/start', json={'campaign_id': campaign_id}).get_json()['session_id']
 
     replay = client.post('/api/onboarding/play-now', json={'character_id': 'mara-fen'})

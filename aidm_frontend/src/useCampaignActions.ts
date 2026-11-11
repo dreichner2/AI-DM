@@ -170,15 +170,16 @@ export function useCampaignActions({
     [auth, baseUrl, createCampaignForm.worldName],
   )
 
+  /** Creates the adventure and opens it; resolves to its id, or null when it was not created. */
   const submitCreateCampaign = useCallback(
-    async (event?: FormEvent<HTMLFormElement>) => {
+    async (event?: FormEvent<HTMLFormElement>): Promise<number | null> => {
       event?.preventDefault()
       const title = createCampaignForm.title.trim()
       const description = createCampaignForm.description.trim()
       const selectedPackId = createCampaignForm.packId.trim()
       if (!selectedPackId && !title) {
         setCreateCampaignError('Campaign name is required.')
-        return
+        return null
       }
 
       setCreateCampaignPending(true)
@@ -215,7 +216,7 @@ export function useCampaignActions({
           if (result.session_id) {
             setSelectedSessionId(result.session_id)
           }
-          return
+          return result.campaign_id
         }
 
         let createdWorld = false
@@ -266,10 +267,12 @@ export function useCampaignActions({
         setInspectorTab('party')
         await refreshRoot()
         setSelectedCampaignId(result.campaign_id)
+        return result.campaign_id
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         setCreateCampaignError(message)
         pushError('persistence', `Could not create campaign: ${message}`)
+        return null
       } finally {
         setCreateCampaignPending(false)
       }

@@ -16,6 +16,8 @@ export const STORY_SUGGESTION_LIMIT = 6
 
 const CHOICE_LIMIT = 4
 const TAKE_LIMIT = 2
+/** The words the server reads as taking every loose item in the scene. */
+export const TAKE_ALL_LABEL = 'Take everything here'
 const OBJECT_LIMIT = 3
 const TALK_LIMIT = 2
 const TRADE_LIMIT = 1
@@ -23,11 +25,13 @@ const TRAVEL_LIMIT = 2
 
 /**
  * One thing the player could do next. `talk` fills the composer so the player
- * can finish the sentence; `take`, `object` and `travel` submit typed intents;
- * `trade` opens the merchant's wares; `more` opens the action tray.
+ * can finish the sentence; `say` sends its label as the player's own words;
+ * `take`, `object` and `travel` submit typed intents; `trade` opens the
+ * merchant's wares; `more` opens the action tray.
  */
 export type StorySuggestion =
   | { kind: 'take'; key: string; label: string; item: WorldSceneItemSummary }
+  | { kind: 'take_all'; key: string; label: string }
   | {
       kind: 'object'
       key: string
@@ -36,6 +40,7 @@ export type StorySuggestion =
       action: GameplayObjectAction
     }
   | { kind: 'talk'; key: string; label: string; text: string }
+  | { kind: 'say'; key: string; label: string }
   | { kind: 'trade'; key: string; label: string; merchant: WorldMerchantSummary }
   | { kind: 'travel'; key: string; label: string; exit: WorldLocationSummary }
   | { kind: 'more'; key: string; label: string }
@@ -107,8 +112,9 @@ function objectSuggestions(objects: GameplayInteractableControl[]): ObjectSugges
 
 /**
  * Contextual suggestions for the Story dock, in priority order: the choices
- * an object puts before the player, loose items to take, scene objects,
- * people present, an open merchant, then ways onward — at most six, then
+ * an object puts before the player, what may be said to the captives a fight
+ * left (`Question the Ashmarked Cutthroat`), loose items to take, scene
+ * objects, people present, an open merchant, then ways onward — at most six, then
  * `More…` when the tray holds anything left out. Combat has its own ribbon, so
  * nothing is suggested while it lasts.
  */
@@ -121,10 +127,23 @@ export function storySuggestions(
   const take: StorySuggestion[] = worldState.sceneItems
     .filter((item) => item.id && item.takeLabel)
     .map((item) => ({ kind: 'take', key: `take:${item.id}`, label: item.takeLabel ?? '', item }))
+  // With several things lying about, one chip takes them all in a single turn.
+  const takeChips: StorySuggestion[] =
+    take.length > 1
+      ? [{ kind: 'take_all', key: 'take:all', label: TAKE_ALL_LABEL }, ...take.slice(0, TAKE_LIMIT - 1)]
+      : take
 
   const objectCandidates = gameplayControls.interactables.reduce(
     (count, object) => count + objectChoices(object).length,
     0,
+  )
+
+  const captives: StorySuggestion[] = (worldState.captives ?? []).flatMap((captive) =>
+    captive.offeredActions.map((action) => ({
+      kind: 'say' as const,
+      key: `say:${captive.id || captive.name}:${action.label}`,
+      label: action.label,
+    })),
   )
 
   const talk: StorySuggestion[] = worldState.presentNpcs
@@ -155,12 +174,13 @@ export function storySuggestions(
 
   const chips = [
     ...choiceSuggestions(gameplayControls.interactables),
-    ...take.slice(0, TAKE_LIMIT),
+    ...captives,
+    ...takeChips,
     ...objectSuggestions(gameplayControls.interactables),
     ...talk.slice(0, TALK_LIMIT),
     ...trade.slice(0, TRADE_LIMIT),
     ...travel.slice(0, TRAVEL_LIMIT),
   ].slice(0, STORY_SUGGESTION_LIMIT)
-  const candidates = take.length + objectCandidates + talk.length + trade.length + travel.length
+  const candidates = captives.length + take.length + objectCandidates + talk.length + trade.length + travel.length
   return candidates > chips.length ? [...chips, MORE_SUGGESTION] : chips
 }

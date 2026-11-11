@@ -468,6 +468,10 @@ function isNotFoundError(error: unknown) {
   return error instanceof ApiClientError && error.status === 404
 }
 
+function isForbiddenError(error: unknown) {
+  return error instanceof ApiClientError && error.status === 403
+}
+
 function apiErrorCode(error: unknown) {
   return error instanceof ApiClientError && isRecord(error.payload) ? error.payload.error_code : null
 }
@@ -875,6 +879,8 @@ function AIDMApp() {
   const actionInputRef = useRef<HTMLTextAreaElement | null>(null)
   const turnFeedRef = useRef<HTMLElement | null>(null)
   const submitActionRef = useRef<(() => void) | null>(null)
+  // What acting without a hero or chapter leads to (set once the hero choice is defined below).
+  const actorMissingRef = useRef<() => void>(() => undefined)
   const toggleFullscreenRef = useRef<(() => Promise<void>) | null>(null)
   const socketRef = useRef<Socket | null>(null)
   const closeBetaNotes = useCallback(() => {
@@ -1123,7 +1129,8 @@ function AIDMApp() {
             clearAuthTokenErrors()
             return
           }
-          if (isNotFoundError(error)) {
+          // A remembered hero the server no longer knows, or will not show: forget it.
+          if (isNotFoundError(error) || isForbiddenError(error)) {
             setSelectedPlayerId((current) => (current === playerId ? null : current))
             return
           }
@@ -1478,6 +1485,8 @@ function AIDMApp() {
     submissionReconnecting,
     toggleAdminTools,
     turnRejectionMessage,
+    heldActionText,
+    cancelHeldAction,
     clearQueuedAction,
     selectedPlayerHasTurn,
     turnControlStatusLabel,
@@ -1505,6 +1514,7 @@ function AIDMApp() {
     turnControl,
     pushError,
     dismissError,
+    onActorMissing: () => actorMissingRef.current(),
   })
   // A send waiting for the socket to rejoin is still in flight for every
   // control that must not start another turn.
@@ -1822,64 +1832,6 @@ function AIDMApp() {
     setSessionMenuOpen,
     pushError,
   })
-
-  // A blank-page adventure has no chapter yet. Begin creates its first chapter, then sends the
-  // opening once that chapter has loaded and the realtime join is done.
-  const [firstChapterCampaignId, setFirstChapterCampaignId] = useState<number | null>(null)
-  const beginAdventure = () => {
-    // With a chapter open (or nothing to begin it for) the opening goes, or is refused, as before.
-    if (activeSessionId !== null || selectedCampaignId === null || selectedPlayerDetailId === null) {
-      startAdventure()
-      return
-    }
-    if (firstChapterCampaignId !== null) return
-    setFirstChapterCampaignId(selectedCampaignId)
-    void startSession().then((sessionId) => {
-      // startSession reports its own failure.
-      if (sessionId === null) setFirstChapterCampaignId(null)
-    })
-  }
-  useEffect(() => {
-    if (firstChapterCampaignId === null) return
-    if (
-      selectedCampaignId !== firstChapterCampaignId ||
-      Boolean(currentResponseEntry) ||
-      (activeSession?.turn_count ?? 0) > 0
-    ) {
-      setFirstChapterCampaignId(null)
-      return
-    }
-    if (
-      activeSessionId === null ||
-      selectedPlayerDetailId === null ||
-      socketStatus !== 'joined' ||
-      turnInFlight ||
-      dmResponseBlocking ||
-      workspaceLoading ||
-      sessionLoading ||
-      !sessionHydrated ||
-      storedSessionState?.session_id !== activeSessionId
-    ) {
-      return
-    }
-    setFirstChapterCampaignId(null)
-    startAdventure()
-  }, [
-    activeSession?.turn_count,
-    activeSessionId,
-    currentResponseEntry,
-    dmResponseBlocking,
-    firstChapterCampaignId,
-    selectedCampaignId,
-    selectedPlayerDetailId,
-    sessionHydrated,
-    sessionLoading,
-    socketStatus,
-    startAdventure,
-    storedSessionState?.session_id,
-    turnInFlight,
-    workspaceLoading,
-  ])
 
   const {
     campaignActionDialog,
@@ -2495,6 +2447,12 @@ function AIDMApp() {
     pushError,
   })
 
+  // Beginning an adventure: a hero first (the hero choice opens when it has none), then its chapter, then the
+  // opening, sent once that chapter has loaded and the realtime join is done. Holds the adventure being begun.
+  const [beginCampaignId, setBeginCampaignId] = useState<number | null>(null)
+  // The adventure whose chapter is being started for it.
+  const beginChapterRef = useRef<number | null>(null)
+
   // New characters are made in the hero creation flow; editing one keeps the character dialog.
   const [createHeroCampaignId, setCreateHeroCampaignId] = useState<number | null>(null)
   const openCreateHero = useCallback(
@@ -2514,6 +2472,11 @@ function AIDMApp() {
     },
     [createHeroCampaignId, createHeroCharacter],
   )
+  // Left without a hero, an adventure waiting on one does not begin.
+  const closeCreateHero = useCallback(() => {
+    setCreateHeroCampaignId(null)
+    if (selectedPlayerDetailId === null) setBeginCampaignId(null)
+  }, [selectedPlayerDetailId])
 
   const promptCreatePlayer = useCallback(() => {
     openCreateHero(selectedCampaignId)
@@ -2558,7 +2521,8 @@ function AIDMApp() {
 
   const closeCharacterJoinDialog = useCallback(() => {
     setCharacterJoinDialogOpen(false)
-  }, [])
+    if (selectedPlayerDetailId === null) setBeginCampaignId(null)
+  }, [selectedPlayerDetailId])
 
   const joinAsExistingPlayer = useCallback(
     (player: Player) => {
@@ -2572,6 +2536,31 @@ function AIDMApp() {
     setCharacterJoinDialogOpen(false)
     openCreateHero(selectedCampaignId)
   }, [openCreateHero, selectedCampaignId])
+
+  // The hero choice: the chooser when this adventure has heroes who can join, else the creator.
+  const openHeroChoice = useCallback(() => {
+    if (players.length) openCharacterJoinDialog()
+    else openCreateHero(selectedCampaignId)
+  }, [openCharacterJoinDialog, openCreateHero, players.length, selectedCampaignId])
+
+  // The hero choice when there is no hero, a chapter when none is open, then the opening (the effect below).
+  const prepareBeginning = useCallback(() => {
+    if (selectedCampaignId !== null) setBeginCampaignId(selectedCampaignId)
+  }, [selectedCampaignId])
+
+  const beginAdventure = useCallback(() => {
+    if (selectedPlayerDetailId !== null && activeSessionId !== null && sessionHydrated) startAdventure()
+    else prepareBeginning()
+  }, [activeSessionId, prepareBeginning, selectedPlayerDetailId, sessionHydrated, startAdventure])
+
+  // Sending or rolling with no hero, or no chapter, to act in leads into beginning: the hero choice, then (for
+  // an adventure not yet begun) the opening.
+  useEffect(() => {
+    actorMissingRef.current = () => {
+      if (selectedCampaignId === null) pushError('validation', 'Choose a hero first.')
+      else if (selectedPlayerDetailId === null || activeSessionId === null) prepareBeginning()
+    }
+  })
 
   const clearAuthToken = () => {
     clearRuntimeAuthToken()
@@ -2947,7 +2936,9 @@ function AIDMApp() {
       workspaceLoading ||
       loadingCampaignId === selectedCampaignId ||
       showTitleScreen ||
-      modalOpen
+      modalOpen ||
+      // A beginning asks for the hero itself.
+      beginCampaignId === selectedCampaignId
     ) {
       return
     }
@@ -2955,12 +2946,99 @@ function AIDMApp() {
     promptedCharacterCampaignIdsRef.current.add(selectedCampaignId)
     setCharacterJoinDialogOpen(true)
   }, [
+    beginCampaignId,
     campaign,
     loadingCampaignId,
     modalOpen,
     selectedCampaignId,
     selectedPlayerId,
     showTitleScreen,
+    workspaceLoading,
+  ])
+
+  // A turn has been played in the open chapter: its own count says so, or the timeline already shows one.
+  const chapterBegun =
+    (activeSession?.turn_count ?? 0) > 0 || timeline.some((entry) => entry.role !== 'system')
+  const latestStartSession = useLatest(startSession)
+  // The adventure whose hero choice this beginning has opened.
+  const beginHeroAskedRef = useRef<number | null>(null)
+  // Beginning, once asked for: the hero choice when this adventure has no hero, then its chapter, then the
+  // opening once that chapter has loaded and the realtime join is done.
+  useEffect(() => {
+    if (beginCampaignId === null) {
+      beginHeroAskedRef.current = null
+      return
+    }
+    if (selectedCampaignId !== beginCampaignId || chapterBegun) {
+      setBeginCampaignId(null)
+      return
+    }
+    if (selectedPlayerDetailId === null) {
+      if (
+        beginHeroAskedRef.current === beginCampaignId ||
+        workspaceLoading ||
+        campaign?.campaign_id !== beginCampaignId ||
+        modalOpen ||
+        showTitleScreen
+      ) {
+        return
+      }
+      beginHeroAskedRef.current = beginCampaignId
+      // It is the question the arrival prompt would ask.
+      promptedCharacterCampaignIdsRef.current.add(beginCampaignId)
+      openHeroChoice()
+      return
+    }
+    if (activeSessionId === null) {
+      if (workspaceLoading || beginChapterRef.current === beginCampaignId) return
+      // An adventure begins in its open or unplayed chapter; a new chapter only when it has none, or its
+      // latest has been played and has ended.
+      const latest = sessions.find((session) => session.is_current) ?? sessions[0] ?? null
+      if (latest && (latest.turn_count === 0 || latest.status !== 'ended')) {
+        setSelectedSessionId(latest.session_id)
+        return
+      }
+      beginChapterRef.current = beginCampaignId
+      void latestStartSession.current().then((sessionId) => {
+        beginChapterRef.current = null
+        // startSession reports its own failure.
+        if (sessionId === null) setBeginCampaignId(null)
+      })
+      return
+    }
+    if (
+      socketStatus !== 'joined' ||
+      turnInFlight ||
+      dmResponseBlocking ||
+      workspaceLoading ||
+      sessionLoading ||
+      !sessionHydrated ||
+      storedSessionState?.session_id !== activeSessionId
+    ) {
+      return
+    }
+    setBeginCampaignId(null)
+    startAdventure()
+  }, [
+    activeSessionId,
+    beginCampaignId,
+    campaign?.campaign_id,
+    chapterBegun,
+    dmResponseBlocking,
+    latestStartSession,
+    modalOpen,
+    openHeroChoice,
+    selectedCampaignId,
+    selectedPlayerDetailId,
+    sessionHydrated,
+    sessionLoading,
+    sessions,
+    setSelectedSessionId,
+    showTitleScreen,
+    socketStatus,
+    startAdventure,
+    storedSessionState?.session_id,
+    turnInFlight,
     workspaceLoading,
   ])
 
@@ -3956,7 +4034,7 @@ function AIDMApp() {
     clarificationRequest,
     resolveClarification,
     onStartAdventure: beginAdventure,
-    adventureBeginning: firstChapterCampaignId !== null,
+    adventureBeginning: beginCampaignId !== null && selectedPlayerDetailId !== null,
     actionComposerProps: {
       actionInputRef,
       actionText,
@@ -3981,6 +4059,8 @@ function AIDMApp() {
       submissionReconnecting,
       openingDelayed,
       turnRejectionMessage,
+      heldActionText,
+      cancelHeldAction,
       retryRecoverableSubmission,
       clearQueuedAction,
       updateTurnControl,
@@ -4103,6 +4183,8 @@ function AIDMApp() {
     ttsAvailable: ttsConfig?.configured === true,
     ttsEnabled,
     onToggleTts: toggleTts,
+    ttsPlaying: ttsSpeaking,
+    onStopTts: stopTtsAudio,
     isFullscreen: fullscreenActive,
     onToggleFullscreen: () => void toggleFullscreen(),
     onOpenConsole: openConsoleView,
@@ -4882,7 +4964,7 @@ function AIDMApp() {
             baseUrl={baseUrl}
             campaignTitle={campaign?.title ?? null}
             dialogRef={modalDialogRef}
-            onClose={() => setCreateHeroCampaignId(null)}
+            onClose={closeCreateHero}
             onCreate={createHero}
           />
         </Suspense>
@@ -4997,7 +5079,11 @@ function AIDMApp() {
             error={createCampaignError}
             form={createCampaignForm}
             onClose={closeCreateCampaignDialog}
-            onSubmit={() => void submitCreateCampaign()}
+            onSubmit={() =>
+              void submitCreateCampaign().then((campaignId) => {
+                if (campaignId !== null) setBeginCampaignId(campaignId)
+              })
+            }
             packOptions={createCampaignPackOptions}
             packOptionsPending={createCampaignPackOptionsPending}
             pending={createCampaignPending}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from flask import current_app
@@ -30,7 +30,7 @@ from aidm_server.combat.legal_actions import (
     resolve_combat_legal_action,
 )
 from aidm_server.combat.modifiers import can_act
-from aidm_server.combat.pipeline import hostile_action_targets_creature
+from aidm_server.combat.pipeline import has_campaign_pack, hostile_action_targets_creature
 from aidm_server.database import commit_with_retry, db, release_clean_scoped_session, run_with_commit_retry
 from aidm_server.emergent_memory import apply_immediate_state_changes
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
@@ -45,8 +45,21 @@ from aidm_server.game_state.models import display_actor_id
 from aidm_server.interactables import NOT_WHILE_FIGHTING
 from aidm_server.game_state.orchestration.combat_resolution import player_attack_target
 from aidm_server.game_state.orchestration.finishing_blow import DESCRIBE_ACTION_ID, STORY_ACTION_ID, lets_the_story_tell_it, pending_finisher
-from aidm_server.game_state.orchestration.story_beats import record_turn_story_beats
+from aidm_server.game_state.orchestration.story_beats import SCRIPTED_NARRATOR_PROVIDER, record_turn_story_beats
 from aidm_server.game_state.orchestration.story_rolls import record_turn_story_rolls, turn_story_rolls
+from aidm_server.game_state.orchestration.turn_flow import (
+    AUTO_END_TURN_REQUEST_KEY,
+    SCRIPTED_NARRATOR_MODEL,
+    TIMINGS_KEY,
+    TOLD_BY_NARRATOR,
+    TOLD_SCRIPTED,
+    TOLD_TURN_LINE,
+    TURN_FLOW_KEY,
+    scripted_stream,
+    telling,
+    turn_kind,
+    turn_timings,
+)
 from aidm_server.game_state.orchestration.turn_pipeline import (
     augment_rules_hint_with_state_packet,
     post_dm_pipeline,
@@ -277,6 +290,10 @@ class TurnCommand:
     client_message_id: str | None = None
     state_pipeline_override: dict | None = None
     message_kind: str | None = None
+    # The hero's ``End my turn for me`` choice, sent with the action.
+    auto_end_turn: bool = False
+    # When the server received the message (``time.perf_counter``): a turn's time to act starts here.
+    submitted_at: float = field(default_factory=time.perf_counter)
 
     @property
     def is_opening(self) -> bool:
@@ -291,6 +308,18 @@ class TurnPersistenceToken:
     player_id: int | None
     client_message_id: str | None
     expected_status: str
+
+
+@dataclass(frozen=True)
+class TurnClock:
+    """When a turn's engine results were sent and its narration ended (``time.perf_counter``), and the narration's
+    own length (first to last chunk) when a model was called."""
+
+    submitted_at: float
+    engine_done_at: float
+    narration_ended_at: float
+    narration_ms: int
+    model_called: bool
 
 
 @dataclass
@@ -315,6 +344,9 @@ class PostTurnOutcome:
     state_application_failed: bool = False
     # The narration's roll request was for something the engine rolls itself and was taken out.
     engine_rolls_removed: bool = False
+    # Who told the turn (``turn_flow.telling``) and, for a turn played through here, its clock.
+    told: str = TOLD_BY_NARRATOR
+    clock: TurnClock | None = None
 
 
 def _turn_metadata(turn: DmTurn) -> dict:
@@ -537,7 +569,11 @@ class TurnEngine:
                     if presence is not None and self.active_player_ids
                     else None
                 ),
-                allow_helper=not command.is_opening,
+                # A pack adventure's flow is the engine's (free play outside a fight, initiative inside one), and an
+                # offered action says what it is: no model is asked who may act.
+                allow_helper=not command.is_opening
+                and action_kind in {'', 'message'}
+                and not has_campaign_pack(safe_json_loads(session_obj.state_snapshot, {}) or {}),
             )
         )
         if changed:
@@ -1855,7 +1891,23 @@ class TurnEngine:
         )
         persistence_token = self._persistence_token(turn=turn)
         self._emit_turn_rolls(turn)
-        narration_result = self._narrate_turn(narration_request)
+        engine_done_at = time.perf_counter()
+        told, turn_line = telling(
+            rules_hint_payload,
+            command.action_intent,
+            player_input=narration_request.model_user_input,
+            speaker=player_label,
+        )
+        if told == TOLD_TURN_LINE:
+            # Nothing to tell beyond whose turn it is: no reply is streamed and no narrator is asked.
+            narration_result = NarrationResult(
+                text=turn_line, stream_error=None, provider=SCRIPTED_NARRATOR_PROVIDER, model=SCRIPTED_NARRATOR_MODEL
+            )
+        elif told == TOLD_SCRIPTED:
+            narration_result = self._narrate_turn(narration_request, scripted=True)
+        else:
+            narration_result = self._narrate_turn(narration_request)
+        model_called = told == TOLD_BY_NARRATOR and str(current_app.config.get('AIDM_LLM_PROVIDER') or '') != SCRIPTED_NARRATOR_PROVIDER
 
         self._emit_turn_status(command.session_id, turn_id, 'saving')
         post_turn_segments = self._persist_turn_outcome(
@@ -1871,6 +1923,14 @@ class TurnEngine:
             triggered_segments=triggered_segments,
             start_time=start_time,
             engine_rolls_removed=narration_result.engine_rolls_removed,
+            told=told,
+            clock=TurnClock(
+                submitted_at=command.submitted_at,
+                engine_done_at=engine_done_at,
+                narration_ended_at=time.perf_counter(),
+                narration_ms=narration_result.narration_ms if model_called else 0,
+                model_called=model_called,
+            ),
         )
         for segment_payload in post_turn_segments:
             self.socketio.emit(
@@ -2516,6 +2576,7 @@ class TurnEngine:
                         else None
                     ),
                     **({'message_kind': command.message_kind} if command.message_kind else {}),
+                    **({AUTO_END_TURN_REQUEST_KEY: True} if command.auto_end_turn else {}),
                 },
                 {},
             ),
@@ -3144,12 +3205,16 @@ class TurnEngine:
             activate_segments_fn=self._activate_segments,
         )
 
-    def _narrate_turn(self, request: NarrationRequest) -> NarrationResult:
+    def _narrate_turn(self, request: NarrationRequest, *, scripted: bool = False) -> NarrationResult:
+        """Stream the turn's narration: from the configured narrator, or (``scripted``) from the scripted
+        narrator exactly as Safe Mode tells it, whatever narrator is configured."""
+
+        scripted_config = {'AIDM_LLM_PROVIDER': SCRIPTED_NARRATOR_PROVIDER, 'AIDM_LLM_MODEL': SCRIPTED_NARRATOR_MODEL}
         service = TurnNarrationService(
             TurnNarrationDependencies(
                 emit=self.emit,
                 sleep=self.socketio.sleep,
-                stream=self.stream_fn,
+                stream=scripted_stream if scripted else self.stream_fn,
                 build_context=build_dm_context,
                 release_session=self._release_clean_provider_session,
                 active_player_ids=self.active_player_ids,
@@ -3160,7 +3225,7 @@ class TurnEngine:
                 response_explains_no_roll_needed=self._dm_response_explains_no_roll_needed,
                 telemetry_event=telemetry_event,
                 telemetry_metric=telemetry_metric,
-                config_get=lambda key: current_app.config.get(key),
+                config_get=lambda key: (scripted_config if scripted and key in scripted_config else current_app.config).get(key),
                 logger=logger,
             )
         )
@@ -3231,6 +3296,8 @@ class TurnEngine:
         triggered_segments: list[dict],
         start_time: float,
         engine_rolls_removed: bool = False,
+        told: str = TOLD_BY_NARRATOR,
+        clock: TurnClock | None = None,
     ) -> list[dict]:
         outcome = PostTurnOutcome(
             turn_id=persistence_token.turn_id,
@@ -3247,6 +3314,8 @@ class TurnEngine:
             start_time=start_time,
             expected_status=persistence_token.expected_status,
             engine_rolls_removed=engine_rolls_removed,
+            told=told,
+            clock=clock,
         )
         try:
             turn, campaign = self._reload_persistence_context(persistence_token)
@@ -3288,6 +3357,8 @@ class TurnEngine:
             metadata_payload['error'] = stream_error
         if emergency_fallback:
             metadata_payload['llm_fallback'] = emergency_fallback
+        if outcome.told != TOLD_BY_NARRATOR:
+            metadata_payload[TURN_FLOW_KEY] = {'told': outcome.told}
         turn.metadata_json = safe_json_dumps(metadata_payload, {})
 
         dm_explains_no_roll = (
@@ -3592,6 +3663,7 @@ class TurnEngine:
                 speaking_player_name=outcome.player_label,
                 triggered_segments=outcome.triggered_segments,
             )
+            self._record_turn_timings(turn, outcome)
             # The canon worker writes canon metadata on this row outside the
             # turn lock, so the turn finishes before the job can start.
             finish_turn_lifecycle(turn)
@@ -3670,6 +3742,27 @@ class TurnEngine:
                 severity='error',
             )
         return post_turn_segments
+
+    @staticmethod
+    def _record_turn_timings(turn: DmTurn, outcome: PostTurnOutcome) -> None:
+        """Write the finished turn's ``timings`` on it and add its time to act to telemetry, by turn kind."""
+
+        clock = outcome.clock
+        if clock is None:
+            return
+        metadata = _turn_metadata(turn)
+        timings = turn_timings(
+            submitted_at=clock.submitted_at,
+            engine_done_at=clock.engine_done_at,
+            narration_ms=clock.narration_ms,
+            model_called=clock.model_called,
+            narration_ended_at=clock.narration_ended_at,
+            finished_at=time.perf_counter(),
+            kind=turn_kind(metadata),
+        )
+        metadata[TIMINGS_KEY] = timings
+        turn.metadata_json = safe_json_dumps(metadata, {})
+        telemetry_timing('turn.time_to_act_ms', float(timings['time_to_act_ms']), tags={'kind': timings['kind']})
 
     @staticmethod
     def _state_apply_failure_message(recovery_gate: dict) -> str:

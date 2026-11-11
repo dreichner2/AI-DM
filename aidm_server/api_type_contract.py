@@ -201,9 +201,20 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         'BetaAuditsResponse',
         alias='{ state_mutations: JsonRecord[]; operator_actions: JsonRecord[]; summary: { state_mutation_count: number; operator_action_count: number }; limit: number; session_id?: number }',
     ),
+    # A session's median and 90th-percentile time to act for one turn kind (``turn_flow.time_to_act_rows``).
+    TypeContract(
+        'TimeToActRow',
+        fields=(
+            field('kind', 'string'),
+            field('label', 'string'),
+            field('turn_count', 'number'),
+            field('median_ms', 'number'),
+            field('p90_ms', 'number'),
+        ),
+    ),
     TypeContract(
         'BetaSessionQualityResponse',
-        alias='{ session: JsonRecord; summary: JsonRecord; operator_summary: JsonRecord; provider_model_turn_counts: JsonRecord[]; recent_state_mutations: JsonRecord[]; recent_operator_actions: JsonRecord[]; limit: number }',
+        alias='{ session: JsonRecord; summary: JsonRecord; operator_summary: JsonRecord; provider_model_turn_counts: JsonRecord[]; time_to_act: TimeToActRow[]; recent_state_mutations: JsonRecord[]; recent_operator_actions: JsonRecord[]; limit: number }',
     ),
     TypeContract(
         'BetaSupportBundleResponse',
@@ -451,7 +462,35 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         ),
     ),
     TypeContract('TurnRollsPayload', fields=(field('session_id', 'number'), field('turn_id', 'number'), field('rolls', 'StoryRoll[]'))),
-    TypeContract('SessionLogEntryMetadata', alias='JsonRecord & { storyRolls?: StoryRoll[] }'),
+    # A turn's story beats (``aidm_server/game_state/orchestration/story_beats.py``): on its Dungeon Master
+    # log entry and turn event as ``storyBeats``, and on the final ``turn_status``. A level beat carries
+    # ``level``, what the hero gained; a level beat from before it was added has none.
+    TypeContract('StoryBeatLevelChange', fields=(field('from', 'number'), field('to', 'number'))),
+    TypeContract('StoryBeatLevelSlots', fields=(field('level', 'number'), field('from', 'number'), field('to', 'number'))),
+    TypeContract('StoryBeatLevelFeature', fields=(field('name', 'string'), field('text', 'string', optional=True))),
+    TypeContract(
+        'StoryBeatLevel',
+        fields=(
+            field('hero', 'string'),
+            field('level', 'number'),
+            field('maxHp', 'StoryBeatLevelChange'),
+            field('proficiencyBonus', 'StoryBeatLevelChange', optional=True),
+            field('features', 'StoryBeatLevelFeature[]', optional=True),
+            field('spellSlots', 'StoryBeatLevelSlots[]', optional=True),
+            field('spells', 'string[]', optional=True),
+            field('more', 'number', optional=True),
+        ),
+    ),
+    TypeContract(
+        'StoryBeatRecord',
+        fields=(
+            field('kind', 'string'),
+            field('text', 'string'),
+            field('refId', 'string', optional=True),
+            field('level', 'StoryBeatLevel', optional=True),
+        ),
+    ),
+    TypeContract('SessionLogEntryMetadata', alias='JsonRecord & { storyRolls?: StoryRoll[]; storyBeats?: StoryBeatRecord[] }'),
     TypeContract(
         'SessionLogEntry',
         fields=(

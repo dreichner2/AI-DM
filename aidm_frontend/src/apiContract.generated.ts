@@ -190,7 +190,15 @@ export type BetaIncidentsResponse = { incidents: JsonRecord[]; summary: { failed
 
 export type BetaAuditsResponse = { state_mutations: JsonRecord[]; operator_actions: JsonRecord[]; summary: { state_mutation_count: number; operator_action_count: number }; limit: number; session_id?: number }
 
-export type BetaSessionQualityResponse = { session: JsonRecord; summary: JsonRecord; operator_summary: JsonRecord; provider_model_turn_counts: JsonRecord[]; recent_state_mutations: JsonRecord[]; recent_operator_actions: JsonRecord[]; limit: number }
+export type TimeToActRow = {
+  kind: string
+  label: string
+  turn_count: number
+  median_ms: number
+  p90_ms: number
+}
+
+export type BetaSessionQualityResponse = { session: JsonRecord; summary: JsonRecord; operator_summary: JsonRecord; provider_model_turn_counts: JsonRecord[]; time_to_act: TimeToActRow[]; recent_state_mutations: JsonRecord[]; recent_operator_actions: JsonRecord[]; limit: number }
 
 export type BetaSupportBundleResponse = { generated_at: string | null; workspace_id: string; filters: JsonRecord; runtime: JsonRecord; session: JsonRecord | null; beta_summary: JsonRecord; beta_slo: JsonRecord; session_quality: BetaSessionQualityResponse | null; incidents: BetaIncidentsResponse; audits: BetaAuditsResponse; recent_turns: JsonRecord[]; canon_jobs: JsonRecord[]; session_log_entries: JsonRecord[]; turn_events: JsonRecord[]; telemetry: JsonRecord }
 
@@ -404,7 +412,41 @@ export type TurnRollsPayload = {
   rolls: StoryRoll[]
 }
 
-export type SessionLogEntryMetadata = JsonRecord & { storyRolls?: StoryRoll[] }
+export type StoryBeatLevelChange = {
+  from: number
+  to: number
+}
+
+export type StoryBeatLevelSlots = {
+  level: number
+  from: number
+  to: number
+}
+
+export type StoryBeatLevelFeature = {
+  name: string
+  text?: string
+}
+
+export type StoryBeatLevel = {
+  hero: string
+  level: number
+  maxHp: StoryBeatLevelChange
+  proficiencyBonus?: StoryBeatLevelChange
+  features?: StoryBeatLevelFeature[]
+  spellSlots?: StoryBeatLevelSlots[]
+  spells?: string[]
+  more?: number
+}
+
+export type StoryBeatRecord = {
+  kind: string
+  text: string
+  refId?: string
+  level?: StoryBeatLevel
+}
+
+export type SessionLogEntryMetadata = JsonRecord & { storyRolls?: StoryRoll[]; storyBeats?: StoryBeatRecord[] }
 
 export type SessionLogEntry = {
   id: number

@@ -50,6 +50,26 @@ All notable AIDM closed-beta changes should be recorded here.
 - Narration can be read aloud by OpenAI's Realtime voices (`gpt-realtime-2.1`
   or the faster `-mini`): ten voices, six accents and two qualities in
   Settings, streamed as it is spoken. Deepgram remains available.
+- Two friends can play one adventure: nobody dies for good, a hero who goes
+  down wakes when the fight ends, and the story names who did what.
+- Fights take what players type: tackle, shove, bind, demand surrender, or any
+  improvised move. A beaten enemy can be spared with the finishing blow, taken
+  captive and questioned.
+- Every roll is on the table as a card (yours and the enemies': attack, damage,
+  saves, checks, healing), the number flickering before it lands. The story
+  waits for the dice and never recites their numbers. Enemies speak.
+- Less waiting: ending a turn costs no reply of its own, a turn with nothing
+  left to do ends itself (Settings, Play), a search takes what it finds, and
+  "Take everything here" clears a scene in one turn. A clicked fight action
+  asks one model, the narrator, and only when there is something to tell.
+- People at a place are met on arrival and can be talked to; the two Middle-earth
+  adventures are playable to their endings.
+- Starting your own adventure with no hero opens the hero creator and begins by
+  itself as chapter 1. Actions typed while the story is still finishing are
+  held and sent when it is ready.
+- Levelling up is shown as a moment in the story: hit points, features, spell
+  slots and spells gained.
+- Optional ambience and weather sound (off until switched on in Settings).
 
 #### Rules
 

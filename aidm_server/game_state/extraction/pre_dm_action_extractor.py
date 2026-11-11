@@ -668,6 +668,15 @@ def _extract_from_free_text_intents(
     }
 
 
+def engine_fight_action(action_intent: dict[str, Any] | None) -> bool:
+    """The turn's action is a fight action the server validated against the hero's legal actions (an attack, a
+    manoeuvre, a move, End turn): the engine resolves it, so no model is asked what the player meant or what the
+    narration changed."""
+
+    combat = action_intent.get('combat') if isinstance(action_intent, dict) else None
+    return isinstance(combat, dict) and combat.get('authoritative') is True
+
+
 def extract_pre_dm_actions(
     *,
     current_state: dict[str, Any],
@@ -694,6 +703,14 @@ def extract_pre_dm_actions(
         return _attach_debug(
             normalize_pre_extraction(intent_payload, fallback_actor_id=actor_id),
             _empty_helper_debug(source='action_intent', reason='client_action_intent'),
+        )
+
+    if engine_fight_action(action_intent) and not force_helper:
+        # A fight action taken from the offered actions is resolved by the engine from its ids. Its sentence
+        # ("... attacks the pale lantern with Longsword") is not read for a declared action, by a model or otherwise.
+        return _attach_debug(
+            {'declaredActions': [], 'notes': ['engine_fight_action']},
+            _empty_helper_debug(source='skipped', reason='engine_fight_action'),
         )
 
     # Resolve explicit casts of server-owned spells even when the optional

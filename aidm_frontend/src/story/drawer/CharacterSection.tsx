@@ -81,12 +81,37 @@ type CharacterSectionProps = {
   withTraits: boolean
 }
 
+/** No hero in this adventure yet: the way to one, and nothing of a sheet. */
+function NoHero({ inspector }: { inspector: InspectorPanelProps }) {
+  return (
+    <div className="story-sheet story-sheet-character">
+      <p className="story-sheet-empty">No hero yet.</p>
+      <div className="story-sheet-actions" aria-label="Character actions">
+        <button
+          type="button"
+          className="story-primary"
+          disabled={!inspector.selectedCampaignId || inspector.createPlayerPending}
+          onClick={() => void inspector.createDefaultPlayer()}
+        >
+          Create a hero
+        </button>
+        {inspector.selectedCampaignId && inspector.playersCount ? (
+          <button type="button" className="story-link" onClick={inspector.loadPlayer}>
+            Choose a hero
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 export function CharacterSection({ board, inspector, withTraits }: CharacterSectionProps) {
   const [manageOpen, setManageOpen] = useState(false)
   const { displayCharacter, statBlock, xpProgress } = inspector
   const viewer = inspector.activePlayers.find((player) => player.id === inspector.selectedPlayerId)
   const snapshot = board.sessionState?.state_snapshot
   const partyVitality = useMemo(() => partyHeroVitality(snapshot), [snapshot])
+  if (inspector.selectedPlayerId === null) return <NoHero inspector={inspector} />
   const combatConditions =
     board.combatState.allies.find((ally) => ally.name === displayCharacter.name)?.conditions ?? []
   const allConditions = uniqueConditions(statBlock.conditions ?? [], combatConditions)

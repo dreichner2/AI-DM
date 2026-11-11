@@ -422,8 +422,8 @@ def test_the_careful_route_renews_the_ward(table):
 
     bench = table.act('inn_drivers_bench', 'search', "Driver's Bench")
     assert table.last_check() == ('investigation', 10, 'success')
-    assert [item['id'] for item in bench.snapshot['currentScene']['items']] == ['caravan_strongbox_key']
-    assert table.take('caravan_strongbox_key', 'Caravan Strongbox Key').items['Caravan Strongbox Key'] == 1
+    # The search takes what it finds.
+    assert (bench.snapshot['currentScene']['items'], bench.items['Caravan Strongbox Key']) == ([], 1)
 
     wagon = table.act('inn_lead_wagon', 'search', 'Lead Wagon')
     assert wagon.clues == {'clue_ash_marks'}
@@ -439,15 +439,16 @@ def test_the_careful_route_renews_the_ward(table):
     strongbox = table.act('inn_wagon_strongbox', 'search', 'Wagon Strongbox')
     assert strongbox.flags == {'stone_fragment_recovered': True}
     assert strongbox.clues == {'clue_road_stone_fragment'}
+    # The search starts the cutthroat's fight: what it found stays where it lies until the fight is over.
     assert _scene_items(strongbox) == ['road_stone_fragment', 'inn_wagon_strongbox_coins']
     assert (strongbox.gp, strongbox.items) == (0, Counter())
     assert strongbox.encounter == 'enc_empty_caravan_pressure'
     assert _enemies(strongbox.snapshot) == ['enemy_ashmarked_cutthroats']
-    # The cutthroat wins initiative and takes its opening turn in the same turn:
-    # the hero is the one acting when the fight is handed over.
+    # The server's own initiative (seeded by the turn) puts the hero first: the hero is the one acting when the
+    # fight is handed over.
     combat = strongbox.snapshot['combat']
     assert combat['status'] == 'active'
-    assert combat['initiative'][0]['participantId'].startswith('enemy_')
+    assert combat['initiative'][0]['participantId'] == _hero(strongbox.snapshot)['id']
     assert combat['flags']['activeActorId'] == _hero(strongbox.snapshot)['id']
 
     fight = table.fight()
@@ -485,8 +486,7 @@ def test_the_careful_route_renews_the_ward(table):
     assert (lanterns.gp, lanterns.xp) == (20, 150)
     assert table.end_combat('all_enemies_defeated').gp == 0
     cart = table.act('road_abandoned_cart', 'search', 'Abandoned Handcart')
-    assert _scene_items(cart) == ['road_cart_torch', 'road_abandoned_cart_coins']
-    assert table.take('road_abandoned_cart_coins', '8 gp').gp == 8
+    assert (_scene_items(cart), cart.gp) == ([], 8)
 
     waystation = table.travel('loc_waystation_scratched_names', 'Waystation of Scratched Names')
     assert waystation.objectives == {'obj_follow_changing_road': 'completed'}
@@ -516,16 +516,13 @@ def test_the_careful_route_renews_the_ward(table):
     hearth = table.act('ws_cold_hearth', 'search', 'Cold Hearth')
     assert hearth.flags == {'oath_learned': True}
     assert hearth.clues == {'clue_original_road_oath'}
-    assert (_scene_items(hearth), hearth.items) == (['rusted_waystation_key'], Counter())
-    table.take('rusted_waystation_key', 'Rusted Waystation Key')
+    assert (_scene_items(hearth), hearth.items) == ([], Counter({'Rusted Waystation Key': 1}))
     table.act('ws_lockbox', 'unlock', "Wardens' Lockbox")
     table.act('ws_lockbox', 'open', "Wardens' Lockbox")
     lockbox = table.act('ws_lockbox', 'search', "Wardens' Lockbox")
     assert lockbox.flags == {'true_name_known': True}
     assert lockbox.clues == {'clue_cinder_scribe_true_name'}
-    assert _scene_items(lockbox) == ['ws_lockbox_potion_of_healing', 'ws_lockbox_coins']
-    assert lockbox.gp == 0
-    assert table.take('ws_lockbox_coins', '20 gp').gp == 20
+    assert (_scene_items(lockbox), lockbox.gp, lockbox.items['Potion of Healing']) == ([], 20, 1)
 
     yard = table.travel('loc_old_masons_yard', "Old Mason's Yard")
     assert yard.snapshot['currentScene']['restPolicy'] == 'safe'
@@ -838,7 +835,6 @@ def test_the_journal_shows_only_the_objectives_the_party_has_reached(table):
 
 def test_one_search_opens_the_locked_strongbox_when_the_hero_holds_its_key(table):
     table.act('inn_drivers_bench', 'search', "Driver's Bench")
-    table.take('caravan_strongbox_key', 'Caravan Strongbox Key')
     revealed = _story_view(table.act('inn_lead_wagon', 'search', 'Lead Wagon').snapshot)
     assert 'You uncover the Wagon Strongbox.' in table.narration()
 

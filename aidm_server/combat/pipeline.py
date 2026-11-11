@@ -8,7 +8,7 @@ from typing import Any, Callable
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.actions import resolve_combat_action
 from aidm_server.combat.attacks import resolve_save
-from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
+from aidm_server.combat.difficulty import normalize_combat_difficulty_ai, pack_combat_difficulty_ai
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
 from aidm_server.combat.maneuvers import held_prone
@@ -1182,21 +1182,29 @@ def death_saves_due(combat: Any, *, turn_id: Any) -> list[dict[str, Any]]:
     return results
 
 
-def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id: str | None = None) -> dict[str, Any] | None:
-    """The roster advance after the active player character's turn-ending action."""
+def combat_turn_advance_change(
+    *,
+    state: dict[str, Any],
+    turn: DmTurn,
+    actor_id: str | None = None,
+    ends_turn: bool = False,
+) -> dict[str, Any] | None:
+    """The roster advance after the active player character's turn-ending action, or (``ends_turn``) after the
+    action the engine ended their turn on because it left them only moving."""
 
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if not _combat_is_active(combat):
         return None
-    combat_action = _turn_combat_action(turn)
-    # Only a server-issued action belonging to the eligible active actor may
-    # hand initiative to the enemy block.  Chat, item/interact intents, and
-    # other narration-bearing turns must never implicitly end combat turns.
-    if combat_action is None:
-        return None
-    action_economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
-    if action_economy.get('endsTurn') is not True:
-        return None
+    if not ends_turn:
+        combat_action = _turn_combat_action(turn)
+        # Only a server-issued action belonging to the eligible active actor may
+        # hand initiative to the enemy block.  Chat, item/interact intents, and
+        # other narration-bearing turns must never implicitly end combat turns.
+        if combat_action is None:
+            return None
+        action_economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
+        if action_economy.get('endsTurn') is not True:
+            return None
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     submitted_actor_id = str(flags.get('submittedActorId') or actor_id or display_actor_id(turn.player_id)).strip()
     active_actor_id = str(flags.get('activeActorId') or '').strip()
@@ -1463,8 +1471,11 @@ def _encounter_flag_summary(encounter_resolution: dict[str, Any]) -> dict[str, A
 
 
 def _combat_difficulty_ai(state: dict[str, Any]) -> dict[str, Any]:
+    """The table's enemy-tactics settings for a fight that is starting (a pack adventure's: no model picks moves)."""
+
     settings = state.get('settings') if isinstance(state.get('settings'), dict) else {}
-    return normalize_combat_difficulty_ai(settings.get('combatDifficultyAI'))
+    chosen = settings.get('combatDifficultyAI')
+    return pack_combat_difficulty_ai(chosen) if has_campaign_pack(state) else normalize_combat_difficulty_ai(chosen)
 
 
 def _pack_enemy_group_flags(enemies: list[dict[str, Any]]) -> list[dict[str, Any]]:

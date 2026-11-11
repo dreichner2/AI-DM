@@ -29,6 +29,7 @@ import {
 } from './gameActions'
 import type { PendingRollOption } from './gameSelectors'
 import { PRESSED_HOLD_MS, PRESS_MIN_MS, SETTLE_MS, notePressedRoll } from './story/rollPlayback'
+import { getStoryPreferences } from './story/sheets/storyPreferences'
 import {
   canSubmitWithTurnControl,
   turnControlBlockMessage,
@@ -145,9 +146,21 @@ type OutgoingTurnPayload = {
   action_intent: ActionIntent
   admin_passcode?: string
   message_kind?: 'opening'
+  /** The player's End my turn for me choice: a fight action that leaves only moving ends their turn. */
+  auto_end_turn: boolean
 }
 
 type SubmissionKind = 'action' | 'opening'
+
+/** An action sent while the previous turn was still finishing: it is sent by itself when the turn unlocks. */
+type HeldAction = {
+  message: string
+  intent?: ActionIntent
+  /** A fight was already on when it was sent. */
+  inFight: boolean
+  /** Rolls already waiting when it was sent. */
+  rollsWaiting: number
+}
 
 type StoredSubmission = {
   clientMessageId: string
@@ -184,6 +197,16 @@ type UseComposerActionsOptions = {
   turnControl: TurnControl
   pushError: (category: 'validation', message: string) => void
   dismissError: (category: 'validation', message: string) => void
+  /** Something was sent or rolled without a hero or a chapter to act in: the app offers the way forward. */
+  onActorMissing: () => void
+}
+
+const FIGHT_STATUSES = new Set(['starting', 'active'])
+
+function fightOn(sessionState: SessionState | null) {
+  const snapshot = isRecord(sessionState?.state_snapshot) ? sessionState.state_snapshot : {}
+  const combat = isRecord(snapshot.combat) ? snapshot.combat : {}
+  return FIGHT_STATUSES.has(cleanString(combat.status).toLowerCase())
 }
 
 export function useComposerActions({
@@ -209,6 +232,7 @@ export function useComposerActions({
   turnControl,
   pushError,
   dismissError,
+  onActorMissing,
 }: UseComposerActionsOptions) {
   const [actionText, setActionText] = useState('')
   const [composerMode, setComposerMode] = useState<ComposerMode>('action')
@@ -233,6 +257,12 @@ export function useComposerActions({
   const [recoverableSubmission, setRecoverableSubmission] = useState<StoredSubmission | null>(null)
   const [reconnectingSubmission, setReconnectingSubmission] = useState<StoredSubmission | null>(null)
   const [turnRejectionMessage, setTurnRejectionMessage] = useState('')
+  const [heldAction, setHeldAction] = useState<HeldAction | null>(null)
+  const heldActionRef = useLatest(heldAction)
+  // A held action that will not be sent gives its words back to the box, after anything already there.
+  const returnHeldWords = useCallback((held: HeldAction) => {
+    setActionText((current) => (current.trim() ? `${current}\n${held.message}` : held.message))
+  }, [])
   const [sharedRollNotice, setSharedRollNotice] = useState<SharedRollNotice | null>(null)
   const diceRollKeyRef = useRef(0)
   const typingStatusRef = useRef(false)
@@ -280,6 +310,7 @@ export function useComposerActions({
       actionTextRef.current = storedDraft
       setActionText(storedDraft)
       setQueuedActionText('')
+      setHeldAction(null)
       setRecoverableSubmission(null)
       setTurnRejectionMessage('')
       setDiceRoll(null)
@@ -580,10 +611,16 @@ export function useComposerActions({
         setQueuedActionText(rejectedSubmission.message)
       }
     }
+    // A roll comes first: an action held for the end of the turn goes back to the box.
+    const held = heldActionRef.current
+    if (held) {
+      setHeldAction(null)
+      returnHeldWords(held)
+    }
     setSendPending(false)
     setStreamingTurn(null)
     preparePendingRoll(payload)
-  }, [preparePendingRoll, selectedSessionId, setOptimisticEntries, setSendPending, setStreamingTurn])
+  }, [heldActionRef, preparePendingRoll, returnHeldWords, selectedSessionId, setOptimisticEntries, setSendPending, setStreamingTurn])
 
   const toggleAdminTools = () => {
     if (adminToolsUnlocked) {
@@ -632,10 +669,16 @@ export function useComposerActions({
     return true
   }
 
-  const sendTurn = (kind: SubmissionKind, overrideMessage?: string, overrideIntent?: ActionIntent) => {
+  /** `released`: a held action going out; whatever was typed since stays in the box. */
+  const sendTurn = (kind: SubmissionKind, overrideMessage?: string, overrideIntent?: ActionIntent, released = false) => {
     if (sendPending || dmResponseBlocking || reconnectingSubmission) {
-      pushError('validation', 'Wait for the current DM response to save before sending again.')
-      return false
+      // Typed ahead while the turn finishes: the latest action waits and goes the moment it unlocks.
+      const message = (overrideMessage ?? actionText).trim()
+      if (kind === 'opening' || overrideIntent?.kind === 'roll' || !message) return false
+      setHeldAction({ message, intent: overrideIntent, inFight: fightOn(sessionState), rollsWaiting: pendingRollOptions.length })
+      if (overrideMessage === undefined) setActionText('')
+      emitTypingStatus(false)
+      return true
     }
     if (
       kind === 'action' &&
@@ -656,7 +699,7 @@ export function useComposerActions({
       return false
     }
     if (!selectedSessionId || !selectedCampaignId || !campaign || !selectedPlayerId) {
-      pushError('validation', 'Choose a campaign, session, and player before sending.')
+      onActorMissing()
       return false
     }
     // The composer explains this state itself ("Loading this session…").
@@ -728,6 +771,7 @@ export function useComposerActions({
       action_intent: actionIntent,
       ...(actionIntent.kind === 'admin' ? { admin_passcode: trimmedAdminPasscode } : {}),
       ...(kind === 'opening' ? { message_kind: 'opening' as const } : {}),
+      auto_end_turn: getStoryPreferences().autoEndTurn,
     }
     socket.emit('send_message', payload)
     resentClientMessageIdRef.current = null
@@ -763,7 +807,7 @@ export function useComposerActions({
       },
     ])
     if (kind === 'opening') return true
-    setActionText('')
+    if (!released) setActionText('')
     setQueuedActionText((current) => (current === message ? '' : current))
     emitTypingStatus(false)
     return true
@@ -771,6 +815,37 @@ export function useComposerActions({
 
   const submitAction = (overrideMessage?: string, overrideIntent?: ActionIntent) =>
     sendTurn('action', overrideMessage, overrideIntent)
+
+  const sendTurnRef = useLatest(sendTurn)
+  // The held action goes the moment the turn unlocks; a roll prompt or a fight that started meanwhile
+  // (or a refusal) gives its words back to the box instead.
+  useEffect(() => {
+    if (!heldAction || sendPending || dmResponseBlocking || reconnectingSubmission) return undefined
+    const release = window.setTimeout(() => {
+      setHeldAction(null)
+      const sent =
+        pendingRollOptions.length <= heldAction.rollsWaiting &&
+        (heldAction.inFight || !fightOn(sessionState)) &&
+        sendTurnRef.current('action', heldAction.message, heldAction.intent, true)
+      if (!sent) returnHeldWords(heldAction)
+    }, 0)
+    return () => window.clearTimeout(release)
+  }, [
+    dmResponseBlocking,
+    heldAction,
+    pendingRollOptions.length,
+    reconnectingSubmission,
+    returnHeldWords,
+    sendPending,
+    sendTurnRef,
+    sessionState,
+  ])
+
+  const cancelHeldAction = () => {
+    if (!heldAction) return
+    setHeldAction(null)
+    returnHeldWords(heldAction)
+  }
 
   // The opening narration request is internal: a delayed opening is retried
   // with its original payload instead of being sent again.
@@ -959,14 +1034,12 @@ export function useComposerActions({
       pushError('validation', 'Wait for the current DM response before rolling again.')
       return
     }
-    if (
-      !socketRef.current ||
-      !selectedSessionId ||
-      !selectedCampaignId ||
-      !campaign ||
-      !selectedPlayerId
-    ) {
-      pushError('validation', 'Choose a campaign, session, and player before rolling.')
+    if (!selectedSessionId || !selectedCampaignId || !campaign || !selectedPlayerId) {
+      onActorMissing()
+      return
+    }
+    if (!socketRef.current) {
+      pushError('validation', 'Realtime is reconnecting. Try again in a moment.')
       return
     }
 
@@ -1252,6 +1325,8 @@ export function useComposerActions({
     submissionReconnecting: Boolean(reconnectingSubmission),
     toggleAdminTools,
     turnRejectionMessage,
+    heldActionText: heldAction?.message ?? '',
+    cancelHeldAction,
     queuedActionText,
     queuedActionRetryable: recoverableSubmission?.kind === 'action',
     retryRecoverableSubmission,

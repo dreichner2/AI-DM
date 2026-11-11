@@ -111,6 +111,21 @@ function isNotFoundError(error: unknown) {
   return error instanceof ApiClientError && error.status === 404
 }
 
+function isForbiddenError(error: unknown) {
+  return error instanceof ApiClientError && error.status === 403
+}
+
+/** The hero a read was made as (`player_id` of its player view), or null. */
+function viewedHeroId(view: string) {
+  const match = /(?:^|&)player_id=(\d+)/.exec(view)
+  return match ? Number(match[1]) : null
+}
+
+/** The same view without its hero: the player view with nothing private, or the full view as it is. */
+function withoutHero(view: string) {
+  return view.replace(/&?player_id=\d+/, '')
+}
+
 function latestTimestamp(values: Array<string | null | undefined>): string | null {
   let latest: string | null = null
   let latestMs = 0
@@ -370,9 +385,15 @@ export function useWorkspaceQueries({
           requestBaseUrl,
           requestAccessSnapshot,
         )) return
+        const heroId = viewedHeroId(view)
         if (isUnauthorizedError(error)) {
           latest.current.onUnauthorized()
-        } else if (isNotFoundError(error)) {
+        } else if (isForbiddenError(error) && heroId !== null) {
+          // A remembered hero this chapter will not be read as: forget the hero, and the chapter is read again.
+          setSelectedPlayerId((current) => (current === heroId ? null : current))
+          return
+        } else if (isNotFoundError(error) || isForbiddenError(error)) {
+          // A remembered chapter the server no longer has, or will not show: forget it.
           setSelectedSessionId((current) => (current === sessionId ? null : current))
           setLogEntries([])
           setSessionLogCursor(null)
@@ -404,6 +425,7 @@ export function useWorkspaceQueries({
       setSessionLoading,
       setSessionLogCursor,
       setSessionLogHasMore,
+      setSelectedPlayerId,
       setSelectedSessionId,
       setSessionState,
     ],
@@ -728,13 +750,17 @@ export function useWorkspaceQueries({
       const requestAuth = auth
       const requestBaseUrl = baseUrl
       const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+      // An adventure being opened is read without the selected hero, who plays in the one open before it.
+      const view = campaignId === selectedCampaignIdRef.current
+        ? latest.current.playerView
+        : withoutHero(latest.current.playerView)
       campaignLoadingRequestRef.current = { campaignId, requestId }
       setWorkspaceLoading(true)
       setLoadingCampaignId(campaignId)
       try {
         const workspace = await apiFetch<CampaignWorkspace>(
           requestBaseUrl,
-          withQuery(`/api/campaigns/${campaignId}/workspace`, latest.current.playerView),
+          withQuery(`/api/campaigns/${campaignId}/workspace`, view),
           requestAuth,
         )
         if (!isCurrentRequest(
@@ -793,8 +819,13 @@ export function useWorkspaceQueries({
           requestBaseUrl,
           requestAccessSnapshot,
         )) {
+          const heroId = viewedHeroId(view)
           if (isUnauthorizedError(error)) {
             onUnauthorized()
+          } else if (isForbiddenError(error) && heroId !== null) {
+            // A remembered hero this adventure will not be read as: forget the hero, and it is read again.
+            setSelectedPlayerId((current) => (current === heroId ? null : current))
+            return
           } else if (isNotFoundError(error)) {
             setSelectedCampaignId((current) => (current === campaignId ? null : current))
             setSelectedSessionId(null)

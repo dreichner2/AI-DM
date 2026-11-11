@@ -21,5 +21,6 @@ def test_a_failed_search_can_be_retried_by_taking_time_through_the_socket(table,
         turn = DmTurn.query.filter_by(session_id=table.ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
         narration = turn.dm_output or ''
     assert 'already tried' not in narration, narration
-    assert [item['id'] for item in retried.snapshot['currentScene']['items']] == ['caravan_strongbox_key']
+    # The search that succeeds takes what it finds.
+    assert ([item['id'] for item in retried.snapshot['currentScene']['items']], retried.items['Caravan Strongbox Key']) == ([], 1)
     assert retried.snapshot['clock']['phase'] == 'night'

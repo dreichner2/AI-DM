@@ -126,6 +126,40 @@ describe('StoryTopBar', () => {
     expect(screen.getByRole('banner')).not.toHaveTextContent(/No session selected|Select a campaign|No campaign selected/)
   })
 
+  it('shows an adventure that has not begun by its title alone, with nothing of the adventure open before it', () => {
+    const played = makeBoardFixture('exploration')
+    const session = played.activeSession
+    if (!session || !played.campaign) throw new Error('the fixture has an open chapter')
+    const { rerender } = renderTopBar({ board: played })
+    expect(document.querySelector('.story-scene-name')).toHaveTextContent('The Drowned Lantern')
+
+    const unplayed: SessionBoardProps = {
+      ...played,
+      campaign: { ...played.campaign, campaign_id: played.campaign.campaign_id + 1, title: 'Shadow over the Greenway' },
+      activeSession: { ...session, chapter_number: 1, turn_count: 0 },
+      turnRows: [],
+      currentResponseEntry: null,
+    }
+    rerender(
+      <StoryTopBar
+        board={unplayed}
+        chrome={chrome()}
+        hero={null}
+        heroDown={false}
+        drawerOpen={false}
+        drawerTab="character"
+        onDrawerOpenChange={vi.fn()}
+        textSize="default"
+        onTextSizeChange={vi.fn()}
+      />,
+    )
+    const banner = screen.getByRole('banner')
+    expect(banner).toHaveTextContent('Shadow over the Greenway')
+    expect(banner).not.toHaveTextContent('The Drowned Lantern')
+    expect(document.querySelector('.story-scene-name')).toHaveTextContent('')
+    expect(document.querySelector('.story-clock')).toBeNull()
+  })
+
   it("reads the hero's hit points beside the titles and opens the Character tab", () => {
     const onDrawerOpenChange = vi.fn()
     const hero = (currentHp: number): ActivePlayer => ({
@@ -275,6 +309,35 @@ describe('StoryTopBar', () => {
     unmount()
     renderTopBar({ chromeProps: { ttsAvailable: false } })
     expect(screen.queryByRole('button', { name: 'Narration' })).toBeNull()
+  })
+
+  it('turns the narration button into Stop while the voice reads, and stops it without turning narration off', () => {
+    const onToggleTts = vi.fn()
+    const onStopTts = vi.fn()
+    const { rerender } = renderTopBar({ chromeProps: { ttsEnabled: true, ttsPlaying: true, onToggleTts, onStopTts } })
+    const stop = screen.getByRole('button', { name: 'Stop narration' })
+    expect(stop).toHaveAttribute('title', 'Stop')
+    expect(screen.queryByRole('button', { name: 'Narration' })).toBeNull()
+
+    fireEvent.click(stop)
+    expect(onStopTts).toHaveBeenCalledOnce()
+    expect(onToggleTts).not.toHaveBeenCalled()
+
+    rerender(
+      <StoryTopBar
+        board={makeBoardFixture('exploration')}
+        chrome={chrome({ ttsEnabled: true, ttsPlaying: false, onToggleTts, onStopTts })}
+        hero={null}
+        heroDown={false}
+        drawerOpen={false}
+        drawerTab="character"
+        onDrawerOpenChange={vi.fn()}
+        textSize="default"
+        onTextSizeChange={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Stop narration' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Narration' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('reports the connection only when it is not ready', () => {

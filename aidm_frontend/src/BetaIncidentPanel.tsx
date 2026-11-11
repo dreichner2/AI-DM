@@ -410,6 +410,28 @@ export function BetaIncidentPanel({ baseUrl, auth, selectedSessionId }: BetaInci
                 {numberValue(qualitySummary.coherence_feedback_count) === 1 ? '' : 's'}
               </span>
             </div>
+            {sessionQuality.time_to_act?.length ? (
+              <table className="session-quality-time-to-act" aria-label="Time to act by turn kind">
+                <thead>
+                  <tr>
+                    <th scope="col">Time to act</th>
+                    <th scope="col">Median</th>
+                    <th scope="col">90th</th>
+                    <th scope="col">Turns</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessionQuality.time_to_act.map((row) => (
+                    <tr key={row.kind}>
+                      <th scope="row">{row.label}</th>
+                      <td>{latencyLabel(row.median_ms)}</td>
+                      <td>{latencyLabel(row.p90_ms)}</td>
+                      <td>{numberLabel(row.turn_count)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
             {operatorSummary.headline || operatorSummary.details.length ? (
               <div className="session-quality-operator-summary" aria-label="Operator session summary">
                 {operatorSummary.headline ? <strong>{operatorSummary.headline}</strong> : null}

@@ -15,6 +15,7 @@ from aidm_server.canon_jobs import canon_job_queue_snapshot
 from aidm_server.config import SUPPORTED_TTS_PROVIDERS
 from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.errors import error_response
+from aidm_server.game_state.orchestration.turn_flow import TIMINGS_KEY, time_to_act_rows
 from aidm_server.http_client import post as http_post
 from aidm_server.http_client import timeout_from_config
 from aidm_server.models import (
@@ -55,6 +56,8 @@ TTS_REQUEST_CHOICES = {
     'accent': tuple(accent['id'] for accent in tts_openai.OPENAI_TTS_ACCENTS),
 }
 BAD_TURN_CATEGORIES = {'continuity', 'rules', 'latency', 'safety', 'state', 'other'}
+# Session quality reads the time to act of at most this many of the latest turns.
+TIME_TO_ACT_TURN_LIMIT = 500
 TELEMETRY_INCIDENT_EVENT_NAMES = (
     'socket.dm_provider_degraded',
     'socket.dm_generation_failed',
@@ -1334,6 +1337,15 @@ def _beta_session_quality_payload(session_obj: Session, *, limit: int = 5) -> di
         if row[0] is not None
     ]
     latest_turn = turns_query.order_by(DmTurn.created_at.desc(), DmTurn.turn_id.desc()).first()
+    # The latest turns' time to act, by turn kind.
+    turn_timings = [
+        safe_json_loads(row[0], {}).get(TIMINGS_KEY)
+        for row in turns_query.filter(DmTurn.metadata_json.contains(f'"{TIMINGS_KEY}"'))
+        .order_by(DmTurn.turn_id.desc())
+        .limit(TIME_TO_ACT_TURN_LIMIT)
+        .with_entities(DmTurn.metadata_json)
+        .all()
+    ]
     provider_model_rows = (
         turns_query.with_entities(DmTurn.llm_provider, DmTurn.llm_model, func.count(DmTurn.turn_id))
         .group_by(DmTurn.llm_provider, DmTurn.llm_model)
@@ -1432,6 +1444,7 @@ def _beta_session_quality_payload(session_obj: Session, *, limit: int = 5) -> di
         'summary': summary,
         'operator_summary': _beta_session_operator_summary(summary, provider_model_turn_counts),
         'provider_model_turn_counts': provider_model_turn_counts,
+        'time_to_act': time_to_act_rows(turn_timings),
         'recent_state_mutations': [_state_mutation_audit_payload(row) for row in recent_state_mutations],
         'recent_operator_actions': [_operator_action_audit_payload(row) for row in recent_operator_actions],
         'limit': limit,

@@ -116,6 +116,13 @@ def boss_tactics_planner_enabled() -> bool:
     return False
 
 
+def no_model_calls(settings: dict[str, Any]) -> bool:
+    """The fight allows no model call for enemy tactics (``maxLlmCallsPerRound`` 0, a pack adventure's default)."""
+
+    limit = settings.get('maxLlmCallsPerRound')
+    return isinstance(limit, int) and not isinstance(limit, bool) and limit <= 0
+
+
 def should_use_boss_tactics_helper(enemy: dict[str, Any], combat: dict[str, Any], settings: dict[str, Any]) -> bool:
     if not settings.get('allowBossTacticsHelper', True):
         return False
@@ -378,7 +385,7 @@ def plan_boss_advisory(
     *,
     candidates: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, str]:
-    if not settings.get('allowBossWarmPlanner', True):
+    if not settings.get('allowBossWarmPlanner', True) or no_model_calls(settings):
         return None, 'disabled'
     if not boss_tactics_planner_enabled():
         return None, 'deterministic'
@@ -484,7 +491,7 @@ def plan_boss_candidate_tactic(
         'selectionMethod': fallback_intent.get('selectionMethod') or 'deterministic_boss_fallback',
         'tacticSource': fallback_intent.get('tacticSource') or 'deterministic',
     }
-    if not boss_tactics_helper_enabled():
+    if no_model_calls(settings) or not boss_tactics_helper_enabled():
         return fallback, 'deterministic'
     try:
         response = get_helper_provider(task=BOSS_TACTICS_TASK).generate(

@@ -40,7 +40,7 @@ from aidm_server.turn_events import (
     SESSION_STARTED_EVENT,
     record_turn_event,
 )
-from tests.helpers import seed_world_campaign_player_session
+from tests.helpers import seed_played_turn, seed_world_campaign_player_session
 
 
 def _pool_checkout_probe(engine):
@@ -544,6 +544,7 @@ def test_end_session_recap_rejects_provider_time_context_drift_without_writes(
 
 def test_start_session_adds_welcome_log(client, app):
     ids = seed_world_campaign_player_session(app)
+    seed_played_turn(app, ids['session_id'])
 
     response = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']})
     assert response.status_code == 201
@@ -577,6 +578,7 @@ def test_start_session_requires_json_and_valid_campaign_id(client):
 
 def test_start_session_reuses_client_session_id(client, app):
     ids = seed_world_campaign_player_session(app)
+    seed_played_turn(app, ids['session_id'])
     payload = {'campaign_id': ids['campaign_id'], 'client_session_id': 'session-start-1'}
 
     first_response = client.post('/api/sessions/start', json=payload)
@@ -596,6 +598,7 @@ def test_start_session_reuses_client_session_id(client, app):
 
 def test_start_session_and_idempotent_replay_reject_archived_campaign(client, app):
     ids = seed_world_campaign_player_session(app)
+    seed_played_turn(app, ids['session_id'])
     replay_key = {'campaign_id': ids['campaign_id'], 'client_session_id': 'archived-replay'}
     created = client.post('/api/sessions/start', json=replay_key)
     assert created.status_code == 201

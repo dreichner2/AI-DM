@@ -4,7 +4,7 @@ from aidm_server.api_type_contract import API_TYPE_CONTRACT_BY_NAME
 from aidm_server.database import db
 from aidm_server.models import CampaignSegment, Map, Session, SessionLogEntry, safe_json_dumps
 from scripts.generate_api_types import OUTPUT, main as generate_api_types_main, render_types
-from tests.helpers import seed_world_campaign_player_session
+from tests.helpers import seed_played_turn, seed_world_campaign_player_session
 
 
 def _contract_keys(type_name: str) -> set[str]:
@@ -171,6 +171,7 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
         next(item for item in workspace['segments'] if item['segment_id'] == segment_id),
     )
 
+    seed_played_turn(app, ids['session_id'])
     started = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']}).get_json()
     _assert_contract_payload('SessionStartResponse', started)
     ended_session = next(

@@ -794,6 +794,35 @@ describe('useWorkspaceQueries request ownership', () => {
     ])
   })
 
+  it('forgets a remembered hero or chapter the server refuses, instead of reporting an error', async () => {
+    const forbidden = () => Promise.reject(new ApiClientError('You can only view the story as one of your own heroes.', 403, { error_code: 'forbidden' }))
+    apiFetchMock.mockImplementation(forbidden)
+    const callbacks = createCallbacks()
+    const { result, rerender } = renderHook(
+      (props: ScopeProps & { playerView: string }) => useQueryHarness(props, callbacks),
+      { initialProps: { ...defaultScope, playerView: playerViewQuery(true, 30) } },
+    )
+
+    await act(async () => {
+      await result.current.queries.refreshCampaignWorkspace(1)
+      await result.current.queries.loadSessionData(1)
+    })
+    // Read as a hero it does not let the viewer be: the hero is forgotten (and the reads run again without it).
+    const forgetHero = callbacks.setSelectedPlayerId.mock.calls.map(([update]) => update(30))
+    expect(forgetHero).toEqual([null, null])
+    expect(callbacks.setSelectedPlayerId.mock.calls.map(([update]) => update(31))).toEqual([31, 31])
+    expect(callbacks.setSelectedSessionId).not.toHaveBeenCalled()
+    expect(callbacks.pushError).not.toHaveBeenCalled()
+
+    // Read in full, a refused chapter is forgotten.
+    rerender({ ...defaultScope, playerView: playerViewQuery(false, 30) })
+    await act(async () => {
+      await result.current.queries.loadSessionData(1)
+    })
+    expect(callbacks.setSelectedSessionId.mock.calls.map(([update]) => update(1))).toEqual([null])
+    expect(callbacks.pushError).not.toHaveBeenCalled()
+  })
+
   it('pages older chapters from the workspace cursor and keeps an older chapter selected through a refresh', async () => {
     const olderPage: SessionListResponse = {
       campaign_id: 1,

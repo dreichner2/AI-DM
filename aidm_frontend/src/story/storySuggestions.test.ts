@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CombatStatePanel, WorldStatePanel } from '../gameSelectors'
 import type { GameplayControlState, GameplayInteractableControl, GameplayObjectAction } from '../gameplayControlState'
-import { STORY_SUGGESTION_LIMIT, storySuggestions } from './storySuggestions'
+import { STORY_SUGGESTION_LIMIT, TAKE_ALL_LABEL, storySuggestions } from './storySuggestions'
 
 function combat(active = false): CombatStatePanel {
   return {
@@ -189,10 +189,10 @@ const CASES: Case[] = [
     labels: ['Read the caravan ledger', "Search under the driver's bench", 'Ring the wagon bell', 'More…'],
   },
   {
-    name: 'take labels lead, at most two',
+    name: 'with several loose things, taking everything leads, then the first of them',
     world: { sceneItems: [key, coins, pebble] },
     objects: [],
-    labels: ['Take the Caravan Strongbox Key', 'Take 15 gp', 'More…'],
+    labels: ['Take everything here', 'Take the Caravan Strongbox Key', 'More…'],
   },
   {
     name: 'every kind in order: take, objects, talk (2), trade (1), go (2, unvisited first), capped at six',
@@ -264,6 +264,16 @@ describe('storySuggestions', () => {
     expect(read).toMatchObject({ kind: 'object', object: { id: 'ledger' }, action: { id: 'inspect' } })
     expect(talk).toMatchObject({ kind: 'talk', text: 'I talk to Mara Reedwake.' })
     expect(go).toMatchObject({ kind: 'travel', exit: { id: 'the-old-north-road' } })
+  })
+
+  it('offers one chip that takes everything when several things lie loose', () => {
+    const coin = pebble
+    const one = storySuggestions(world({ sceneItems: [key] }), controls([]))
+    expect(one.map((suggestion) => suggestion.kind)).toEqual(['take'])
+    const [all, first, ...rest] = storySuggestions(world({ sceneItems: [key, coin] }), controls([]))
+    expect(all).toMatchObject({ kind: 'take_all', label: TAKE_ALL_LABEL })
+    expect(first).toMatchObject({ kind: 'take', item: { id: 'key' } })
+    expect(rest.filter((suggestion) => suggestion.kind === 'take')).toEqual([])
   })
 
   it('suggests nothing in combat', () => {

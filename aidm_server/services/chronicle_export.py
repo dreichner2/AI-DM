@@ -610,7 +610,49 @@ def _turn_view(entry: _TurnEntry, *, include_director_metadata: bool) -> dict[st
         'created_at': _isoformat(turn.created_at) if include_director_metadata else '',
         'player_input': _lines(turn.player_input),
         'dm_paragraphs': _paragraphs(turn.dm_output),
+        'level_ups': _level_ups(turn),
     }
+
+
+_SLOT_ORDINALS = {1: '1st', 2: '2nd', 3: '3rd'}
+
+
+def _level_ups(turn: Any) -> list[list[str]]:
+    """Each level a hero reached this turn as plain lines, in the order the story feed shows them."""
+    metadata = safe_json_loads(turn.metadata_json, {})
+    beats = metadata.get('storyBeats') if isinstance(metadata, dict) else None
+    moments: list[list[str]] = []
+    for beat in beats if isinstance(beats, list) else []:
+        level = beat.get('level') if isinstance(beat, dict) and beat.get('kind') == 'level' else None
+        if not isinstance(level, dict) or not isinstance(level.get('maxHp'), dict):
+            continue
+        hero = _text(level.get('hero'))
+        lines = [f"Level {level.get('level')}{f' — {hero}' if hero else ''}"]
+        lines.append(f"Max HP {level['maxHp'].get('from')} → {level['maxHp'].get('to')}")
+        bonus = level.get('proficiencyBonus')
+        if isinstance(bonus, dict):
+            lines.append(f"Proficiency bonus +{bonus.get('from')} → +{bonus.get('to')}")
+        for feature in level.get('features') or []:
+            if not isinstance(feature, dict) or not _text(feature.get('name')):
+                continue
+            detail = _text(feature.get('text'))
+            lines.append(f"{_text(feature.get('name'))} — {detail}" if detail else _text(feature.get('name')))
+        slots = [slot for slot in level.get('spellSlots') or [] if isinstance(slot, dict)]
+        if slots:
+            lines.append(
+                'Spell slots — '
+                + ', '.join(
+                    f"{_SLOT_ORDINALS.get(slot.get('level'), str(slot.get('level')) + 'th')} level "
+                    f"{slot.get('from')} → {slot.get('to')}"
+                    for slot in slots
+                )
+            )
+        spells = [_text(spell) for spell in level.get('spells') or [] if _text(spell)]
+        if spells:
+            more = level.get('more')
+            lines.append('New spells — ' + ', '.join(spells) + (f' and {more} more' if more else ''))
+        moments.append(lines)
+    return moments
 
 
 def _paragraphs(value: Any) -> list[list[str]]:

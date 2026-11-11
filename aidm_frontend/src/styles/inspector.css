@@ -1524,6 +1524,33 @@
   white-space: nowrap;
 }
 
+.session-quality-time-to-act {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.7rem;
+}
+
+.session-quality-time-to-act th,
+.session-quality-time-to-act td {
+  padding: 3px 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-quality-time-to-act th:first-child {
+  text-align: left;
+}
+
+.session-quality-time-to-act thead th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.session-quality-time-to-act tbody th {
+  color: var(--heading);
+  font-weight: 580;
+}
+
 .session-quality-operator-summary {
   display: grid;
   gap: 5px;

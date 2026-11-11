@@ -1,0 +1,32 @@
+/*
+ * A level reached: a moment among the turn's beats rather than one more chip.
+ * No box: two hairlines, the level in the ember accent, the hero's name in the
+ * serif, then what they gained in quiet lines. It rises in with the turn's
+ * other beats (the change list's entrance), and not at all with reduced motion.
+ */
+
+.story-shell .story-change-list .story-level-moment {
+  flex-basis: 100%;
+  min-width: 0;
+}
+.story-shell .story-level-moment .story-rule { margin: 10px 0; }
+.story-shell .story-label.story-level-label {
+  margin: 0;
+  letter-spacing: 0.28em;
+  color: var(--story-ember-soft);
+}
+.story-shell .story-level-hero {
+  margin: 2px 0 6px;
+  font-family: var(--story-prose);
+  font-size: 1.3rem;
+  line-height: 1.25;
+  color: var(--story-ink);
+}
+.story-shell .story-level-line {
+  margin: 0;
+  font-family: var(--story-ui);
+  font-size: 0.86rem;
+  line-height: 1.55;
+  color: var(--story-ink-soft);
+  overflow-wrap: anywhere;
+}

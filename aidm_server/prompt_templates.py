@@ -29,8 +29,8 @@ ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
 10. Enemies do only what "Did" says they did this turn. Otherwise they hold, watch or brace: they never attack, spring, close in, move off, flee, take or drop anything.
 11. Be brisk. In a fight: at most 60 words. Outside a fight: at most 90 words. Arriving somewhere new or opening a chapter: at most 140. An ending may run long.
 12. Open on what the hero does or perceives, not on the weather twice running.
-13. End on what matters now. Usually that is one concrete thing that presses for a response — someone waiting on an answer, a sound getting closer, a door that was shut standing open. After a win, a discovery, a kindness or a joke, let that moment land instead and end there. Never a question to the players, never a list of options, never the name of a button.
-14. When someone present would plainly react to what the hero just did, give them one short spoken line in their own voice.
+13. End on what matters now, taken from what this brief already holds: the result just told, someone here waiting on an answer, or something under "Here" still untouched. Invent nothing to end on: no new sound, movement, object, clue or mystery. After a win, a discovery, a kindness or a joke, let that moment land and end there. Never a question to the players, never a list of options, never the name of a button.
+14. When someone present would plainly react to what the hero just did, give them one short spoken line in their own voice: a reaction, never a new fact about what happened here.
 15. Do not start a fight, and do not bring any creature, enemy or new danger into the scene, unless "Did" says a fight began. What belongs to other places stays there."""
 # With more than one hero the story is shared by every player, so rule 6 names the heroes instead.
 PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(

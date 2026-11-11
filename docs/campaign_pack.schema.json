@@ -408,6 +408,20 @@
           "description": "The name is a proper noun, so refusals read \"Excalibur is locked.\" rather than \"The Excalibur is locked.\". A name that starts with \"The\" is never given another article.",
           "type": "boolean"
         },
+        "contents": {
+          "description": "What a container holds: items, or coin as {\"currency\": {\"gp\": 15}}. A successful search (or opening) outside a fight puts them in the searching hero's pack in the same turn; an item marked \"leave\": true stays in the scene to be taken by choice.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "leave": {
+                "description": "Left where it lies when found (heavy, dangerous, or the players' choice to make): it is never taken by the search that finds it.",
+                "type": "boolean"
+              }
+            }
+          }
+        },
         "choiceActions": {
           "description": "Actions that are alternatives to one another, such as the fates of a ward. The Story screen shows each of them that can be taken as its own suggestion, together, before the others. The linter errors on an action the object does not support.",
           "type": "array",

@@ -565,7 +565,8 @@ spell's duration and repeat saves (see the spell table).
   movement budgets. Only the current present, conscious, living, non-fled,
   non-surrendered actor can spend them. Movement does not end a turn: attack and
   spell actions require an explicit End Turn, which advances through the enemy
-  block and resets economy for the next round.
+  block and resets economy for the next round, unless the turn ends itself (see
+  "Turn flow: End turn, the enemy phase and the time to act").
 - Every character's action bundle carries the universal actions, each with a
   `cost` (`action`, `bonusAction`, `movement`, `reaction`) and, when unavailable,
   a plain reason: Advance (movement; one band inward, or close into melee on a
@@ -672,6 +673,62 @@ reactions too (see below).
   and yields.`, `… breaks and runs.`), never by an intent's name.
 - `recharge_5_6` abilities used earlier roll a d6 at the enemy's turn start (5-6
   recharges). Limited-use resources are revalidated before each use.
+
+### Turn flow: End turn, the enemy phase and the time to act
+
+`game_state/orchestration/turn_flow.py` decides who tells each turn.
+
+- A model narrates a fight turn only when it holds an attack, a spell, a
+  manoeuvre, an improvised action, words the hero said or a look, a finishing
+  blow, an enemy phase, a fight starting or ending, or a roll. Every other fight
+  action (End turn, Dodge, Disengage, Advance, Fall back, Dash, Help, Hide,
+  Stabilize, a class feature, a potion) is told by the scripted narrator's
+  sentences exactly as Safe Mode tells it, with no model call (`turnFlow.told`
+  `scripted`, provider `fallback`); the post-narration helper never reads it
+  (`postDmExtraction` skipped, reason `engine_told`).
+- `End turn` with a hero next and nobody acting in between has no narration at
+  all (`told` `turn_line`): no reply is streamed, the log gains only the engine's
+  turn line (`Corin Ashby is up next.`), and the next hero's actions are offered
+  as soon as the turn is saved.
+- When enemies act before the next hero their whole phase is one reply: every
+  enemy's resolved action, bark and condition change (the AI brief lists them
+  all under `Did`, and the fight word limit is for the whole reply; the scripted
+  narrator gives each one sentence), then the turn line.
+- The turn ends itself. Each action carries the player's `End my turn for me`
+  choice (Settings → Play, on by default; `auto_end_turn` on `send_message`).
+  With it on, an action that leaves the hero only moving (Advance, Fall back) or
+  ending the turn ends it in the same turn (`state_pipeline.autoEndTurn`): the
+  enemy phase runs if it is next, and the one reply tells the hero's result, the
+  enemies' and the turn line, with every roll card and a finishing blow's
+  question. A still-legal attack, bonus action, free action or bonus-action
+  spell (Second Wind, Healing Word, an off-hand attack) keeps the turn open;
+  healing that nobody needs (a potion, Healing Word with every friend unhurt)
+  does not, as Second Wind at full health is not offered. A roll the player has
+  to press keeps the turn open until it resolves; then the same rule applies.
+- A fight action taken from the offered actions is the engine's from roll to
+  result, so the narrator is the only model it can reach. Its sentence
+  (`Arden Vale attacks Pale Lantern with Longsword.`) is not sent to the
+  pre-narration helper (`preDmExtraction` skipped, reason
+  `engine_fight_action`), and in a pack adventure its narration is not read by
+  the post-narration helper (`postDmExtraction` skipped, same reason). The
+  turn ends itself even though those words read as an attack still waiting on
+  a roll: the turn carries the roll.
+- In a pack adventure the engine runs the table: free play outside a fight,
+  initiative inside one. The table-flow conductor helper is consulted only for
+  typed words in an adventure without a pack. Enemies act from their authored
+  abilities and the engine's scoring (a boss still leads with its signature
+  ability); no model picks an enemy's move unless the table sets
+  `settings.combatDifficultyAI.enemyTacticsModel: true`
+  (`pack_combat_difficulty_ai` in `combat/difficulty.py`, which sets
+  `maxLlmCallsPerRound` to 0).
+- Every finished turn records `timings` in its metadata: `engine_ms` (the
+  message received to the engine's results sent), `narration_ms` (first to last
+  narration chunk, 0 when no model was called), `settle_ms` (narration end to
+  the turn finished), `model_called`, its `kind` (`explore`, `talk`,
+  `fight_action`, `end_turn`, `enemy_phase`) and `time_to_act_ms` (received to
+  finished). Telemetry adds each to the `turn.time_to_act_ms` timing by kind,
+  and Table tools → Ops shows the session's median and 90th percentile by kind
+  (`time_to_act` on `GET /api/beta/session-quality`).
 
 ### Party scaling
 
@@ -1055,6 +1112,15 @@ Potion of Healing, and clerics and druids also carry a Healer's Kit.
   with the exact-id pickup; coin becomes a pile named for its amount. Discovered
   clues, flags and places are applied with the action. Authored `actionText` is
   told when the action succeeds, never after a failed attempt.
+- Searching takes what it finds (`game_state/orchestration/search_take.py`): a
+  successful search or opening outside a fight then takes everything it revealed
+  into the searching hero's pack in the same turn, through the same pickup (coin
+  into their purse), so the beats read `Taken — …` and `+6 gp` and the narration
+  `You find and take 6 gp and a Black-Feathered Arrow.` (party play: `Seren
+  Ashgrove finds and takes …`). An item marked `"leave": true` stays in the
+  scene with its `Take …` suggestion, and so does anything found while a fight
+  is on, a search that starts one included. `Take everything here` takes every
+  loose item in one turn.
 - During a fight only an object's `usableInCombat` actions can be taken, on the
   hero's own turn while their action is unspent; taking one spends the action.
   Every other object action is refused with `Not while the fight is on.`, and

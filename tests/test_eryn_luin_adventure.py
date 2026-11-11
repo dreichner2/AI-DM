@@ -324,8 +324,8 @@ def test_the_careful_route_seals_the_star_shard(table):
     assert SCENE_OBJECTS['watch_couriers_cot']['description'] in table.narration()
     token = table.act('watch_couriers_cot', 'search', "The Courier's Cot")
     assert (token.flags, token.clues) == ({'token_studied': True}, {'clue_broken_dwarf_token'})
-    assert (flagship._scene_items(token), token.items) == (['broken_dwarf_token'], Counter())
-    assert table.take('broken_dwarf_token', 'Broken Dwarf-token').items == Counter({'Broken Dwarf-token': 1})
+    # The search takes what it finds.
+    assert (flagship._scene_items(token), token.items) == ([], Counter({'Broken Dwarf-token': 1}))
     song = table.act('watch_torins_harp', 'use', "Torin's Harp")
     assert song.flags == {'gate_song_learned': True}
     assert SCENE_OBJECTS['watch_torins_harp']['actionText']['use'] in table.narration()
@@ -347,8 +347,7 @@ def test_the_careful_route_seals_the_star_shard(table):
     wagon = table.act('moonwell_broken_wagon', 'search', 'Broken Caravan Wagon')
     assert table.last_check() == ('investigation', 10, 'success')
     assert (wagon.flags, wagon.places) == ({'caravan_traced': True}, {'loc_hollow_of_black_pines': 'discovered'})
-    assert flagship._scene_items(wagon) == ['moonwell_broken_wagon_potion_of_healing', 'moonwell_broken_wagon_coins']
-    assert table.take('moonwell_broken_wagon_coins', '8 gp').gp == 8
+    assert (flagship._scene_items(wagon), wagon.gp, wagon.items['Potion of Healing']) == ([], 8, 1)
 
     pines = _arrive(table, 'loc_hollow_of_black_pines', 'Hollow of Black Pines', 'enc_black_pines_oath')
     assert (pines.encounter, pines.snapshot['combat']['status']) == ('enc_black_pines_oath', 'active')
@@ -401,9 +400,7 @@ def test_the_careful_route_seals_the_star_shard(table):
     assert 'contents' not in _story_object(deeps.snapshot, 'deeps_watch_post')
     post = table.act('deeps_watch_post', 'search', 'Orc Watch-Post')
     assert post.flags == {'cage_key_found': True}
-    assert flagship._scene_items(post) == ['iron_cage_key', 'deeps_watch_post_coins']
-    table.take('iron_cage_key', 'Iron Cage Key')
-    assert table.take('deeps_watch_post_coins', '15 gp').gp == 15
+    assert (flagship._scene_items(post), post.gp, post.items['Iron Cage Key']) == ([], 15, 1)
     freed = table.act('deeps_prisoners_cage', 'use', "The Prisoners' Cage")
     assert SCENE_OBJECTS['deeps_prisoners_cage']['actionText']['use'] in table.narration()
     assert (freed.flags, freed.objectives) == ({'prisoners_freed': True}, {'obj_free_prisoners': 'completed'})
@@ -411,8 +408,7 @@ def test_the_careful_route_seals_the_star_shard(table):
     assert _refusals(freed.snapshot, 'deeps_prisoners_cage')['break'] == (False, 'That can no longer be done.')
     assert flagship._active_checkpoint(freed.snapshot) == 'cp_05_silvervein_deeps'
     strongbox = table.act('deeps_caravan_strongbox', 'search', 'Caravan Strongbox')
-    assert flagship._scene_items(strongbox) == ['deeps_caravan_strongbox_potion_of_healing', 'deeps_caravan_strongbox_coins']
-    assert table.take('deeps_caravan_strongbox_coins', '30 gp').gp == 30
+    assert (flagship._scene_items(strongbox), strongbox.gp, strongbox.items['Potion of Healing']) == ([], 30, 1)
     channel = table.act('deeps_dark_channel', 'inspect', 'Dark Water Channel')
     assert channel.places == {'loc_chamber_of_the_star_shard': 'discovered'}
 
@@ -501,8 +497,7 @@ def test_the_forceful_route_forces_the_gate_and_shatters_the_shard(table):
     shallows = table.act('gate_tarn_shallows', 'search', 'Tarn Shallows')
     assert table.last_check() == ('perception', 12, 'success')
     assert SCENE_OBJECTS['gate_tarn_shallows']['description'] in table.narration()
-    assert flagship._scene_items(shallows) == ['gate_tarn_shallows_coins']
-    assert table.take('gate_tarn_shallows_coins', '12 gp').gp == 12
+    assert (flagship._scene_items(shallows), shallows.gp) == ([], 12)
     forced = table.act('gate_rune_lintel', 'break', 'The Rune Lintel')
     assert (forced.encounter, forced.flags) == ('enc_khazad_tarn_sentries', {})
     assert flagship._enemies(forced.snapshot) == ['enemy_khazad_tarn_sentry_stones']
@@ -545,8 +540,7 @@ def test_the_forceful_route_forces_the_gate_and_shatters_the_shard(table):
     assert TURNED['text'] in table.narration() and RELEASED['text'] not in table.narration()
     assert table.fight().flags == {'marshal_resolved': True}
     coffer = table.act('chamber_dwarf_coffer', 'search', 'Dwarf Coffer')
-    assert flagship._scene_items(coffer) == ['chamber_dwarf_coffer_potion_of_healing', 'chamber_dwarf_coffer_coins']
-    assert table.take('chamber_dwarf_coffer_coins', '60 gp').gp == 60
+    assert (flagship._scene_items(coffer), coffer.gp, coffer.items['Potion of Healing']) == ([], 60, 1)
 
     shattered = table.act('chamber_star_shard', 'break', 'The Star-Shard')
     assert SHARD['actionText']['break'] in table.narration()

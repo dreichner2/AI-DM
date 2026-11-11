@@ -1075,6 +1075,46 @@ describe('game selector helpers', () => {
     })
   })
 
+  it('reads the captives a fight left and a finishing blow waiting to be told', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: {
+        captives: [
+          { id: 'cutthroat', name: 'Ashmarked Cutthroat', enemyId: 'enemy_1', offeredActions: [{ kind: 'talk', label: 'Question the Ashmarked Cutthroat' }] },
+          { id: 'nameless', offeredActions: [{ kind: 'talk', label: 'Question someone' }] },
+        ],
+      },
+      combat: {
+        status: 'ended',
+        pendingFinisher: {
+          heroId: 'player_30',
+          heroName: 'Corin Ashby',
+          enemyName: 'Ashmarked Cutthroat',
+          waitingLine: 'Corin Ashby is deciding how it ends…',
+          offeredActions: [
+            { id: 'finisher.describe', kind: 'finisher', label: 'Describe how you end it', prompt: 'How do you end it?' },
+            { id: 'finisher.story', kind: 'finisher', label: 'Let the story tell it' },
+          ],
+        },
+      },
+    })
+
+    expect(panel.captives).toEqual([
+      { id: 'cutthroat', name: 'Ashmarked Cutthroat', offeredActions: [{ kind: 'talk', label: 'Question the Ashmarked Cutthroat' }] },
+    ])
+    expect(panel.combat.pendingFinisher).toEqual({
+      heroId: 'player_30',
+      heroName: 'Corin Ashby',
+      enemyName: 'Ashmarked Cutthroat',
+      waitingLine: 'Corin Ashby is deciding how it ends…',
+      offeredActions: [
+        { id: 'finisher.describe', kind: 'finisher', label: 'Describe how you end it', prompt: 'How do you end it?' },
+        { id: 'finisher.story', kind: 'finisher', label: 'Let the story tell it', prompt: '' },
+      ],
+    })
+    expect(worldStateFromSnapshot({}).captives).toBeUndefined()
+    expect(worldStateFromSnapshot({}).combat.pendingFinisher).toBeUndefined()
+  })
+
   it('parses viewer-scoped server combat actions without inventing client mechanics', () => {
     const panel = worldStateFromSnapshot({
       combat: {

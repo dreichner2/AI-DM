@@ -68,14 +68,14 @@ afterEach(() => {
 })
 
 describe('StorySettingsSheet', () => {
-  it('offers reading, sound, motion and view settings, with the table plumbing tucked away', () => {
+  it('offers play, reading, sound, motion and view settings, with the table plumbing tucked away', () => {
     render(<StorySettingsSheet {...settingsProps()} />)
 
     const dialog = screen.getByRole('dialog', { name: 'Settings' })
     expect(within(dialog).getAllByRole('region').map((section) => section.getAttribute('aria-labelledby'))[0]).toBe(
       'settings-narrator',
     )
-    for (const heading of ['Reading', 'Sound', 'Motion', 'View']) {
+    for (const heading of ['Play', 'Reading', 'Sound', 'Motion', 'View']) {
       expect(within(dialog).getByRole('heading', { name: heading })).toBeInTheDocument()
     }
     const disclosure = within(dialog).getByText('Table and connection').closest('details') as HTMLElement
@@ -300,6 +300,19 @@ describe('StorySettingsSheet', () => {
     fireEvent.click(within(setting('Reduce motion')).getByRole('button', { name: 'Off' }))
     expect(localStorage.getItem('aidm:storyReduceMotion')).toBe('false')
     expect(within(setting('Reduce motion')).getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('offers End my turn for me under Play, on by default, with its one line of help', () => {
+    render(<StorySettingsSheet {...settingsProps()} />)
+
+    const play = screen.getByRole('region', { name: 'Play' })
+    expect(within(play).getByText('Ends your turn when only moving is left.')).toBeInTheDocument()
+    const row = within(play).getByRole('group', { name: 'End my turn for me' })
+    expect(within(row).getByRole('button', { name: 'On' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(within(row).getByRole('button', { name: 'Off' }))
+    expect(localStorage.getItem('aidm:autoEndTurn')).toBe('false')
+    expect(within(row).getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('switches the view, fullscreen and the table maintenance actions through their handlers', () => {

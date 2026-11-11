@@ -41,6 +41,8 @@ class SendMessagePayload:
     action_intent: dict[str, Any] | None = None
     client_message_id: str | None = None
     message_kind: str | None = None
+    # The player's ``End my turn for me`` choice: a fight action that leaves them only moving ends their turn.
+    auto_end_turn: bool = False
 
 
 def socket_error_payload(error_code: str, message: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -415,6 +417,7 @@ def validate_send_message_payload(data: Any) -> tuple[SendMessagePayload | None,
             action_intent=action_intent,
             client_message_id=client_message_id or None,
             message_kind=message_kind,
+            auto_end_turn=data.get('auto_end_turn') is True,
         ),
         None,
     )

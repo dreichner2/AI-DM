@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { playCue } from './audio/storySound'
 import { D20Glyph } from './glyphs'
 import { D20_CYCLE_MS, DICE_CYCLE_MS, SETTLE_MS, cardDuration, type RollPlayback } from './rollPlayback'
 import {
@@ -236,12 +237,20 @@ export function RollCard({ roll, playback = null, awaiting = false, onPlayed }: 
       : phaseAt(roll, now - (playback?.startAt ?? now), awaiting)
   const live = (Boolean(playback) && !playback?.instant) || awaiting
   const played = useRef(false)
+  const flickering = live && (phase === 'cycle' || phase === 'dice')
+
+  // Each flicker step ticks; nothing sounds while Effects is off (storySound).
+  useEffect(() => {
+    if (flickering) playCue('dice_tick')
+  }, [clock, flickering])
 
   useEffect(() => {
     if (phase !== 'done' || !live || played.current) return
     played.current = true
+    if (roll.natural === 'twenty') playCue('nat20')
+    else if (roll.natural === 'one') playCue('nat1')
     onPlayed?.()
-  }, [live, onPlayed, phase])
+  }, [live, onPlayed, phase, roll.natural])
 
   const settled = phase === 'dice' || phase === 'done'
   const card = {

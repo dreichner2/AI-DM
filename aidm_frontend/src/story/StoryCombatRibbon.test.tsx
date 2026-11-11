@@ -159,6 +159,43 @@ describe('StoryCombatRibbon', () => {
     expect(choiceTexts()).toContain('Use Potion of HealingB')
   })
 
+  it('offers the legal manoeuvres before Advance, each with its glyph and what it costs', () => {
+    const target = { id: 'goblin_1', name: 'Goblin Sentry', rangeBand: 'melee', available: true, reason: '' }
+    const maneuver = (id: string, type: string, label: string, overrides: Partial<CombatLegalAction> = {}) =>
+      action(id, type, label, { requiresTarget: true, targets: [target], cost: { ...NO_COST, action: 1 }, ...overrides })
+    const { submitAction } = renderRibbon(testCombat({
+      bundle: {
+        actions: [
+          action('combat.advance', 'advance', 'Advance', { cost: { ...NO_COST, movement: 1 } }),
+          maneuver('combat.demand_surrender', 'demand_surrender', "Demand Goblin Sentry's surrender"),
+          maneuver('combat.subdue', 'subdue', 'Bind Goblin Sentry', { available: false, reason: 'It is still on its feet and fighting.' }),
+          maneuver('combat.shove', 'shove', 'Shove Goblin Sentry down'),
+          maneuver('combat.grapple', 'grapple', 'Grapple Goblin Sentry'),
+          action('combat.end_turn', 'end_turn', 'End turn'),
+        ],
+      },
+    }))
+
+    expect(choiceTexts()).toEqual([
+      'Grapple Goblin SentryA',
+      'Shove Goblin Sentry downA',
+      "Demand Goblin Sentry's surrenderA",
+      'AdvanceM',
+      'More…',
+    ])
+    const choices = within(screen.getByRole('group', { name: 'Combat actions' }))
+    for (const name of ['Grapple Goblin Sentry', 'Shove Goblin Sentry down', "Demand Goblin Sentry's surrender"]) {
+      expect(choices.getByRole('button', { name }).querySelector('svg')).not.toBeNull()
+    }
+    expect(choices.getByRole('button', { name: 'Advance' }).querySelector('svg')).toBeNull()
+
+    fireEvent.click(choices.getByRole('button', { name: 'Grapple Goblin Sentry' }))
+    expect(submitAction).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ combat: { action_id: 'combat.grapple', target_id: 'goblin_1' } }),
+    )
+  })
+
   it('puts an attack that needs a move first on the ribbon as closing in, sent as that one action', () => {
     const closeIn = action('combat.attack.longsword', 'attack', 'Attack with Longsword', {
       weaponName: 'Longsword',

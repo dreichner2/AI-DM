@@ -355,6 +355,17 @@ def chapter_source_session(campaign_id: int) -> Session | None:
     )
 
 
+def unplayed_open_chapter(campaign_id: int) -> Session | None:
+    """The campaign's latest chapter when it is still open and no turn has been played in it, else None."""
+
+    source = chapter_source_session(campaign_id)
+    if source is None or not session_is_open(source.status):
+        return None
+    if DmTurn.query.filter(DmTurn.session_id == source.session_id).first() is not None:
+        return None
+    return source
+
+
 def chapter_unsettled_reason(session_obj: Session) -> str | None:
     """Return why the chapter cannot be left behind yet, or None when it is settled."""
 
@@ -380,6 +391,10 @@ def start_campaign_chapter(
 ) -> ChapterStartResult:
     """Start the campaign's next chapter and commit it, or replay a started one.
 
+    A latest chapter that is still open and has no turn yet is that replay too:
+    it is returned as it is, so beginning an adventure never closes an unplayed
+    chapter to open another.
+
     The chapters this closes and the chapter it reads from are fenced with the
     per-session turn coordinator, as session archive is, and the transition
     commits while those leases are held. A turn holding one of them rejects the
@@ -402,6 +417,8 @@ def start_campaign_chapter(
             try:
                 campaign = _locked_active_campaign(campaign_id, workspace_id)
                 replay = find_idempotent_session(campaign_id, client_session_id) if client_session_id else None
+                if replay is None:
+                    replay = unplayed_open_chapter(campaign_id)
                 if replay is not None:
                     result = ChapterStartResult(session_id=replay.session_id, idempotent_replay=True)
                     db.session.rollback()

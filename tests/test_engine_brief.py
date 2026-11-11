@@ -34,24 +34,28 @@ def _context(prompt: str) -> dict:
 def test_the_brief_for_the_leads_three_sentences(table):
     table.reply("I crouch and search under the driver's bench.")
     bench = table.brief()
-    table.reply('I pocket the key and climb into the lead wagon to search it.')
-    key = table.brief()
+    table.reply('I climb into the lead wagon to search it.')
+    wagon = table.brief()
     table.reply('I head up the old north road.')
     road = table.brief()
 
+    # The search takes what it finds.
     assert bench == (
         f'Did: Search under the driver\'s bench (Investigation check: 15 — success): done. What it shows: "{BENCH_TEXT}" '
-        'Found, and still lying there until taken: a Caravan Strongbox Key.\n'
+        'Found and taken by the hero: a Caravan Strongbox Key.\n'
         'Not done: nothing\n'
-        f"Here (only the engine decides these): {INN_OBJECTS}; loose items Caravan Strongbox Key; "
+        f"Here (only the engine decides these): {INN_OBJECTS}; loose items none; "
         "ways onward The Old North Road; shops Mara's Counter\n"
         'The party is at The Lantern Post Inn.'
     )
-    assert key == (
-        'Did: Took the Caravan Strongbox Key.\n'
-        'Not done: Search the lead wagon\n'
-        f"Here (only the engine decides these): {INN_OBJECTS}; loose items none; "
-        "ways onward The Old North Road; shops Mara's Counter\n"
+    assert wagon.startswith('Did: Search the lead wagon: done.')
+    assert wagon.endswith(
+        'Uncovered: Wagon Strongbox. Clue — Ash Marks on the Road.\n'
+        'Not done: nothing\n'
+        "Here (only the engine decides these): objects Caravan Ledger: Read the caravan ledger | Driver's Bench: Look over the "
+        "driver's bench | Lead Wagon: nothing offered | Wagon Strongbox: Search the strongbox, Open the strongbox, Unlock the "
+        "strongbox, Break the strongbox open | Wagon Bell: Ring the wagon bell; loose items none; ways onward The Old North Road; "
+        "shops Mara's Counter\n"
         'The party is at The Lantern Post Inn.'
     )
     assert road.startswith(
@@ -106,7 +110,8 @@ def test_hidden_objects_and_contents_reach_the_narrator_only_in_the_turn_that_re
     after = table.brief()
 
     assert 'Uncovered: Wagon Strongbox.' in revealed
-    assert 'Wagon Strongbox: Break the strongbox open' in after
+    # The bench's key, taken by its search, opens the strongbox's other ways in.
+    assert 'Wagon Strongbox: Search the strongbox, Open the strongbox, Unlock the strongbox, Break the strongbox open' in after
     assert 'flat iron key' not in table.narrator.prompts[-1]
     scene = _context(table.narrator.prompts[-1])['live_world_state']['currentScene']
     assert all('contents' not in entry for entry in scene['interactables'])

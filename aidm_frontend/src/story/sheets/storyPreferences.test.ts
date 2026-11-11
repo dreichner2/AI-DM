@@ -3,6 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getStoryPreferences,
+  setAutoEndTurn,
   setMusicEnabled,
   setMusicVolume,
   setStoryReduceMotion,
@@ -24,7 +25,17 @@ describe('storyPreferences', () => {
       reduceMotion: false,
       musicEnabled: true,
       musicVolume: 0.7,
+      autoEndTurn: true,
     })
+  })
+
+  it('ends the turn for the player by default, until they turn it off', () => {
+    expect(getStoryPreferences().autoEndTurn).toBe(true)
+    setAutoEndTurn(false)
+    expect(localStorage.getItem('aidm:autoEndTurn')).toBe('false')
+    expect(getStoryPreferences().autoEndTurn).toBe(false)
+    setAutoEndTurn(true)
+    expect(getStoryPreferences().autoEndTurn).toBe(true)
   })
 
   it('keeps the same snapshot until a value changes', () => {

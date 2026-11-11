@@ -40,7 +40,7 @@ from aidm_server.game_state.application.applier import (
 from aidm_server.game_state.campaign_pack_encounters import catalog_record
 from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, free_text_action, name_words
 from aidm_server.game_state.extraction.post_dm_outcome_extractor import extract_post_dm_outcomes
-from aidm_server.game_state.extraction.pre_dm_action_extractor import extract_pre_dm_actions
+from aidm_server.game_state.extraction.pre_dm_action_extractor import engine_fight_action, extract_pre_dm_actions
 from aidm_server.game_state.logging.state_log_builder import build_state_log, state_log_message
 from aidm_server.game_state.orchestration.combat_resolution import (
     build_dm_combat_context,
@@ -63,8 +63,16 @@ from aidm_server.game_state.orchestration.narration_facts import (
     object_facts,
     plain_results,
 )
+from aidm_server.game_state.orchestration.search_take import TAKEN_BY_SEARCH, search_take_actions, taken_by_search
 from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis
 from aidm_server.game_state.orchestration.story_rolls import SETTLED_ACTIONS_KEY, STORY_ROLLS_KEY, numbered, story_rolls_before_narration
+from aidm_server.game_state.orchestration.turn_flow import (
+    AUTO_END_TURN_KEY,
+    AUTO_END_TURN_REQUEST_KEY,
+    TOLD_BY_NARRATOR,
+    told,
+    turn_ends_itself,
+)
 from aidm_server.game_state.models import (
     compact_state_for_extraction,
     display_actor_id,
@@ -751,6 +759,34 @@ def _combat_enemy_deferred_reason(turn: DmTurn) -> str | None:
         return 'player_turn_in_progress'
     economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
     return None if economy.get('endsTurn') is True else 'player_turn_in_progress'
+
+
+def _turn_ends_itself(
+    *,
+    turn: DmTurn,
+    state: dict[str, Any],
+    player: Player,
+    actor_id: str,
+    action_intent: dict[str, Any] | None,
+    pre_validation: dict[str, Any],
+    combat_debug: dict[str, Any],
+) -> bool:
+    """The hero asked for their turn to end itself (``auto_end_turn``) and the action they just took, which
+    resolved and asks for no roll, leaves them only moving or ending it (:func:`turn_flow.turn_ends_itself`)."""
+
+    # The words of a fight action ("... attacks the pale lantern with Longsword") read to the declared-action
+    # check as an attack still waiting on its roll. On a turn that carries that roll, nothing is waiting.
+    rolled = _turn_resolves_player_roll(turn)
+    settled = {'valid', 'pending'} if rolled else {'valid'}
+    return (
+        _metadata(turn).get(AUTO_END_TURN_REQUEST_KEY) is True
+        and _combat_is_running(state)
+        and not _turn_awaits_player_roll(turn)
+        and (rolled or not (pre_validation.get('pendingRolls') or []))
+        and not combat_debug.get('combatActionBlockedReason')
+        and all(isinstance(result, dict) and result.get('status') in settled for result in pre_validation.get('validatedActions') or [])
+        and turn_ends_itself(state=state, player=player, actor_id=actor_id, action_intent=action_intent)
+    )
 
 
 def _player_roll_consume_change(turn: DmTurn, state: dict[str, Any]) -> dict[str, Any] | None:
@@ -1574,7 +1610,13 @@ def _previous_target(turn: DmTurn) -> tuple[str, str] | None:
         if change.get('type') == 'scene.interactable.action' and str(change.get('targetId') or ''):
             targets.add(('object', str(change['targetId'])))
         item = change.get('item') if isinstance(change.get('item'), dict) else {}
-        if change.get('type') == 'scene.item.remove' and change.get('source') == PICKUP_SOURCE and str(item.get('id') or ''):
+        # What a search took there and then came with the search: "it" is still the searched object.
+        if (
+            change.get('type') == 'scene.item.remove'
+            and change.get('source') == PICKUP_SOURCE
+            and str(item.get('id') or '')
+            and not change.get(TAKEN_BY_SEARCH)
+        ):
             targets.add(('item', str(item['id'])))
     return next(iter(targets)) if len(targets) == 1 else None
 
@@ -1948,6 +1990,31 @@ def _downed_actor_result(
     }
 
 
+def _with_search_takes(
+    *,
+    state: dict[str, Any],
+    applied_immediate: list[dict[str, Any]],
+    immediate_validation: dict[str, Any],
+    actor_id: str,
+    turn_id: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """The state, applied changes and validation once the hero has taken what their search found
+    (:mod:`aidm_server.game_state.orchestration.search_take`)."""
+
+    actions = search_take_actions(state, applied_immediate, actor_id=actor_id)
+    if not actions:
+        return state, applied_immediate, immediate_validation
+    pickups = validate_declared_actions(state=state, declared_actions=actions, current_turn=turn_id, expected_actor_id=actor_id)
+    changes = taken_by_search([change for change in pickups.get('immediateChanges') or [] if isinstance(change, dict)], actions)
+    validation = validate_state_changes(state=state, changes=changes, expected_actor_id=actor_id)
+    applied = apply_state_changes(state, validated_changes_for_application(validation))
+    return (
+        applied['nextState'],
+        [*applied_immediate, *applied['appliedChanges']],
+        _merge_validation_results(immediate_validation, validation),
+    )
+
+
 def pre_dm_pipeline(
     *,
     turn: DmTurn,
@@ -2068,8 +2135,13 @@ def pre_dm_pipeline(
     pending_immediate_validation = validate_state_changes(state=state, changes=pending_immediate_changes, expected_actor_id=actor_id)
     immediate_changes = validated_changes_for_application(immediate_validation)
     apply_result = apply_state_changes(state, immediate_changes)
-    state_after_immediate = apply_result['nextState']
-    applied_immediate = apply_result['appliedChanges']
+    state_after_immediate, applied_immediate, immediate_validation = _with_search_takes(
+        state=apply_result['nextState'],
+        applied_immediate=apply_result['appliedChanges'],
+        immediate_validation=immediate_validation,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+    )
     immediate_combat = (
         state_after_immediate.get('combat')
         if isinstance(state_after_immediate.get('combat'), dict)
@@ -2243,7 +2315,16 @@ def pre_dm_pipeline(
     )
 
     opening_enemy_turns = _opens_with_enemy_turns(state_before_dm, [*applied_immediate, *applied_combat])
-    enemy_deferred_reason = None if opening_enemy_turns else _combat_enemy_deferred_reason(turn)
+    ends_itself = not opening_enemy_turns and _turn_ends_itself(
+        turn=turn,
+        state=state_before_dm,
+        player=player,
+        actor_id=actor_id,
+        action_intent=action_intent,
+        pre_validation=pre_validation,
+        combat_debug=combat_prepare.get('debug') if isinstance(combat_prepare.get('debug'), dict) else {},
+    )
+    enemy_deferred_reason = None if opening_enemy_turns or ends_itself else _combat_enemy_deferred_reason(turn)
     if opening_enemy_turns:
         # The action that started the fight is not resolved out of initiative
         # order, so no roll of this turn holds back the opening turns.
@@ -2259,6 +2340,7 @@ def pre_dm_pipeline(
         applied_changes=[*applied_immediate, *applied_combat],
         combat_context=combat_context_for_dm,
         resolved_player_roll=not opening_enemy_turns
+        and not ends_itself
         and (_turn_awaits_player_roll(turn) or _resolved_player_roll_should_defer_enemy(turn)),
         player_resolved_action=player_resolved_action,
         enemy_deferred_reason=enemy_deferred_reason,
@@ -2390,6 +2472,7 @@ def pre_dm_pipeline(
         'combatDebug': combat_prepare.get('debug') if isinstance(combat_prepare.get('debug'), dict) else {},
         'dmContextPacket': dm_context,
         'openingEnemyTurns': opening_enemy_turns,
+        **({AUTO_END_TURN_KEY: True} if ends_itself else {}),
         'stateLog': state_log,
         'managedDomains': MANAGED_STATE_DOMAINS,
     }
@@ -2669,6 +2752,13 @@ def post_dm_pipeline(
         elif finishing(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None):
             # The finishing blow's telling changes only what the engine already made of it.
             post_extraction = _skipped_post_extraction('finisher')
+        elif told(metadata) != TOLD_BY_NARRATOR:
+            # The engine's own sentences told the turn (or its turn line alone): there is no narration to read.
+            post_extraction = _skipped_post_extraction('engine_told')
+        elif engine_fight_action(metadata.get('action_intent')) and has_campaign_pack(state_before_dm):
+            # A fight action from the offered actions, and the enemy turns it hands over to, are the engine's
+            # from roll to result; in a pack adventure the narration of them changes nothing.
+            post_extraction = _skipped_post_extraction('engine_fight_action')
         else:
             helper_session_released = False
 
@@ -2923,11 +3013,14 @@ def post_dm_pipeline(
                     notes.append('engine_combat_end')
                 post_extraction['notes'] = notes
         # The opening block narration was given ends with initiative handed on;
-        # otherwise only the active player's turn-ending action advances it.
+        # otherwise only the active player's turn-ending action advances it, or
+        # an action that left them only moving when they asked to end it then.
         turn_advance_change = (
             engine_turn_advance_change(final_state, turn_id=turn.turn_id)
             if opening_enemy_turns
-            else combat_turn_advance_change(state=final_state, turn=turn, actor_id=actor_id)
+            else combat_turn_advance_change(
+                state=final_state, turn=turn, actor_id=actor_id, ends_turn=pipeline.get(AUTO_END_TURN_KEY) is True
+            )
         )
         if turn_advance_change:
             advance_validation = validate_state_changes(state=final_state, changes=[turn_advance_change], expected_actor_id=actor_id)

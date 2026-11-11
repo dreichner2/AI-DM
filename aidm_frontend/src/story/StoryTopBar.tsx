@@ -22,6 +22,7 @@ import {
   ScrollText,
   Settings,
   Share2,
+  Square,
   Type,
   UserRound,
   Volume2,
@@ -176,15 +177,22 @@ export function StoryTopBar({
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const musicRef = useRef<HTMLDivElement | null>(null)
   const worldSceneName = board.worldState.sceneName?.trim()
-  // An adventure with no chapter yet has no scene and no time of day: the line stays empty.
-  const chapterOpen = board.activeSession !== null
-  const sceneName = chapterOpen
+  // An adventure that has not begun (no chapter yet, or a first chapter with no turn played) shows its title
+  // alone: no scene and no time of day.
+  const session = board.activeSession
+  const begun =
+    session !== null &&
+    ((session.chapter_number ?? 1) > 1 ||
+      session.turn_count > 0 ||
+      board.turnRows.some((entry) => entry.role !== 'system') ||
+      board.currentResponseEntry !== null)
+  const sceneName = begun
     ? board.sceneState?.locationName?.trim() ||
       (worldSceneName === UNRECORDED_SCENE_NAME ? '' : worldSceneName) ||
       board.activeSessionTitle
     : ''
   const characterOpen = drawerOpen && drawerTab === 'character'
-  const clockLabel = chapterOpen ? board.worldState.clock?.label ?? '' : ''
+  const clockLabel = begun ? board.worldState.clock?.label ?? '' : ''
 
   useEffect(() => {
     if (!menuOpen) return
@@ -326,7 +334,8 @@ export function StoryTopBar({
         <div className="story-titles">
           <span className="story-label story-campaign-title">{board.campaign?.title ?? ''}</span>
           <span className="story-scene-line">
-            <SceneName name={sceneName} />
+            {/* Keyed by adventure: another adventure's place never fades out under this one's title. */}
+            <SceneName key={board.campaign?.campaign_id ?? 'none'} name={sceneName} />
             {clockLabel ? <span className="story-clock">{clockLabel}</span> : null}
           </span>
         </div>
@@ -349,7 +358,16 @@ export function StoryTopBar({
             Scripted narrator
           </span>
         ) : null}
-        {chrome.ttsAvailable ? (
+        {chrome.ttsAvailable && chrome.ttsPlaying && chrome.onStopTts ? (
+          // While the voice reads, the button stops it (on narrow screens too); narration stays on for the next reply.
+          <IconButton
+            label="Stop narration"
+            title="Stop"
+            onClick={() => chrome.onStopTts?.()}
+          >
+            <Square size={15} strokeWidth={1.8} />
+          </IconButton>
+        ) : chrome.ttsAvailable ? (
           <IconButton
             className="story-topbar-optional"
             label="Narration"

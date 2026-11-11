@@ -845,11 +845,17 @@ Objects resolve themselves on the server:
   flags, and add catalog locations to the known places with status
   `discovered`.
 - Contents a container reveals (on open, or all of them on search) become
-  scene items with `containerId`, so each can be taken with the exact-id scene
-  pickup; the container still lists them until they are taken. A contents
-  entry may be coin, `{"currency": {"gp": 15}}`: it becomes a pile named for
-  its amount (id `<container id>_coins`), and taking it adds to the taker's
-  coin. Narration of a reveal never takes what was revealed.
+  scene items with `containerId`. Outside a fight the hero who searched or
+  opened it takes them into their pack in the same turn; in a fight (or when the
+  search starts one) they stay in the scene to be taken with the exact-id scene
+  pickup, and the container lists them until they are taken. A contents entry
+  may be coin, `{"currency": {"gp": 15}}`: it becomes a pile named for its
+  amount (id `<container id>_coins`), and taking it adds to the taker's coin.
+  Narration of a reveal never takes what was revealed.
+- A contents item marked `"leave": true` is never taken by the search that
+  finds it: it stays in the scene with its `Take …` suggestion, for something
+  heavy, dangerous, or left for the players to choose
+  (`{"id": "cellar_powder_keg", "name": "Powder Keg", "leave": true}`).
 - `trigger` is offered on hazards and on any object marked `"triggerable": true`;
   once triggered, an object refuses the trigger again unless it is
   `"repeatable": true` or has been reset (hazards support `reset`).

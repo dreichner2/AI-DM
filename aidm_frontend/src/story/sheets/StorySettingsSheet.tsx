@@ -10,6 +10,7 @@ import {
   useStorySoundPreferences,
 } from '../audio/soundPreferences'
 import {
+  setAutoEndTurn,
   setMusicEnabled,
   setMusicVolume,
   setStoryReduceMotion,
@@ -92,6 +93,7 @@ const ON_OFF: ReadonlyArray<[boolean, string]> = [
   [true, 'On'],
   [false, 'Off'],
 ]
+const AUTO_END_TURN_HELP = 'Ends your turn when only moving is left.'
 const NO_NARRATOR_VOICE = 'No narrator voice is set up on this server.'
 const SCRIPTED_PROVIDER = 'fallback'
 const SCRIPTED_NARRATOR = 'Scripted narrator'
@@ -309,6 +311,18 @@ export function StorySettingsSheet({
             <hr className="story-rule" />
           </>
         ) : null}
+        <section className="story-dialog-section" aria-labelledby="settings-play">
+          <h3 id="settings-play" className="story-label">Play</h3>
+          <SettingRow
+            name="End my turn for me"
+            choices={ON_OFF}
+            value={preferences.autoEndTurn}
+            onChange={setAutoEndTurn}
+          />
+          <p className="story-dialog-help">{AUTO_END_TURN_HELP}</p>
+        </section>
+
+        <hr className="story-rule" />
         <section className="story-dialog-section" aria-labelledby="settings-reading">
           <h3 id="settings-reading" className="story-label">Reading</h3>
           <SettingRow name="Text size" choices={TEXT_SIZES} value={preferences.textSize} onChange={setStoryTextSize} />

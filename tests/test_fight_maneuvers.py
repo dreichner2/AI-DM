@@ -475,11 +475,11 @@ def test_the_engine_says_whose_turn_it_is_and_the_model_cannot(ai_table):
         ai_table,
         'Thalion',
         'Thalion acts.',
-        'Thalion drops low behind the wagon wheel, bow half drawn. Corin Ashby, steady your shield, it is your turn. Dodge.',
-        {'kind': 'combat', 'source': 'combat_hud', 'combat': {'action_id': 'combat.dodge'}},
+        'Thalion looses from behind the wagon wheel, bowstring humming. Corin Ashby, steady your shield, it is your turn. Dodge.',
+        {'kind': 'combat', 'source': 'combat_hud', 'combat': {'action_id': 'combat.attack.starter_ranger_longbow', 'target_id': ai_table.enemy()['id']}},
     )
 
-    assert told == "Thalion drops low behind the wagon wheel, bow half drawn.\n\nIt is still Thalion's turn."
+    assert told == "Thalion looses from behind the wagon wheel, bowstring humming.\n\nIt is still Thalion's turn."
     prompt = ai_table.narrator.prompts[-1]
     for rule in (
         '8. Resolve what the hero attempted this turn from the "Did" results. Never leave it "still to be done", never hand the decision back, and never end by naming an available action.',
@@ -490,12 +490,15 @@ def test_the_engine_says_whose_turn_it_is_and_the_model_cannot(ai_table):
     did = next(line for line in ENGINE_BRIEF_RE.search(prompt).group('brief').splitlines() if line.startswith('Did: '))
     assert did == (
         'Did: Bark: "Names, ledgers and stone. Hand them over and walk away." (Ashmarked Cutthroat; use this line, word for word if it is speech) '
-        'Thalion is dodging until the start of their next turn. No enemy has acted since the last narration. Thalion is dodging.'
+        'Thalion attacks Ashmarked Cutthroat with Longbow (19 against AC 13): hit for 8 piercing damage. '
+        'Bark: "Not paid enough for this." (Ashmarked Cutthroat; use this line, word for word if it is speech) '
+        'No enemy has acted since the last narration.'
     )
 
 
 def test_the_brief_lists_the_typed_tackle_under_did(ai_table):
-    _said(ai_table, 'Thalion', 'Thalion ends the turn.', None, {'kind': 'combat', 'source': 'combat_hud', 'combat': {'action_id': 'combat.end_turn'}})
+    # Ending a turn with a hero next asks the narrator nothing.
+    assert errors(ai_table.end_turn('Thalion')) == []
     told = _said(ai_table, 'Corin Ashby', 'Close in and tackle him to the floor', 'Corin crashes into the cutthroat and drives him into the mud.')
 
     brief = ENGINE_BRIEF_RE.search(ai_table.narrator.prompts[-1]).group('brief')

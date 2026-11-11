@@ -6,6 +6,7 @@ import { useModalFocusTrap } from '../useModalFocusTrap'
 import { travelSubmission } from './actionIntents'
 import { heroHasSpells } from './heroSpells'
 import { drawerSectionChunks } from './storyChunks'
+import { travelBlockedReason as travelBlocked } from './travelBlock'
 import type { StoryDrawerProps, StoryDrawerTab } from './types'
 
 const CharacterSection = drawerSectionChunks.character.component((module) => module.CharacterSection)
@@ -86,17 +87,10 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
 
   if (!rendered) return null
 
-  const composer = board.actionComposerProps
-  const travelBlockedReason = board.worldState.combat.active
-    ? 'Not while combat is underway.'
-    : board.sendPending || board.streamingTurnActive
-      ? 'Wait for the Dungeon Master to finish.'
-      : !composer.selectedPlayerId || !composer.selectedCharacterName
-        ? 'Choose a character first.'
-        : ''
+  const travelBlockedReason = travelBlocked(board)
   const travel = (exit: { id: string; name: string }) => {
     const { message, intent } = travelSubmission(exit)
-    if (composer.submitAction(message, intent) && modal) onClose()
+    if (board.actionComposerProps.submitAction(message, intent) && modal) onClose()
   }
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {

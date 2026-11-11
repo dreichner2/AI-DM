@@ -83,6 +83,9 @@ def _object_line(fact: dict[str, Any], check: str | None) -> str:
         parts.append(f'What it shows: "{_text(fact.get("description"))}"')
     if _text(fact.get('actionText')):
         parts.append(f'What happens: "{_text(fact.get("actionText"))}"')
+    taken = [_text(item) for item in fact.get('taken') or [] if _text(item)]
+    if taken:
+        parts.append(f'Found and taken by the hero: {_join(taken)}.')
     found = [_text(item) for item in fact.get('found') or [] if _text(item)]
     if found:
         parts.append(f'Found, and still lying there until taken: {_join(found)}.')

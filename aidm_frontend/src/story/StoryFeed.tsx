@@ -1,4 +1,5 @@
 import {
+  Suspense,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -10,6 +11,7 @@ import {
 } from 'react'
 import { Backpack, Coins, Flag, Heart, MapPin, ScrollText, Sparkles, Star, Swords, UserRound } from 'lucide-react'
 import type { WorldEnding } from '../gameSelectors'
+import { lazyModule } from '../lazyModule'
 import { NarrativeProse } from '../NarrativeProse'
 import type { SessionBoardProps, TurnQualityScores } from '../SessionBoard'
 import type { TimelineEntry } from '../types'
@@ -32,6 +34,7 @@ import {
   type TurnBeatsBeat,
 } from './storyBeats'
 import { dismissEnding, useEndingDismissed } from './storyEnding'
+import { useNarrationHold } from './narrationHold'
 import { useReducedMotion } from './useReducedMotion'
 
 type StoryFeedProps = {
@@ -52,6 +55,8 @@ const AWAY_THRESHOLD = 120
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])
 const QUALITY_SCORE_OPTIONS = [1, 2, 3, 4, 5] as const
 const DEFAULT_TURN_QUALITY_SCORES: TurnQualityScores = { coherence: 4, fun: 4, rules: 4 }
+// A level reached is shown as a moment, kept out of the start-up bundle: the one-line beat stands in while it loads.
+const LevelMoment = lazyModule(() => import('./LevelMoment')).component((module) => module.LevelMoment)
 
 function findBeat(container: HTMLElement, key: string) {
   for (const element of container.querySelectorAll<HTMLElement>('[data-beat-key]')) {
@@ -367,7 +372,8 @@ function PreviouslyRecap({ recap }: { recap: string }) {
 function ChapterBeatView({ beat, board }: { beat: ChapterBeat; board: SessionBoardProps }) {
   const chapterNumber = board.activeSession?.chapter_number
   const label = beat.chapterLabel ?? (chapterNumber ? `Chapter ${chapterNumber}` : board.activeSessionTitle)
-  const recap = board.sessionRecap.trim()
+  // A first chapter has nothing before it to recall.
+  const recap = (chapterNumber ?? 1) > 1 ? board.sessionRecap.trim() : ''
   return (
     <div className="story-chapter-heading">
       <Ornament className="story-chapter-ornament" />
@@ -662,7 +668,7 @@ function TurnBeatsView({ beat, onOpen }: { beat: TurnBeatsBeat; onOpen: (target:
           </>
         )
         const target = turnBeat.target
-        return (
+        const chip = (
           <li key={key} style={style}>
             {target ? (
               <button type="button" className="story-chip" data-tone={tone} data-kind={turnBeat.kind} onClick={() => onOpen(target)}>
@@ -672,6 +678,13 @@ function TurnBeatsView({ beat, onOpen }: { beat: TurnBeatsBeat; onOpen: (target:
               <span className="story-chip" data-tone={tone} data-kind={turnBeat.kind}>{content}</span>
             )}
           </li>
+        )
+        if (turnBeat.kind !== 'level') return chip
+        // A level beat that carries what the hero gained is a moment; one saved without it stays a chip.
+        return (
+          <Suspense key={key} fallback={chip}>
+            <LevelMoment entry={beat.entry} text={turnBeat.text} style={style} fallback={chip} />
+          </Suspense>
         )
       })}
     </ul>
@@ -786,10 +799,12 @@ export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: 
         : turnRows,
     [turnRows, currentResponseEntry],
   )
-  const beats = useMemo(
+  const builtBeats = useMemo(
     () => buildStoryBeats(entries, { selectedPlayerName, historyComplete: !sessionLogHasMore }),
     [entries, selectedPlayerName, sessionLogHasMore],
   )
+  // A turn's narration waits while its roll cards play.
+  const beats = useNarrationHold(builtBeats, reduceMotion)
   // A first chapter loading under Begin keeps the beginning line rather than the loading marks.
   const loading = board.sessionLoading && entries.length === 0 && !board.adventureBeginning
   const empty = !loading && isEmptyStory(beats)

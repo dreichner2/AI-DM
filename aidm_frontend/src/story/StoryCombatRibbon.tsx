@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { ChevronLeft } from 'lucide-react'
+import { ChevronLeft, Footprints, Hand, MessageCircle, type LucideIcon } from 'lucide-react'
 import type { ActionIntent } from '../gameActions'
 import {
   type CombatActionCost,
@@ -33,6 +33,13 @@ const MAX_STORY_OBJECT_ACTIONS = 2
 /** Features used only at rest (Arcane Recovery) never appear on the ribbon. */
 const REST_ONLY_EFFECTS = new Set(['restore_slots'])
 const SPELL_COSTS: Record<string, string> = { action: 'A', bonus_action: 'B', reaction: 'R' }
+/** The fight's manoeuvres, in ribbon order, each with the glyph the dock gives its kind of deed. */
+const MANEUVER_GLYPHS: ReadonlyArray<[string, LucideIcon]> = [
+  ['grapple', Hand],
+  ['shove', Footprints],
+  ['subdue', Hand],
+  ['demand_surrender', MessageCircle],
+]
 
 /** Where the action tray opens from the ribbon: Magic (at one spell) or the full Combat list. */
 export type RibbonTraySection = 'magic' | 'combat'
@@ -54,7 +61,7 @@ type StoryCombatRibbonProps = {
 
 /** One ribbon choice: a server combat action, a castable spell or an authored scene action. */
 type RibbonChoice =
-  | { kind: 'action'; key: string; label: string; cost: string; action: CombatLegalAction }
+  | { kind: 'action'; key: string; label: string; cost: string; action: CombatLegalAction; glyph?: LucideIcon }
   | { kind: 'spell'; key: string; label: string; cost: string; spell: GameplaySpellControl }
   | { kind: 'object'; key: string; label: string; cost: string; object: GameplayInteractableControl; action: GameplayObjectAction }
   | { kind: 'tray'; key: string; label: string; cost: string; section: RibbonTraySection }
@@ -272,9 +279,10 @@ function EconomyPips({ bundle }: { bundle: CombatLegalActionBundle }) {
  * Combat in one or two quiet lines: who is fighting and how they are holding
  * up, then — on the viewer's turn — one row of what they can do now: weapon
  * attacks, their latest spells, Cast…, class abilities, a story action the
- * scene offers, Advance, Fall back, a healing potion when hurt, More… and End
- * turn. Nothing that is not legal now is shown; everything else lives in
- * More…. A choice with exactly one legal target is taken on it at once.
+ * scene offers, Grapple, Shove down, Bind and Demand surrender, Advance, Fall
+ * back, a healing potion when hurt, More… and End turn. Nothing that is not
+ * legal now is shown; everything else lives in More…. A choice with exactly
+ * one legal target is taken on it at once.
  */
 export function StoryCombatRibbon({
   combat,
@@ -336,6 +344,14 @@ export function StoryCombatRibbon({
     cost: costLetters(action.cost),
     action,
   })
+  const maneuverChoice = (action: CombatLegalAction, glyph: LucideIcon): RibbonChoice => ({
+    kind: 'action',
+    key: `action-${action.id}`,
+    label: combatActionLabel(action),
+    cost: costLetters(action.cost),
+    action,
+    glyph,
+  })
   const hurt = viewerHurt(activePlayers.find((player) => player.id === playerId), viewer)
   const choices: RibbonChoice[] = [
     ...legal.filter((action) => action.type === 'attack').slice(0, MAX_ATTACKS).map(actionChoice),
@@ -356,6 +372,7 @@ export function StoryCombatRibbon({
       object,
       action,
     })),
+    ...MANEUVER_GLYPHS.flatMap(([type, glyph]) => firstOfType(type).map((action) => maneuverChoice(action, glyph))),
     ...firstOfType('advance').map(actionChoice),
     ...firstOfType('reposition').map(actionChoice),
     ...(hurt ? legal.filter(isHealingPotion).slice(0, 1).map(actionChoice) : []),
@@ -534,18 +551,22 @@ export function StoryCombatRibbon({
                 </button>
               </>
             ) : (
-              choices.map((choice) => (
-                <button
-                  key={choice.key}
-                  type="button"
-                  className="story-chip"
-                  data-choice={choice.kind}
-                  onClick={() => choose(choice)}
-                >
-                  {choice.label}
-                  {choice.cost ? <span className="story-chip-cost" aria-hidden="true">{choice.cost}</span> : null}
-                </button>
-              ))
+              choices.map((choice) => {
+                const Glyph = choice.kind === 'action' ? choice.glyph : undefined
+                return (
+                  <button
+                    key={choice.key}
+                    type="button"
+                    className="story-chip"
+                    data-choice={choice.kind}
+                    onClick={() => choose(choice)}
+                  >
+                    {Glyph ? <Glyph aria-hidden="true" /> : null}
+                    {choice.label}
+                    {choice.cost ? <span className="story-chip-cost" aria-hidden="true">{choice.cost}</span> : null}
+                  </button>
+                )
+              })
             )}
           </div>
           {endTurn && !targeting ? (

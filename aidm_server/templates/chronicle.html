@@ -118,6 +118,12 @@
     .dm-prose p, .epilogue p {
       margin: 0 0 0.9rem;
     }
+    .level-up {
+      border-top: 1px solid var(--rule);
+      color: var(--muted);
+      margin: 14px 0 0;
+      padding-top: 12px;
+    }
     .empty-note {
       border: 1px dashed var(--rule);
       color: var(--muted);
@@ -188,6 +194,9 @@
               <p>No DM prose was recorded for this turn.</p>
             {% endif %}
           </div>
+          {% for moment in turn.level_ups %}
+          <p class="level-up">{% for line in moment %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
+          {% endfor %}
         </article>
         {% endfor %}
       {% else %}

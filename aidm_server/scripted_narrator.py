@@ -1486,9 +1486,15 @@ def _object_blocks(turn: NarrationInput, fact: dict) -> list[list[str]]:
     if description:
         blocks.append(_split_sentences(description))
     if action == 'search':
-        blocks.append(_found_sentences(turn, fact.get('found'), fact.get('uncovered'), discovered=fact.get('discovered') is True))
+        blocks.append(
+            _found_sentences(
+                turn, fact.get('found'), fact.get('uncovered'), discovered=fact.get('discovered') is True, taken=fact.get('taken')
+            )
+        )
     elif fact.get('nothingNew') is True:
         blocks.append([_hero_does(turn, f'find nothing new on {_the(name)}')])
+    elif fact.get('taken'):
+        blocks.append(_found_sentences(turn, [], [], taken=fact.get('taken')))
     return blocks
 
 
@@ -1517,16 +1523,24 @@ def _steps_sentence(turn: NarrationInput, steps: list[dict], key_name: str) -> s
     return _hero_does(turn, phrase)
 
 
-def _found_sentences(turn: NarrationInput, found: Any, uncovered: Any, *, discovered: bool = False) -> list[str]:
-    """What a search turned up: the items found, the hidden objects uncovered, or nothing more
-    (unless it ``discovered`` a clue, a place or a story flag, which the search's own words tell)."""
+def _coins_first(items: list[str]) -> str:
+    coins = [item for item in items if item.split()[-1].lower() in COIN_CODES]
+    return _join_words([*coins, *(item for item in items if item not in coins)])
 
+
+def _found_sentences(turn: NarrationInput, found: Any, uncovered: Any, *, discovered: bool = False, taken: Any = None) -> list[str]:
+    """What a search turned up: the items found and taken there and then (``You find and take 6 gp and a
+    Black-Feathered Arrow.``), those left lying, the hidden objects uncovered, or nothing more (unless it
+    ``discovered`` a clue, a place or a story flag, which the search's own words tell)."""
+
+    kept = [_text(item) for item in (taken if isinstance(taken, list) else []) if _text(item)]
     items = [_text(item) for item in (found if isinstance(found, list) else []) if _text(item)]
     objects = [_text(name) for name in (uncovered if isinstance(uncovered, list) else []) if _text(name)]
     sentences = []
+    if kept:
+        sentences.append(_sentence(_hero_says(turn, 'find', f'and take {_coins_first(kept)}')))
     if items:
-        coins = [item for item in items if item.split()[-1].lower() in COIN_CODES]
-        sentences.append(_hero_does(turn, f'find {_join_words([*coins, *(item for item in items if item not in coins)])}'))
+        sentences.append(_hero_does(turn, f'find {_coins_first(items)}'))
     if objects:
         sentences.append(_hero_does(turn, f'uncover {_join_words([_the(name) for name in objects])}'))
     return sentences or ([] if discovered else [_hero_does(turn, 'find nothing more')])

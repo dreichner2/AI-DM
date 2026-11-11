@@ -25,6 +25,9 @@ export type StoryChromeProps = {
   ttsAvailable: boolean
   ttsEnabled: boolean
   onToggleTts: () => void
+  /** Narration audio is playing: the narration button reads Stop and `onStopTts` silences it, keeping narration on. */
+  ttsPlaying?: boolean
+  onStopTts?: () => void
   isFullscreen: boolean
   onToggleFullscreen: () => void
   /** Opens the classic three-column console (campaign tools, director, diagnostics). */

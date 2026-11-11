@@ -18,18 +18,22 @@ export type StoryPreferences = {
   musicEnabled: boolean
   /** 0–1. */
   musicVolume: number
+  /** End my turn for me: a fight action that leaves only moving ends the turn (sent with each action). */
+  autoEndTurn: boolean
 }
 
 export const TEXT_SETTINGS_STORAGE_KEY = 'aidm:chatTextSettings'
 export const REDUCE_MOTION_STORAGE_KEY = 'aidm:storyReduceMotion'
 export const MUSIC_PREFERENCES_STORAGE_KEY = 'aidm:sceneMusicPreferences'
 export const MUSIC_ENABLED_STORAGE_KEY = 'aidm:sceneMusicEnabled'
+export const AUTO_END_TURN_STORAGE_KEY = 'aidm:autoEndTurn'
 
 const STORAGE_KEYS = [
   TEXT_SETTINGS_STORAGE_KEY,
   REDUCE_MOTION_STORAGE_KEY,
   MUSIC_PREFERENCES_STORAGE_KEY,
   MUSIC_ENABLED_STORAGE_KEY,
+  AUTO_END_TURN_STORAGE_KEY,
 ]
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 const DEFAULT_MUSIC_VOLUME = 0.7
@@ -90,6 +94,7 @@ function readPreferences(): StoryPreferences {
     reduceMotion: storedMotion === null ? systemPrefersReducedMotion() : storedMotion === 'true',
     musicEnabled: readItem(MUSIC_ENABLED_STORAGE_KEY) !== 'false',
     musicVolume: clampVolume(readRecord(MUSIC_PREFERENCES_STORAGE_KEY).volume),
+    autoEndTurn: readItem(AUTO_END_TURN_STORAGE_KEY) !== 'false',
   }
 }
 
@@ -99,7 +104,8 @@ function samePreferences(left: StoryPreferences, right: StoryPreferences) {
     left.typeface === right.typeface &&
     left.reduceMotion === right.reduceMotion &&
     left.musicEnabled === right.musicEnabled &&
-    left.musicVolume === right.musicVolume
+    left.musicVolume === right.musicVolume &&
+    left.autoEndTurn === right.autoEndTurn
   )
 }
 
@@ -157,6 +163,11 @@ export function setStoryReduceMotion(reduceMotion: boolean) {
 
 export function setMusicEnabled(enabled: boolean) {
   writeItem(MUSIC_ENABLED_STORAGE_KEY, String(enabled))
+  notify()
+}
+
+export function setAutoEndTurn(autoEndTurn: boolean) {
+  writeItem(AUTO_END_TURN_STORAGE_KEY, String(autoEndTurn))
   notify()
 }
 

@@ -340,17 +340,13 @@ def _logged_beats(table) -> list:
 
 def test_a_turns_beats_reach_the_completion_event_and_survive_a_reload(table):
     ledger = _send(table, 'Read the caravan ledger.', {'kind': 'object', 'source': 'scene_panel', 'object': {'id': 'inn_caravan_ledger', 'action': 'inspect'}})
+    # The search takes the key it finds in the same turn.
     bench = _send(table, "Search under the driver's bench.")
-    key = _send(table, 'Take the Caravan Strongbox Key.', {
-        'kind': 'item', 'source': 'scene_panel', 'inventory_action': 'pick_up',
-        'item': {'id': 'caravan_strongbox_key', 'name': 'Caravan Strongbox Key', 'quantity': 1},
-    })
 
     assert _texts(ledger)[0] == ('clue', 'Clue — Erased Caravan Ledger')
     assert ('objective_complete', 'Objective complete — Investigate the empty caravan') in _texts(ledger)
-    assert _texts(bench) == [('check', 'Investigation check: 15 — success')]
-    assert _texts(key) == [('item_gained', 'Taken — Caravan Strongbox Key')]
-    assert _logged_beats(table)[-3:] == [ledger, bench, key]
+    assert _texts(bench) == [('check', 'Investigation check: 15 — success'), ('item_gained', 'Taken — Caravan Strongbox Key')]
+    assert _logged_beats(table)[-2:] == [ledger, bench]
 
 
 def test_words_that_name_nothing_bring_the_scripted_narrator_hint_once_per_session(table):

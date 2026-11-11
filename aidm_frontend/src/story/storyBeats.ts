@@ -648,6 +648,11 @@ export function buildStoryBeats(
     checkTexts.set(turnId, check.text)
     serverBeats.set(turnId, turnBeats.filter((beat) => beat !== check))
   })
+  // A check shown as a roll card is not read out a second time as a beat.
+  serverBeats.forEach((turnBeats, turnId) => {
+    let cards = (cardsByTurn.get(turnId) ?? []).filter((card) => card.kind === 'check').length
+    if (cards) serverBeats.set(turnId, turnBeats.filter((beat) => beat.kind !== 'check' || cards-- <= 0))
+  })
   const emittedTurnBeats = new Set<number>()
   const emittedCardTurns = new Set<number>()
   const narratedTurnIds = new Set(entries.filter((entry) => entry.role === 'dm').map(turnIdOf).filter((turnId): turnId is number => turnId !== null))

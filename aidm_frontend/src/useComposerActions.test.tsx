@@ -3,7 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { StreamingTurn, TimelineEntry } from './types'
+import type { SessionState, StreamingTurn, TimelineEntry } from './types'
 import type { RollRequiredPayload, RollResolvedPayload } from './gameActions'
 import { RECONNECT_RESEND_WINDOW_MS, SEND_PENDING_RECOVERY_MS, useComposerActions } from './useComposerActions'
 
@@ -124,6 +124,32 @@ describe('useComposerActions realtime delivery recovery', () => {
         }),
       }),
     )
+  })
+
+  it('sends the player’s End my turn for me choice with every action', () => {
+    const choiceSent = (stored: string | null) => {
+      if (stored === null) localStorage.removeItem('aidm:autoEndTurn')
+      else localStorage.setItem('aidm:autoEndTurn', stored)
+      const socket = socketWithConnection(true)
+      const { result, unmount } = renderHook(() => useComposerHarness(socket, vi.fn()))
+      act(() => result.current.actions.submitAction('Attack the cutthroat'))
+      unmount()
+      return (sendMessageCalls(socket)[0]?.[1] as { auto_end_turn?: boolean } | undefined)?.auto_end_turn
+    }
+
+    expect([choiceSent(null), choiceSent('false'), choiceSent('true')]).toEqual([true, false, true])
+    localStorage.removeItem('aidm:autoEndTurn')
+  })
+
+  it('silences the narration voice the moment the player sends anything', () => {
+    const socket = socketWithConnection(true)
+    const stopTtsAudio = vi.fn()
+    const { result } = renderHook(() => useComposerHarness(socket, vi.fn(), { stopTtsAudio }))
+
+    act(() => result.current.actions.submitAction('Ask Mara about the caravan'))
+
+    expect(stopTtsAudio).toHaveBeenCalledOnce()
+    expect(sendMessageCalls(socket)).toHaveLength(1)
   })
 
   it('keeps the admin passcode in memory only and clears legacy storage on lock', () => {
@@ -643,5 +669,129 @@ describe('useComposerActions realtime delivery recovery', () => {
     expect(sessionStorage.getItem('aidm:composerDraft:3:6:4')).toBe('Search the lower vault.')
     act(() => vi.runOnlyPendingTimers())
     expect(result.current.actions.actionText).toBe('Listen at the sealed door.')
+  })
+})
+
+describe('useComposerActions typing ahead', () => {
+  const rollPrompt: RollRequiredPayload = {
+    sessionId: 5,
+    pendingTurnId: 41,
+    ruleType: 'ability_check',
+    dcHint: null,
+    prompt: 'Roll Dexterity to resolve the trap.',
+    remainingPlayerIds: [4],
+    rollSpec: {
+      die: 'd20',
+      mode: 'normal',
+      ruleType: 'ability_check',
+      reason: 'Dexterity check',
+      resultVisibility: 'hidden_until_landed',
+      ability: null,
+    },
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    sessionStorage.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  function typedWhileFinishing(sessionState: SessionState | null = null) {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const harness = renderHook(
+      ({ state }: { state: SessionState | null }) => useComposerHarness(socket, pushError, { sessionState: state }),
+      { initialProps: { state: sessionState } },
+    )
+    act(() => vi.runOnlyPendingTimers())
+    act(() => harness.result.current.actions.submitAction('Cross the bridge'))
+    act(() => harness.result.current.actions.updateActionText('I draw my blade.'))
+    let held = false
+    act(() => {
+      held = harness.result.current.actions.submitAction()
+    })
+    return { socket, pushError, held, ...harness }
+  }
+
+  it('holds an action sent while the turn finishes and sends it by itself when the turn unlocks', () => {
+    const { socket, pushError, held, result } = typedWhileFinishing()
+
+    expect(held).toBe(true)
+    expect(sendMessageCalls(socket)).toHaveLength(1)
+    expect(result.current.actions.heldActionText).toBe('I draw my blade.')
+    expect(result.current.actions.actionText).toBe('')
+    expect(pushError).not.toHaveBeenCalled()
+
+    // Typing on meanwhile is kept, and only the latest held action goes.
+    act(() => result.current.actions.submitAction('I raise my shield.'))
+    act(() => result.current.actions.updateActionText('Then I'))
+    expect(result.current.actions.heldActionText).toBe('I raise my shield.')
+
+    act(() => result.current.complete())
+    act(() => vi.advanceTimersByTime(1))
+
+    expect(sendMessageCalls(socket)).toHaveLength(2)
+    expect(sendMessageCalls(socket)[1]?.[1]).toMatchObject({ message: 'I raise my shield.' })
+    expect(result.current.actions.heldActionText).toBe('')
+    expect(result.current.actions.actionText).toBe('Then I')
+    expect(pushError).not.toHaveBeenCalled()
+  })
+
+  it('gives the held words back to the box when the turn ends in a roll prompt', () => {
+    const { socket, result } = typedWhileFinishing()
+    const { client_message_id: sent } = vi.mocked(socket.emit).mock.calls[0]?.[1] as { client_message_id: string }
+
+    act(() => result.current.actions.handleSavedMessages([sent]))
+    act(() => result.current.actions.handleRollRequired(rollPrompt))
+    act(() => vi.advanceTimersByTime(1))
+
+    expect(sendMessageCalls(socket)).toHaveLength(1)
+    expect(result.current.actions.heldActionText).toBe('')
+    expect(result.current.actions.actionText).toBe('I draw my blade.')
+  })
+
+  it('gives the held words back, after anything typed since, when a fight started while they waited', () => {
+    const calm = { state_snapshot: { combat: { status: 'none' } } } as unknown as SessionState
+    const { socket, result, rerender } = typedWhileFinishing(calm)
+
+    act(() => result.current.actions.updateActionText('Run!'))
+    rerender({ state: { state_snapshot: { combat: { status: 'active' } } } as unknown as SessionState })
+    act(() => result.current.complete())
+    act(() => vi.advanceTimersByTime(1))
+
+    expect(sendMessageCalls(socket)).toHaveLength(1)
+    expect(result.current.actions.actionText).toBe('Run!\nI draw my blade.')
+  })
+
+  it('cancels a held action, giving its words back', () => {
+    const { socket, result } = typedWhileFinishing()
+
+    act(() => result.current.actions.cancelHeldAction())
+    act(() => result.current.complete())
+    act(() => vi.advanceTimersByTime(1))
+
+    expect(sendMessageCalls(socket)).toHaveLength(1)
+    expect(result.current.actions.heldActionText).toBe('')
+    expect(result.current.actions.actionText).toBe('I draw my blade.')
+  })
+
+  it('leads into the hero choice instead of a notice when there is no hero to act as', () => {
+    const socket = socketWithConnection(true)
+    const pushError = vi.fn()
+    const onActorMissing = vi.fn()
+    const { result } = renderHook(() =>
+      useComposerHarness(socket, pushError, { selectedPlayerId: null, selectedPlayer: null, onActorMissing }),
+    )
+
+    act(() => result.current.actions.submitAction('I look around.'))
+    act(() => result.current.actions.startDiceRoll())
+
+    expect(onActorMissing).toHaveBeenCalledTimes(2)
+    expect(socket.emit).not.toHaveBeenCalled()
+    expect(pushError).not.toHaveBeenCalled()
   })
 })

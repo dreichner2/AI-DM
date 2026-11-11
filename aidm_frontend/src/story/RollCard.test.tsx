@@ -2,6 +2,8 @@
 import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { StoryAudio } from './audio/storyAmbience'
+import { setStoryAudio } from './audio/storySound'
 import { RollCard } from './RollCard'
 import { CARD_GAP_MS, D20_CYCLE_MS, DICE_CYCLE_MS, PLAY_LIMIT_MS, SETTLE_MS, playRolls, resetRollPlayback, rollPlayback } from './rollPlayback'
 import type { RollCardRecord } from './storyRolls'
@@ -235,5 +237,50 @@ describe('RollCard playing', () => {
     const { container } = render(<RollCard roll={pounce} playback={null} />)
     expect(card(container)).toHaveAttribute('data-phase', 'done')
     expect(card(container)).not.toHaveAttribute('data-live')
+  })
+})
+
+describe('RollCard sounds', () => {
+  function listen() {
+    const playCue = vi.fn()
+    setStoryAudio({ playCue } as unknown as StoryAudio)
+    return playCue
+  }
+
+  afterEach(() => setStoryAudio(null))
+
+  it('ticks on each flicker step, then sounds the natural 20 once when the card lands', () => {
+    vi.useFakeTimers({ now: NOW })
+    playRolls(18, [swing], NOW)
+    const playCue = listen()
+    render(<RollCard roll={swing} playback={rollPlayback(swing.id)} />)
+
+    advance(D20_CYCLE_MS)
+    const ticks = playCue.mock.calls.filter(([cue]) => cue === 'dice_tick').length
+    // The d20 flickers faster than a step every 150 ms, slowing as it nears landing.
+    expect(ticks).toBeGreaterThan(D20_CYCLE_MS / 150)
+    expect(playCue).not.toHaveBeenCalledWith('nat20')
+
+    advance(SETTLE_MS + DICE_CYCLE_MS + 50)
+    expect(playCue.mock.calls.filter(([cue]) => cue === 'nat20')).toHaveLength(1)
+    const afterLanding = playCue.mock.calls.length
+    advance(500)
+    expect(playCue).toHaveBeenCalledTimes(afterLanding)
+    expect(playCue).not.toHaveBeenCalledWith('nat1')
+  })
+
+  it('sounds a natural 1 when its card lands, and nothing for a card read from history', () => {
+    vi.useFakeTimers({ now: NOW })
+    playRolls(17, [lure], NOW)
+    const playCue = listen()
+    render(<RollCard roll={lure} playback={rollPlayback(lure.id)} />)
+    advance(D20_CYCLE_MS + SETTLE_MS + 50)
+    expect(playCue).toHaveBeenCalledWith('nat1')
+    cleanup()
+
+    const quiet = listen()
+    render(<RollCard roll={lure} />)
+    advance(D20_CYCLE_MS + SETTLE_MS + 50)
+    expect(quiet).not.toHaveBeenCalled()
   })
 })

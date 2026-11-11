@@ -16,6 +16,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { ComposerMode } from '../gameActions'
+import type { CombatPendingFinisher } from '../gameSelectors'
 import { objectActionSubmission, pickupSubmission, travelSubmission, type ActionSubmission } from './actionIntents'
 import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
@@ -54,8 +55,10 @@ const MODE_SECTIONS: Partial<Record<ComposerMode, TraySection>> = {
 
 const SUGGESTION_ICONS: Partial<Record<StorySuggestion['kind'], LucideIcon>> = {
   take: Backpack,
+  take_all: Backpack,
   object: Hand,
   talk: MessageCircle,
+  say: MessageCircle,
   trade: Coins,
   travel: Footprints,
 }
@@ -71,11 +74,12 @@ const CONNECTION_LABELS = {
   offline: 'Offline',
 } as const
 
-/** `down` is the downed hero's placeholder, or '' for a hero who can act. */
-function placeholderFor(mode: ComposerMode, hasCharacter: boolean, down: string) {
+/** `down` is the downed hero's placeholder, or '' for a hero who can act; `prompt` asks for a finishing blow. */
+function placeholderFor(mode: ComposerMode, hasCharacter: boolean, down: string, prompt: string) {
   if (!hasCharacter) return 'Choose a character first'
   if (mode === 'ooc') return 'Say it out of character…'
   if (down) return down
+  if (prompt) return prompt
   if (mode === 'item') return 'Describe what you do with it…'
   if (mode === 'emote') return 'Describe the gesture…'
   return 'What do you do?'
@@ -99,6 +103,37 @@ function writeSentCount(count: number) {
 
 function Dots() {
   return <span className="story-dots" aria-hidden="true"><i /><i /><i /></span>
+}
+
+/**
+ * The finishing blow is the viewer's to tell: `Describe how you end it` puts them in the box, `Let the story
+ * tell it` is said as it reads. Whatever they send meanwhile is the finishing blow.
+ */
+function FinisherRow({
+  actions,
+  onDescribe,
+  onSay,
+}: {
+  actions: CombatPendingFinisher['offeredActions']
+  onDescribe: () => void
+  onSay: (words: string) => void
+}) {
+  return (
+    <div className="story-suggestions" role="group" aria-label="The finishing blow">
+      {actions.map((action, index) => (
+        <button
+          key={action.id || action.label}
+          type="button"
+          className="story-chip"
+          data-kind="finisher"
+          style={{ animationDelay: `${index * 30}ms` }}
+          onClick={() => (action.prompt ? onDescribe() : onSay(action.label))}
+        >
+          {action.label}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 /** One line of suggestions; chips that would not fit wait behind `More…` instead of being cut off. */
@@ -176,11 +211,16 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const combatBundle = board.combatState.active
     ? board.combatState.legalActionBundles.find((bundle) => bundle.playerId === board.playerId)
     : undefined
-  const ribbonActive = !rollPromptActive && Boolean(combatBundle)
+  // A finishing blow waiting to be told: its offered actions are only in the finishing hero's own view.
+  const finisher = board.worldState.combat.pendingFinisher ?? null
+  const finisherActions = finisher?.offeredActions ?? []
+  const finisherPrompt = finisherActions.find((action) => action.prompt)?.prompt ?? ''
+  const finisherWaitingLine = finisher && !finisherActions.length ? finisher.waitingLine : ''
+  const ribbonActive = !rollPromptActive && Boolean(combatBundle) && !finisherActions.length
   const inputDisabled =
     !hasCharacter || Boolean(board.turnRecoveryGate) || (viewerDown && !speakingOutOfCharacter)
-  const sendBlocked =
-    inputDisabled || dmWorking || deliveryUncertain || !connected || !actionText.trim()
+  // While the Dungeon Master works, a send waits for the turn to finish (useComposerActions holds it).
+  const sendBlocked = inputDisabled || deliveryUncertain || !connected || !actionText.trim()
   const quietMoment =
     hasCharacter &&
     !viewerDown &&
@@ -257,6 +297,12 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   }
 
   const chooseSuggestion = (suggestion: StorySuggestion) => {
+    // Whatever the player reaches for next, the narrator stops talking over it.
+    composer.stopTtsAudio()
+    if (suggestion.kind === 'take_all') {
+      if (composer.submitAction(`${suggestion.label}.`)) recordSent()
+      return
+    }
     if (suggestion.kind === 'trade') {
       setTradeMerchantId(suggestion.merchant.id)
       openTray('trade')
@@ -278,9 +324,17 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
       submitTyped(travelSubmission(suggestion.exit))
       return
     }
+    if (suggestion.kind === 'say') {
+      if (composer.submitAction(suggestion.label)) recordSent()
+      return
+    }
     if (composerMode !== 'action') applyComposerMode('action')
     composer.updateActionText(suggestion.text)
     focusInput()
+  }
+
+  const sayAsFinisher = (words: string) => {
+    if (composer.submitAction(words)) recordSent()
   }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -389,6 +443,16 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
         </p>
       )
     }
+    if (composer.heldActionText) {
+      return (
+        <p className="story-dock-status" data-tone="muted" role="status">
+          <span>{`Waiting for the story to catch up — "${composer.heldActionText}"`}</span>
+          <button type="button" className="story-link" onClick={composer.cancelHeldAction}>
+            Cancel
+          </button>
+        </p>
+      )
+    }
     if (notice && !notice.isWaitingOnSelectedPlayer) {
       return (
         <p className="story-dock-status" role="status">
@@ -404,6 +468,9 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
           <Dots />
         </p>
       )
+    }
+    if (finisherWaitingLine) {
+      return <p className="story-dock-status" data-tone="muted" role="status">{finisherWaitingLine}</p>
     }
     if (hasCharacter && !composer.selectedPlayerHasTurn) {
       return <p className="story-dock-status" data-tone="muted" role="status">{composer.turnControlStatusLabel}</p>
@@ -430,7 +497,9 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
         <StoryRollPrompt notice={notice} composer={composer} onPrepare={board.onPreparePendingRoll} />
       ) : (
         <>
-          {ribbonActive ? (
+          {finisherActions.length && hasCharacter && !viewerDown ? (
+            <FinisherRow actions={finisherActions} onDescribe={focusInput} onSay={sayAsFinisher} />
+          ) : ribbonActive ? (
             <StoryCombatRibbon
               combat={board.combatState}
               playerId={board.playerId}
@@ -480,7 +549,12 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               className="story-input"
               rows={1}
               value={actionText}
-              placeholder={placeholderFor(composerMode, hasCharacter, viewerDown ? (viewerOut ? OUT_PLACEHOLDER : DOWN_PLACEHOLDER) : '')}
+              placeholder={placeholderFor(
+                composerMode,
+                hasCharacter,
+                viewerDown ? (viewerOut ? OUT_PLACEHOLDER : DOWN_PLACEHOLDER) : '',
+                finisherPrompt,
+              )}
               disabled={inputDisabled}
               onChange={(event) => composer.updateActionText(event.target.value)}
               onKeyDown={handleKeyDown}

@@ -546,6 +546,27 @@ describe('buildStoryBeats with roll cards', () => {
     expect(beats[1].gap).toBe('tight')
   })
 
+  it('does not read a check out again as a beat when its roll card is shown', () => {
+    const beats = buildStoryBeats(
+      [
+        entry('log-1', 'player', 'Ysolde', 'Search the wagon bed.', { turn_id: 5 }),
+        entry('log-2', 'dm', 'DM', 'You find and take 6 gp.', {
+          turn_id: 5,
+          storyRolls: [check],
+          storyBeats: [
+            { kind: 'check', text: 'Investigation check: 19 — success' },
+            { kind: 'coin', text: '+6 gp' },
+          ],
+        }),
+      ],
+      { selectedPlayerName: 'Ysolde' },
+    )
+
+    expect(kinds(beats)).toEqual(['action', 'rollCard', 'narration', 'turnBeats'])
+    const turnBeats = beats.find((beat) => beat.kind === 'turnBeats')
+    expect(turnBeats?.kind === 'turnBeats' && turnBeats.beats.map((beat) => beat.text)).toEqual(['+6 gp'])
+  })
+
   it('shows cards that arrived live after the action line before the narrator has written anything', () => {
     const beats = buildStoryBeats([
       entry('log-1', 'dm', 'DM', 'The wall looms.', { turn_id: 4 }),

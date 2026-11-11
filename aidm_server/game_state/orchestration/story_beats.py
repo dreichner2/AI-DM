@@ -31,6 +31,14 @@ A fight maneuver or improvised action the hero took has its check beat
 (``Athletics check: 17 — success (DC 12)``), and an enemy that is newly held,
 captured or yielding has its own: ``Grappled — Ashmarked Cutthroat``,
 ``Captured — Ashmarked Cutthroat``, ``Ashmarked Cutthroat yields``.
+
+A level beat carries ``level``: what the hero gained, from their record before
+the turn to after it (two levels in one turn are one beat for the last).
+``maxHp`` always; ``proficiencyBonus`` when it rose; ``features``, the class
+capabilities the new level has and the old did not; ``spellSlots``, each slot
+level whose maximum changed; ``spells``, the spells the class grants at the new
+level and not at the old (at most eight names, the rest counted as ``more``).
+Empty lists are left out. The hit points the level added are not also an hp beat.
 """
 
 from __future__ import annotations
@@ -39,14 +47,17 @@ from collections import Counter
 from typing import Any
 
 from aidm_server.character_state import ABILITY_KEYS, SKILL_ABILITY
+from aidm_server.class_features import capabilities_for_class
 from aidm_server.combat.defeat import WAKE_CHANGE_TYPES
 from aidm_server.combat.maneuvers import IMPROVISE_TYPE, MANEUVER_TYPES, YIELD_CONDITIONS
 from aidm_server.combat.vitality import OUT_OF_FIGHT, VITALITY_CONDITIONS
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
+from aidm_server.game_state.leveling import proficiency_bonus_for_level
 from aidm_server.game_state.models import parse_actor_player_id
 from aidm_server.models import DmTurn, Session, SessionLogEntry, TurnEvent, safe_json_dumps, safe_json_loads
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
+from aidm_server.spellbook import class_spells_for_level
 from aidm_server.turn_events import DM_RESPONSE_EVENT
 
 STORY_BEATS_KEY = 'storyBeats'
@@ -70,6 +81,8 @@ GENERIC_CHECK_NAMES = frozenset({'check', 'ability'})
 WAKING_CONDITIONS = frozenset({*VITALITY_CONDITIONS, 'prone'})
 # How an item came or went, alone (``Taken — …``) and in party play (``Arden Vale took …``).
 ITEM_VERBS = {'Taken': 'took', 'Received': 'received', 'Sold': 'sold', 'Given': 'gave', 'Used': 'used'}
+# A level beat names this many new spells; the rest are counted.
+LEVEL_SPELLS_NAMED = 8
 
 
 def _text(value: Any) -> str:
@@ -89,6 +102,21 @@ def _int(value: Any) -> int:
 
 def _humanize(value: Any) -> str:
     return _text(value).replace('_', ' ')
+
+
+def _slot_maxima(resources: Any) -> dict[str, int]:
+    """Each spell-slot level's maximum, pact slots counted at their level, keyed by the level as text."""
+
+    resources = resources if isinstance(resources, dict) else {}
+    slots = resources.get('slots') if isinstance(resources.get('slots'), dict) else {}
+    maxima: Counter = Counter()
+    for level, slot in slots.items():
+        if isinstance(slot, dict):
+            maxima[str(level)] += _int(slot.get('max'))
+    pact = resources.get('pactSlots') if isinstance(resources.get('pactSlots'), dict) else {}
+    if _int(pact.get('slotLevel')):
+        maxima[str(_int(pact['slotLevel']))] += _int(pact.get('max'))
+    return {level: maximum for level, maximum in maxima.items() if maximum > 0}
 
 
 def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
@@ -129,6 +157,9 @@ def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
             else {},
             'xp': _int(xp.get('current')),
             'level': _int(hero.get('level')),
+            'class': _text(hero.get('class')),
+            'maxHp': _int(health.get('maxHp')),
+            'spellSlots': _slot_maxima(hero.get('spellResources')),
         }
     scene = projected.get('currentScene') if isinstance(projected.get('currentScene'), dict) else {}
     journal = projected.get('journal') if isinstance(projected.get('journal'), dict) else {}
@@ -316,6 +347,51 @@ def _shared_gains(
     ]
 
 
+def _level_hp(old: dict[str, Any], new: dict[str, Any]) -> int:
+    """The hit points a level reached this turn added: the rise in maximum (a hero who is down gains only the maximum)."""
+
+    if new['level'] <= old['level'] or new['hp'] <= 0:
+        return 0
+    return max(0, _int(new.get('maxHp')) - _int(old.get('maxHp')))
+
+
+def _level_gains(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """The level beat's ``level``: what the hero gained from ``old`` (before the turn) to ``new``."""
+
+    class_name = new.get('class')
+    gains: dict[str, Any] = {
+        'hero': new['name'] or 'Someone',
+        'level': new['level'],
+        'maxHp': {'from': _int(old.get('maxHp')), 'to': _int(new.get('maxHp'))},
+    }
+    bonus_from, bonus_to = proficiency_bonus_for_level(old['level']), proficiency_bonus_for_level(new['level'])
+    if bonus_to != bonus_from:
+        gains['proficiencyBonus'] = {'from': bonus_from, 'to': bonus_to}
+    had = {capability['id'] for capability in capabilities_for_class(class_name, old['level'])}
+    features = [
+        {'name': capability['name'], **({'text': capability['description']} if capability.get('description') else {})}
+        for capability in capabilities_for_class(class_name, new['level'])
+        if capability['id'] not in had
+    ]
+    old_slots, new_slots = old.get('spellSlots') or {}, new.get('spellSlots') or {}
+    slots = [
+        {'level': int(level), 'from': _int(old_slots.get(level)), 'to': _int(new_slots.get(level))}
+        for level in sorted({*old_slots, *new_slots}, key=int)
+        if _int(old_slots.get(level)) != _int(new_slots.get(level))
+    ]
+    known = {spell['name'] for spell in class_spells_for_level(class_name, old['level'])}
+    spells = list(dict.fromkeys(spell['name'] for spell in class_spells_for_level(class_name, new['level']) if spell['name'] not in known))
+    if features:
+        gains['features'] = features
+    if slots:
+        gains['spellSlots'] = slots
+    if spells:
+        gains['spells'] = spells[:LEVEL_SPELLS_NAMED]
+    if len(spells) > LEVEL_SPELLS_NAMED:
+        gains['more'] = len(spells) - LEVEL_SPELLS_NAMED
+    return gains
+
+
 def story_beats(
     before: dict[str, Any],
     after: dict[str, Any],
@@ -354,7 +430,8 @@ def story_beats(
         for hero_id in change.get('wokenActorIds') or []
     }
     for hero_id, old, new in pairs:
-        delta = new['hp'] - old['hp']
+        # The hit points a new level added are told by its level beat.
+        delta = new['hp'] - old['hp'] - _level_hp(old, new)
         # Waking from 0 HP is the hero coming round, not healing.
         if delta and not (hero_id in woken and old['hp'] <= 0):
             text = f'Took {-delta} damage' if delta < 0 else f'Healed {delta}'
@@ -388,7 +465,10 @@ def story_beats(
     if end_reason in COMBAT_END_TEXT:
         beats.append({'kind': 'combat_end', 'text': COMBAT_END_TEXT[end_reason]})
 
-    picked_up = set(before.get('sceneItems') or []) - set(after.get('sceneItems') or [])
+    # Items taken from the scene, those a search revealed and took in the same turn included.
+    picked_up = (set(before.get('sceneItems') or []) - set(after.get('sceneItems') or [])) | {
+        _text(change.get('itemName')) for change in applied_changes if change.get('type') == 'scene.item.remove'
+    }
     dropped = set(after.get('sceneItems') or []) - set(before.get('sceneItems') or [])
     sold = {_text(change.get('itemName')) for change in applied_changes if change.get('type') == 'shop.sell'}
     given = {_text(change.get('itemName')) for change in applied_changes if change.get('type') == 'inventory.transfer'}
@@ -434,7 +514,7 @@ def story_beats(
     for _hero_id, old, new in heroes_told:
         if new['level'] > old['level']:
             text = f"{new['name'] or 'Someone'} reached level {new['level']}" if party else f"Level {new['level']} reached"
-            beats.append({'kind': 'level', 'text': text})
+            beats.append({'kind': 'level', 'text': text, 'level': _level_gains(old, new)})
     if any(change.get('type') == 'combat.defeat_recovery' for change in applied_changes):
         beats.append({'kind': 'defeat', 'text': 'Defeated — you wake later with 1 HP'})
     elif any(change.get('type') == 'party.wake' for change in applied_changes):

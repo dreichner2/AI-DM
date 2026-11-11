@@ -59,12 +59,14 @@ import {
   selectedHealingAmount,
   sellSubmission,
   spellCastSubmission,
+  travelSubmission,
   type ActionSubmission,
 } from './actionIntents'
 import { combatActionLabel, combatTargetLabel, offeredTargets } from './combatLabels'
 import { CoinGlyph } from './glyphs'
-import { objectChoices } from './storySuggestions'
+import { objectChoices, TAKE_ALL_LABEL } from './storySuggestions'
 import { coinLabel, copperValue, sellOffer, tradeLineKey, tradeRefusals, type Coins as CoinAmounts } from './trade'
+import { travelBlockedReason } from './travelBlock'
 import { useEdgeFades } from './useEdgeFades'
 
 export type TraySection =
@@ -1094,12 +1096,22 @@ export function StoryActionTray({
     const objects = controls.interactables
       .map((object) => ({ object, offers: sceneOffers(object) }))
       .filter(({ offers }) => offers.length)
+    // Every way onward the server offers, as the Map tab lists them; a fight has none.
+    const exits = board.worldState.combat.active ? [] : board.worldState.availableExits.filter((exit) => exit.id)
+    const travelReason = travelBlockedReason(board)
     return (
       <>
         {loose.length ? (
           <div className="story-tray-object" role="group" aria-label="Lying here">
             <span className="story-label" aria-hidden="true">Lying here</span>
             <div className="story-tray-offers">
+              {loose.length > 1
+                ? renderOffer('take-all', TAKE_ALL_LABEL, worldActionReason, () => {
+                    if (!composer.submitAction(`${TAKE_ALL_LABEL}.`)) return
+                    onSent()
+                    onDone()
+                  })
+                : null}
               {loose.map((item) =>
                 renderOffer(`take-${item.id}`, item.takeLabel ?? '', worldActionReason, () =>
                   submitTyped(pickupSubmission(item, item.takeLabel ?? '')),
@@ -1128,6 +1140,16 @@ export function StoryActionTray({
           </div>
         ))}
         {renderRest()}
+        {exits.length ? (
+          <div className="story-tray-object" role="group" aria-label="Ways onward">
+            <span className="story-label" aria-hidden="true">Ways onward</span>
+            <div className="story-tray-offers">
+              {exits.map((exit) =>
+                renderOffer(`travel-${exit.id}`, `Go to ${exit.name}`, travelReason, () => submitTyped(travelSubmission(exit))),
+              )}
+            </div>
+          </div>
+        ) : null}
       </>
     )
   }
@@ -1135,8 +1157,10 @@ export function StoryActionTray({
   /* ---- Combat ---- */
   const renderCombat = () => {
     if (!combatBundle) return null
+    // The finishing blow is told from the dock, in the player's own words.
     const choices = combatBundle.actions.filter(
-      (action) => action.available && action.type !== 'end_turn' && action.id !== 'combat.end_turn',
+      (action) =>
+        action.available && action.type !== 'end_turn' && action.id !== 'combat.end_turn' && action.type !== 'finisher',
     )
     const take = (action: CombatLegalAction, target: CombatLegalAction['targets'][number] | null) => {
       const submission = combatActionSubmission(combatBundle.actorName, action, target)

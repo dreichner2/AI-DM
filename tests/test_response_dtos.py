@@ -3,7 +3,7 @@ from __future__ import annotations
 import aidm_server.blueprints.creatures as creatures_blueprint
 from aidm_server.database import db
 from aidm_server.models import CampaignSegment, Map
-from tests.helpers import seed_world_campaign_player_session
+from tests.helpers import seed_played_turn, seed_world_campaign_player_session
 
 
 def test_shared_resource_dtos_match_workspace_and_direct_endpoints(client, app):
@@ -47,6 +47,7 @@ def test_shared_resource_dtos_match_workspace_and_direct_endpoints(client, app):
 
 def test_session_chapter_fields_match_across_list_workspace_and_state(client, app):
     ids = seed_world_campaign_player_session(app)
+    seed_played_turn(app, ids['session_id'])
     chapter_two_id = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']}).get_json()['session_id']
     chapter_keys = ('status', 'is_current', 'chapter_number', 'ended_at', 'chapter_recap')
 

@@ -631,6 +631,41 @@ describe('StoryActionTray', () => {
     expect(within(actions).getAllByRole('button').map((link) => link.textContent)).toEqual(['Examine Lead wagon'])
   })
 
+  it('ends the Scene list with every way onward, as the Map tab lists them, and none in a fight', () => {
+    const board = testBoard()
+    renderDock(board)
+    const scene = openSection('Scene')
+    const onward = within(scene).getByRole('group', { name: 'Ways onward' })
+    expect(scene.querySelector('.story-tray-content')?.lastElementChild).toBe(onward)
+    fireEvent.click(within(onward).getByRole('button', { name: 'Go to North causeway' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith(
+      'The party travels to North causeway.',
+      expect.objectContaining({ kind: 'travel', location: { id: 'causeway', name: 'North causeway' } }),
+    )
+    cleanup()
+
+    renderDock(testBoard({ streamingTurnActive: true }))
+    const blocked = within(openSection('Scene')).getByRole('button', { name: 'Go to North causeway' })
+    expect(blocked).toHaveAttribute('aria-disabled', 'true')
+    expect(blocked).toHaveAccessibleDescription('Wait for the Dungeon Master to finish.')
+    cleanup()
+
+    renderDock(testBoard({ worldState: testWorld({ combat: testCombat() }) }))
+    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Actions' })).getByRole('button', { name: 'Scene' }))
+    expect(screen.queryByRole('group', { name: 'Ways onward' })).not.toBeInTheDocument()
+  })
+
+  it('leaves the finishing blow out of the Combat list: it is told from the dock', () => {
+    const [attack] = testCombat().legalActionBundles[0].actions
+    const finisher = { ...attack, id: 'finisher.describe', type: 'finisher', label: 'Describe how you end it', requiresTarget: false, targets: [] }
+    renderDock(testBoard({ worldState: testWorld({ combat: testCombat({ bundle: { actions: [finisher, attack] } }) }) }))
+    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
+    const list = within(screen.getByRole('region', { name: 'Combat' })).getByRole('list', { name: 'Combat actions' })
+    expect(within(list).queryByRole('button', { name: 'Describe how you end it' })).not.toBeInTheDocument()
+    expect(within(list).getByRole('button', { name: 'Attack with Longsword' })).toBeInTheDocument()
+  })
+
   it('opens on Scene outside combat, and holds every legal combat action in a Combat list during a fight', () => {
     renderDock(testBoard())
     fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
