@@ -8,7 +8,14 @@ The highest-return work now is the open items under "Remaining After the Story
 Overhaul" and measuring play with a live AI provider, while keeping security,
 runtime, and maintenance risk low.
 
-## Current Status - 2026-11-10 (the Story overhaul)
+## Current Status - 2026-11-11
+
+The current picture of the Story overhaul branch (what is in, how each part was
+checked, what is not verified, what is in progress and the plan) is
+[`docs/overhaul_status.md`](overhaul_status.md). Where the sections below
+differ from it, that page is the newer one.
+
+## Status - 2026-11-10 (the Story overhaul)
 
 The Story overhaul reworked play end to end (see Done). The ready-made
 adventure plays from the title screen to an ending in Safe Mode, verified by the
