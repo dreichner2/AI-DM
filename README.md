@@ -131,6 +131,21 @@ DeepSeek, then NVIDIA credentials before falling back to Safe Mode. Models and
 provider capabilities are defined in
 [aidm_server/provider_registry.py](aidm_server/provider_registry.py).
 
+### Narrator voice
+
+The narration can also be read aloud. The server chooses the voice from
+`AIDM_TTS_PROVIDER` (`openai` or `deepgram`); left unset, it uses OpenAI when
+`AIDM_OPENAI_API_KEY` (or `OPENAI_API_KEY`) is set, else Deepgram when
+`AIDM_DEEPGRAM_API_KEY` is set. OpenAI narrates through its Realtime models,
+because its older speech models (`tts-1`, `tts-1-hd`, `gpt-4o-mini-tts`) are
+removed on 6 January 2027. Players pick a voice, an accent and a quality in
+**Settings → Sound**: **Best** (`gpt-realtime-2.1`, about 6 cents for a
+~40-second narrated turn at list prices) or **Faster**
+(`gpt-realtime-2.1-mini`, under 2 cents). `AIDM_OPENAI_TTS_MODEL`,
+`AIDM_OPENAI_TTS_VOICE` and `AIDM_OPENAI_TTS_ACCENT` set the server's defaults.
+Voice keys, like every provider key, live only in the server environment; the
+browser never sees them.
+
 Never commit `.env.local` or paste real credentials into logs, issues, or
 screenshots.
 

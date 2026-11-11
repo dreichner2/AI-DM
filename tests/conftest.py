@@ -41,6 +41,10 @@ def app_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv('GOOGLE_GENAI_API_KEY', '')
     monkeypatch.setenv('AIDM_NVIDIA_API_KEY', '')
     monkeypatch.setenv('NVIDIA_API_KEY', '')
+    # A narrator voice key in the developer's shell must never reach a test app.
+    monkeypatch.setenv('AIDM_TTS_PROVIDER', '')
+    monkeypatch.setenv('AIDM_OPENAI_API_KEY', '')
+    monkeypatch.setenv('OPENAI_API_KEY', '')
 
     import aidm_server.main as main_module
     main_module = importlib.reload(main_module)

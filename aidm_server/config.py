@@ -16,10 +16,20 @@ from aidm_server.rate_limiter import (
     RATE_LIMIT_STORE_MEMORY,
     SUPPORTED_RATE_LIMIT_STORES,
 )
+from aidm_server.tts_openai import (
+    DEFAULT_OPENAI_TTS_ACCENT,
+    DEFAULT_OPENAI_TTS_MODEL,
+    DEFAULT_OPENAI_TTS_VOICE,
+    OPENAI_TTS_ACCENTS,
+    OPENAI_TTS_VOICES,
+)
 
 TURN_COORDINATOR_STORE_MEMORY = 'memory'
 TURN_COORDINATOR_STORE_DATABASE = 'database'
 SUPPORTED_TURN_COORDINATOR_STORES = {TURN_COORDINATOR_STORE_MEMORY, TURN_COORDINATOR_STORE_DATABASE}
+
+# Narrator voice providers. Unset means OpenAI when its key is set, else Deepgram when its key is set.
+SUPPORTED_TTS_PROVIDERS = {'openai', 'deepgram'}
 
 SOCKETIO_WORKER_MODEL_SINGLE = 'single'
 SOCKETIO_WORKER_MODEL_STICKY = 'sticky'
@@ -123,6 +133,11 @@ class AppConfig:
     google_genai_api_key: str | None
     deepgram_api_key: str | None
     deepgram_tts_model: str
+    tts_provider: str | None
+    openai_api_key: str | None
+    openai_tts_model: str
+    openai_tts_voice: str
+    openai_tts_accent: str
 
     rules_engine_enabled: bool
     segment_evaluator_enabled: bool
@@ -292,6 +307,24 @@ def load_config() -> AppConfig:
             'Unsupported AIDM_TURN_COORDINATOR_STORE '
             f'"{turn_coordinator_store}". Expected one of: {", ".join(sorted(SUPPORTED_TURN_COORDINATOR_STORES))}.'
         )
+    tts_provider = (os.getenv('AIDM_TTS_PROVIDER') or '').strip().lower() or None
+    if tts_provider is not None and tts_provider not in SUPPORTED_TTS_PROVIDERS:
+        raise ValueError(
+            'Unsupported AIDM_TTS_PROVIDER '
+            f'"{tts_provider}". Expected one of: {", ".join(sorted(SUPPORTED_TTS_PROVIDERS))}.'
+        )
+    openai_tts_voice = (os.getenv('AIDM_OPENAI_TTS_VOICE') or DEFAULT_OPENAI_TTS_VOICE).strip().lower()
+    if openai_tts_voice not in OPENAI_TTS_VOICES:
+        raise ValueError(
+            f'Unsupported AIDM_OPENAI_TTS_VOICE "{openai_tts_voice}". Expected one of: {", ".join(OPENAI_TTS_VOICES)}.'
+        )
+    openai_tts_accent = (os.getenv('AIDM_OPENAI_TTS_ACCENT') or DEFAULT_OPENAI_TTS_ACCENT).strip().lower()
+    openai_tts_accent_ids = [accent['id'] for accent in OPENAI_TTS_ACCENTS]
+    if openai_tts_accent not in openai_tts_accent_ids:
+        raise ValueError(
+            f'Unsupported AIDM_OPENAI_TTS_ACCENT "{openai_tts_accent}". '
+            f'Expected one of: {", ".join(openai_tts_accent_ids)}.'
+        )
     account_cookie_samesite = (os.getenv('AIDM_ACCOUNT_COOKIE_SAMESITE') or 'Lax').strip().capitalize()
     if account_cookie_samesite not in {'Lax', 'Strict', 'None'}:
         raise ValueError('Unsupported AIDM_ACCOUNT_COOKIE_SAMESITE. Expected one of: Lax, Strict, None.')
@@ -337,6 +370,11 @@ def load_config() -> AppConfig:
         google_genai_api_key=os.getenv('GOOGLE_GENAI_API_KEY'),
         deepgram_api_key=os.getenv('AIDM_DEEPGRAM_API_KEY') or os.getenv('DEEPGRAM_API_KEY'),
         deepgram_tts_model=os.getenv('AIDM_DEEPGRAM_TTS_MODEL', 'aura-2-draco-en'),
+        tts_provider=tts_provider,
+        openai_api_key=(os.getenv('AIDM_OPENAI_API_KEY') or os.getenv('OPENAI_API_KEY') or '').strip() or None,
+        openai_tts_model=(os.getenv('AIDM_OPENAI_TTS_MODEL') or DEFAULT_OPENAI_TTS_MODEL).strip(),
+        openai_tts_voice=openai_tts_voice,
+        openai_tts_accent=openai_tts_accent,
         rules_engine_enabled=_to_bool(os.getenv('AIDM_RULES_ENGINE_ENABLED'), default=True),
         segment_evaluator_enabled=_to_bool(os.getenv('AIDM_SEGMENT_EVALUATOR_ENABLED'), default=True),
         telemetry_enabled=_to_bool(os.getenv('AIDM_TELEMETRY_ENABLED'), default=False),

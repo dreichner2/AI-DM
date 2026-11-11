@@ -81,6 +81,28 @@ An opening turn (`message_kind: "opening"`) adds an `OPENING BRIEF` block built
 from the opening scene, the present NPCs, the pack's GM-only starting brief and
 the active checkpoint, and never asks for a roll.
 
+Every other turn adds, directly above `PLAYER INPUT`, the `ENGINE THIS TURN`
+block and its seven `RULES FOR THIS TURN` (`render_engine_brief` in
+`prompt_templates.py`), rendered from `state_pipeline.engineBrief`, which the
+pre-narration pipeline builds from the turn's real results
+(`game_state/orchestration/engine_brief.py`): what the engine did, what the
+player's words named that is not done (deferred actions and engine-owned things
+with no result), what is here (objects with their available labels, loose
+items, ways onward, shops) and where the party is. The RULES_HINT copy in the
+prompt leaves the brief out. Scene objects in CONTEXT carry only their player
+description, state and available labels (`offeredActions`); their authored
+description, contents and action text reach the model only in the brief of the
+turn that reveals them. The scripted narrator parses the block off and ignores
+it.
+
+After an AI narrator answers, and before the reply is stored, sent in
+`dm_response_end` and read by the post-narration extraction,
+`narration_hygiene.clean_ai_narration` drops a closing prompt to act, markdown
+markers, sentences that restate or invent gains, and roll requests for things
+the engine rolls itself (no roll gate is opened for them). Streamed chunks are
+the raw text; the final event carries the cleaned text, which the Story view
+keeps. Safe Mode and emergency fallback text are not touched.
+
 ### Helper calls during a turn
 
 - The turn-conductor helper (table flow between several players) runs only when

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { addCookieCsrfHeader, addNgrokBrowserWarningBypassHeader, addWorkspaceTokenHeader, normalizeBaseUrl } from './api'
 import { metadataTurnId, stripMarkdown } from './gameSelectors'
+import type { NarrationSetting } from './story/sheets/StorySettingsSheet'
 import type { JsonRecord, StreamingTurn, TimelineEntry, TtsRuntimeConfig } from './types'
 
 export type TtsPlaybackStatus =
@@ -14,7 +15,6 @@ export type TtsPlaybackStatus =
   | 'speaking'
   | 'failed'
 
-const TTS_AUDIO_MIME = 'audio/mpeg'
 const TTS_MIN_PARTIAL_FLUSH_CHARS = 60
 const TTS_FORCE_PARTIAL_FLUSH_CHARS = 320
 const TTS_PARTIAL_FLUSH_DELAY_MS = 650
@@ -24,18 +24,21 @@ const TTS_AUDIO_CACHE_TTL_MS = 10 * 60_000
 const TTS_AUDIO_REQUEST_RETRIES = 1
 const TTS_AUDIO_RETRY_DELAY_MS = 250
 const TTS_ENDPOINTS = ['/api/tts/stream', '/api/tts/speak']
-const TTS_MEDIA_SOURCE_STREAMING_ENABLED = false
+const TTS_VOICE_STORAGE_KEY = 'aidm:ttsVoice'
+const TTS_SAMPLE_TEXT = 'The road remembers every name it was given.'
+
+/** The voice, accent and quality this browser chose; each is used only while the server offers it. */
+type TtsVoiceChoice = { voice?: string; accent?: string; quality?: string }
 
 type TtsQueueItem = {
   text: string
   loadAudioUrl: () => Promise<string | null>
+  /** Set instead of an audio URL when the server streams raw PCM. */
+  pcmResponse?: Response
   controller: AbortController
   failed?: boolean
-  cleanup?: () => void
-  streamDone?: Promise<void>
   audioUrlPromise?: Promise<string | null>
   cacheKey?: string
-  cacheAudioUrlPromise?: Promise<string | null>
   cacheCandidateUrl?: string
   fromCache?: boolean
   failureMessage?: string
@@ -99,12 +102,30 @@ function ttsDedupeKeysForText(text: string, turnId: number | null) {
   return keys
 }
 
-function supportsStreamingTtsAudio() {
-  return (
-    TTS_MEDIA_SOURCE_STREAMING_ENABLED &&
-    typeof MediaSource !== 'undefined' &&
-    MediaSource.isTypeSupported(TTS_AUDIO_MIME)
-  )
+function readTtsVoiceChoice(): TtsVoiceChoice {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(TTS_VOICE_STORAGE_KEY) ?? '{}')
+    return stored && typeof stored === 'object' ? (stored as TtsVoiceChoice) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** The stored choice when the server offers it, else the server's default, else its first option. */
+function offeredChoice(stored: string | undefined, options: string[], serverDefault?: string | null) {
+  if (stored && options.includes(stored)) return stored
+  return serverDefault && options.includes(serverDefault) ? serverDefault : options[0]
+}
+
+function ttsRequestHeaders(auth: string, baseUrl: string) {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (auth) {
+    headers.set('Authorization', `Bearer ${auth}`)
+  }
+  addWorkspaceTokenHeader(headers)
+  addCookieCsrfHeader(headers)
+  addNgrokBrowserWarningBypassHeader(headers, baseUrl)
+  return headers
 }
 
 async function ttsErrorMessage(response: Response) {
@@ -149,57 +170,6 @@ function isTtsUserActivationError(message: string) {
   return normalized.includes("user didn't interact") || normalized.includes('user activation')
 }
 
-function waitForSourceBufferIdle(sourceBuffer: SourceBuffer, signal: AbortSignal) {
-  if (!sourceBuffer.updating) return Promise.resolve()
-
-  return new Promise<void>((resolve, reject) => {
-    const cleanup = () => {
-      sourceBuffer.removeEventListener('updateend', handleUpdateEnd)
-      sourceBuffer.removeEventListener('error', handleError)
-      signal.removeEventListener('abort', handleAbort)
-    }
-    const handleUpdateEnd = () => {
-      cleanup()
-      resolve()
-    }
-    const handleError = () => {
-      cleanup()
-      reject(new Error('TTS audio buffer failed to update.'))
-    }
-    const handleAbort = () => {
-      cleanup()
-      reject(new Error('TTS request aborted.'))
-    }
-
-    sourceBuffer.addEventListener('updateend', handleUpdateEnd)
-    sourceBuffer.addEventListener('error', handleError)
-    signal.addEventListener('abort', handleAbort, { once: true })
-  })
-}
-
-function exactArrayBuffer(bytes: Uint8Array) {
-  const copy = new Uint8Array(bytes.byteLength)
-  copy.set(bytes)
-  return copy.buffer
-}
-
-async function appendTtsAudioChunk(
-  sourceBuffer: SourceBuffer,
-  bytes: Uint8Array,
-  signal: AbortSignal,
-) {
-  if (signal.aborted) throw new Error('TTS request aborted.')
-  await waitForSourceBufferIdle(sourceBuffer, signal)
-  sourceBuffer.appendBuffer(exactArrayBuffer(bytes))
-  await waitForSourceBufferIdle(sourceBuffer, signal)
-}
-
-function copyTtsAudioBytes(bytes: Uint8Array) {
-  const copy = new Uint8Array(bytes.byteLength)
-  copy.set(bytes)
-  return copy.buffer
-}
-
 async function cancelResponseBody(response: Response) {
   try {
     await response.body?.cancel()
@@ -211,11 +181,10 @@ async function cancelResponseBody(response: Response) {
 async function fetchTtsAudio(
   baseUrl: string,
   headers: Headers,
-  cleanText: string,
+  requestBody: string,
   signal: AbortSignal,
 ) {
   const rootUrl = normalizeBaseUrl(baseUrl)
-  const requestBody = JSON.stringify({ text: cleanText })
 
   for (let index = 0; index < TTS_ENDPOINTS.length; index += 1) {
     const endpoint = TTS_ENDPOINTS[index]
@@ -266,12 +235,12 @@ function waitForTtsRetry(delayMs: number, signal: AbortSignal) {
 async function fetchTtsAudioWithRetry(
   baseUrl: string,
   headers: Headers,
-  cleanText: string,
+  requestBody: string,
   signal: AbortSignal,
 ) {
   for (let attempt = 0; attempt <= TTS_AUDIO_REQUEST_RETRIES; attempt += 1) {
     try {
-      const response = await fetchTtsAudio(baseUrl, headers, cleanText, signal)
+      const response = await fetchTtsAudio(baseUrl, headers, requestBody, signal)
       const shouldRetry = !response.ok && response.status >= 500 && attempt < TTS_AUDIO_REQUEST_RETRIES
       if (!shouldRetry) return response
       await cancelResponseBody(response)
@@ -288,108 +257,6 @@ async function fetchTtsAudioWithRetry(
   }
 
   throw new Error('TTS request failed.')
-}
-
-function createStreamingTtsSource(
-  requestAudio: () => Promise<Response>,
-  controller: AbortController,
-  onError: (message: string) => void,
-) {
-  if (!supportsStreamingTtsAudio()) return null
-
-  const mediaSource = new MediaSource()
-  const audioUrl = URL.createObjectURL(mediaSource)
-  let sourceBuffer: SourceBuffer | null = null
-  let cleaned = false
-  const audioChunks: ArrayBuffer[] = []
-  let streamFailed = false
-  let resolveCachedAudio: (value: string | null) => void = () => undefined
-  const cachedAudioUrlPromise = new Promise<string | null>((resolve) => {
-    resolveCachedAudio = resolve
-  })
-
-  const cleanup = () => {
-    if (cleaned) return
-    cleaned = true
-    try {
-      if (sourceBuffer?.updating) {
-        sourceBuffer.abort()
-      }
-      if (mediaSource.readyState === 'open') {
-        mediaSource.endOfStream()
-      }
-    } catch {
-      // The audio element may already have torn the MediaSource down.
-    }
-    URL.revokeObjectURL(audioUrl)
-  }
-
-  const streamDone = new Promise<void>((resolve) => {
-    mediaSource.addEventListener(
-      'sourceopen',
-      () => {
-        void (async () => {
-          try {
-            sourceBuffer = mediaSource.addSourceBuffer(TTS_AUDIO_MIME)
-            sourceBuffer.mode = 'sequence'
-
-            const response = await requestAudio()
-            if (!response.ok) {
-              throw new Error(await ttsErrorMessage(response))
-            }
-
-            const reader = response.body?.getReader()
-            if (!reader) {
-              const bytes = new Uint8Array(await response.arrayBuffer())
-              audioChunks.push(copyTtsAudioBytes(bytes))
-              await appendTtsAudioChunk(sourceBuffer, bytes, controller.signal)
-            } else {
-              while (true) {
-                const { done, value } = await reader.read()
-                if (done) break
-                if (value) {
-                  audioChunks.push(copyTtsAudioBytes(value))
-                  await appendTtsAudioChunk(sourceBuffer, value, controller.signal)
-                }
-              }
-            }
-
-            await waitForSourceBufferIdle(sourceBuffer, controller.signal)
-            if (mediaSource.readyState === 'open') {
-              mediaSource.endOfStream()
-            }
-          } catch (error) {
-            streamFailed = true
-            if (!controller.signal.aborted) {
-              onError(error instanceof Error ? error.message : String(error))
-              try {
-                if (mediaSource.readyState === 'open') {
-                  mediaSource.endOfStream('network')
-                }
-              } catch {
-                // Ignore cleanup errors after a failed stream.
-              }
-            }
-          } finally {
-            if (!streamFailed && !controller.signal.aborted && audioChunks.length) {
-              resolveCachedAudio(URL.createObjectURL(new Blob(audioChunks, { type: TTS_AUDIO_MIME })))
-            } else {
-              resolveCachedAudio(null)
-            }
-            resolve()
-          }
-        })()
-      },
-      { once: true },
-    )
-  })
-
-  return {
-    audioUrl,
-    cleanup,
-    streamDone,
-    cachedAudioUrlPromise,
-  }
 }
 
 function ttsFlushLength(text: string, forcePartial: boolean) {
@@ -441,6 +308,20 @@ export function useTtsNarration({
   const [ttsStatus, setTtsStatus] = useState<TtsPlaybackStatus>(() =>
     localStorage.getItem('aidm:ttsEnabled') === 'true' ? 'ready' : 'off',
   )
+  const [ttsVoiceChoice, setTtsVoiceChoice] = useState(readTtsVoiceChoice)
+  const ttsVoices = ttsConfig?.voices ?? []
+  const ttsAccents = ttsConfig?.accents ?? []
+  const ttsQualities = ttsConfig?.qualities ?? []
+  // Sent with every request, and only to a server that offers voices.
+  const ttsVoice = ttsVoices.length ? offeredChoice(ttsVoiceChoice.voice, ttsVoices, ttsConfig?.voice) : undefined
+  const ttsAccent = ttsVoices.length
+    ? offeredChoice(ttsVoiceChoice.accent, ttsAccents.map((accent) => accent.id), ttsConfig?.accent)
+    : undefined
+  const ttsQuality = ttsVoices.length
+    ? offeredChoice(ttsVoiceChoice.quality, ttsQualities.map((quality) => quality.id))
+    : undefined
+  const ttsAudioContextRef = useRef<AudioContext | null>(null)
+  const ttsSampleControllerRef = useRef<AbortController | null>(null)
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null)
   const ttsAudioUrlRef = useRef<string | null>(null)
   const ttsAudioUrlFromCacheRef = useRef(false)
@@ -575,12 +456,11 @@ export function useTtsNarration({
     }
 
     ttsCurrentItemRef.current?.controller.abort()
-    ttsCurrentItemRef.current?.cleanup?.()
     ttsCurrentItemRef.current = null
+    ttsSampleControllerRef.current?.abort()
 
     for (const item of ttsQueueRef.current) {
       item.controller.abort()
-      item.cleanup?.()
     }
     ttsQueueRef.current = []
     setTtsQueueCount(0)
@@ -621,6 +501,22 @@ export function useTtsNarration({
     return () => window.clearTimeout(timeoutId)
   }, [stopTtsAudio, ttsConfig?.configured, ttsEnabledPreference])
 
+  /** One AudioContext for every PCM clip; created or resumed on the player's own action where possible. */
+  const ttsAudioContext = useCallback(() => {
+    ttsAudioContextRef.current ??= new AudioContext()
+    void ttsAudioContextRef.current.resume()
+    return ttsAudioContextRef.current
+  }, [])
+
+  const playTtsPcm = useCallback(
+    async (response: Response, signal: AbortSignal) => {
+      const context = ttsAudioContext()
+      const { playPcmResponse } = await import('./ttsPcmPlayer')
+      return playPcmResponse(context, response, signal)
+    },
+    [ttsAudioContext],
+  )
+
   const toggleTts = () => {
     if (ttsEnabled) {
       stopTtsAudio()
@@ -637,8 +533,12 @@ export function useTtsNarration({
       return
     }
     if (!ttsConfig.configured) {
-      pushError('tts', 'Deepgram TTS is not configured on the backend.')
+      pushError('tts', 'No narrator voice is set up on this server.')
       return
+    }
+    if (ttsConfig.audio_format?.startsWith('audio/pcm') && typeof AudioContext !== 'undefined') {
+      ttsAudioContext()
+      void import('./ttsPcmPlayer')
     }
     resetTtsFailureForNextResponse()
     setTtsEnabled(true)
@@ -699,7 +599,6 @@ export function useTtsNarration({
     const clearPendingTtsQueue = () => {
       for (const pendingItem of ttsQueueRef.current) {
         pendingItem.controller.abort()
-        pendingItem.cleanup?.()
       }
       ttsQueueRef.current = []
       setTtsQueueCount(0)
@@ -750,6 +649,24 @@ export function useTtsNarration({
           break
         }
 
+        if (item.pcmResponse) {
+          const playback = await playTtsPcm(item.pcmResponse, item.controller.signal)
+          setTtsSpeaking(true)
+          setTtsStatus('speaking')
+          setTtsLatency((current) =>
+            current ? { ...current, playStartMs: performance.now() - item.requestedAt } : current,
+          )
+          ttsAudioActiveRef.current = true
+          prefetchNextQueuedTtsItem()
+          const wav = await playback.done
+          playedAnyItem = true
+          if (wav && item.cacheKey) rememberCachedTtsAudio(item.cacheKey, URL.createObjectURL(wav))
+          setTtsLatency((current) =>
+            current ? { ...current, totalMs: performance.now() - item.requestedAt } : current,
+          )
+          continue
+        }
+
         if (!audioUrl) continue
 
         const audio = new Audio(audioUrl)
@@ -783,10 +700,8 @@ export function useTtsNarration({
         })
         playedAnyItem = true
 
-        await item.streamDone?.catch(() => undefined)
-        const cachedAudioUrl = item.cacheCandidateUrl ?? (await item.cacheAudioUrlPromise?.catch(() => null))
-        if (cachedAudioUrl && item.cacheKey) {
-          rememberCachedTtsAudio(item.cacheKey, cachedAudioUrl)
+        if (item.cacheCandidateUrl && item.cacheKey) {
+          rememberCachedTtsAudio(item.cacheKey, item.cacheCandidateUrl)
           item.cacheCandidateUrl = undefined
         }
         setTtsLatency((current) =>
@@ -830,7 +745,6 @@ export function useTtsNarration({
         }
       } finally {
         ttsAudioActiveRef.current = false
-        item.cleanup?.()
         if (item.cacheCandidateUrl) {
           URL.revokeObjectURL(item.cacheCandidateUrl)
           item.cacheCandidateUrl = undefined
@@ -855,6 +769,7 @@ export function useTtsNarration({
     }
   }, [
     ensureTtsItemAudioUrl,
+    playTtsPcm,
     prefetchNextQueuedTtsItem,
     pushError,
     rememberCachedTtsAudio,
@@ -872,7 +787,9 @@ export function useTtsNarration({
 
       const controller = new AbortController()
       const requestedAt = performance.now()
-      const cacheKey = scopedTtsKey(`audio:${hashString(cleanText)}:${cleanText.length}`)
+      const requestBody = JSON.stringify({ text: cleanText, voice: ttsVoice, accent: ttsAccent, quality: ttsQuality })
+      // Keyed by the whole request, so a clip is replayed only in the voice it was spoken in.
+      const cacheKey = scopedTtsKey(`audio:${hashString(requestBody)}:${requestBody.length}`)
       const cachedEntry = ttsAudioCacheRef.current.get(cacheKey)
       if (cachedEntry && Date.now() - cachedEntry.createdAt <= TTS_AUDIO_CACHE_TTL_MS) {
         cachedEntry.lastUsedAt = Date.now()
@@ -902,15 +819,8 @@ export function useTtsNarration({
         fromCache: false,
         requestedAt,
       }
-      const headers = new Headers({ 'Content-Type': 'application/json' })
-      if (auth) {
-        headers.set('Authorization', `Bearer ${auth}`)
-      }
-      addWorkspaceTokenHeader(headers)
-      addCookieCsrfHeader(headers)
-      addNgrokBrowserWarningBypassHeader(headers, baseUrl)
-
-      const requestAudio = () => fetchTtsAudioWithRetry(baseUrl, headers, cleanText, controller.signal)
+      const headers = ttsRequestHeaders(auth, baseUrl)
+      const requestAudio = () => fetchTtsAudioWithRetry(baseUrl, headers, requestBody, controller.signal)
 
       const reportTtsError = (message: string) => {
         if (controller.signal.aborted || item.failed) return
@@ -918,18 +828,15 @@ export function useTtsNarration({
         item.failureMessage = message
       }
 
-      item.loadAudioUrl = () => {
-        const streamedSource = createStreamingTtsSource(requestAudio, controller, reportTtsError)
-        item.cleanup = streamedSource?.cleanup
-        item.streamDone = streamedSource?.streamDone
-        item.cacheAudioUrlPromise = streamedSource?.cachedAudioUrlPromise
-        if (streamedSource?.audioUrl) {
-          return Promise.resolve(streamedSource.audioUrl)
-        }
-        return requestAudio()
+      item.loadAudioUrl = () =>
+        requestAudio()
           .then(async (response) => {
             if (!response.ok) {
               reportTtsError(await ttsErrorMessage(response))
+              return null
+            }
+            if (response.headers.get('Content-Type')?.startsWith('audio/pcm')) {
+              item.pcmResponse = response
               return null
             }
             const blob = await response.blob()
@@ -948,7 +855,6 @@ export function useTtsNarration({
             }
             return null
           })
-      }
 
       ttsQueueRef.current.push(item)
       setTtsQueueCount(ttsQueueRef.current.length)
@@ -958,7 +864,17 @@ export function useTtsNarration({
       }
       void processTtsQueue()
     },
-    [auth, baseUrl, prefetchNextQueuedTtsItem, processTtsQueue, scopedTtsKey, ttsEnabled],
+    [
+      auth,
+      baseUrl,
+      prefetchNextQueuedTtsItem,
+      processTtsQueue,
+      scopedTtsKey,
+      ttsAccent,
+      ttsEnabled,
+      ttsQuality,
+      ttsVoice,
+    ],
   )
 
   const queueTtsNarration = useCallback(
@@ -993,6 +909,33 @@ export function useTtsNarration({
   useEffect(() => {
     localStorage.setItem('aidm:ttsEnabled', String(ttsEnabledPreference))
   }, [ttsEnabledPreference])
+
+  useEffect(() => {
+    localStorage.setItem(TTS_VOICE_STORAGE_KEY, JSON.stringify(ttsVoiceChoice))
+  }, [ttsVoiceChoice])
+
+  /** A new choice applies from the next request: a session cannot change voice once audio has started. */
+  const chooseTtsVoice = useCallback((choice: TtsVoiceChoice) => {
+    ttsSampleControllerRef.current?.abort()
+    setTtsVoiceChoice((current) => ({ ...current, ...choice }))
+  }, [])
+
+  const playTtsSample = useCallback(() => {
+    stopTtsAudio()
+    const controller = new AbortController()
+    ttsSampleControllerRef.current = controller
+    // Still inside the player's click, so the browser lets the audio start.
+    ttsAudioContext()
+    const requestBody = JSON.stringify({ text: TTS_SAMPLE_TEXT, voice: ttsVoice, accent: ttsAccent, quality: ttsQuality })
+    void fetchTtsAudio(baseUrl, ttsRequestHeaders(auth, baseUrl), requestBody, controller.signal)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await ttsErrorMessage(response))
+        await (await playTtsPcm(response, controller.signal)).done
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) pushError('tts', `Voice sample failed: ${ttsPlaybackErrorMessage(error)}`)
+      })
+  }, [auth, baseUrl, playTtsPcm, pushError, stopTtsAudio, ttsAccent, ttsAudioContext, ttsQuality, ttsVoice])
 
   useEffect(() => {
     const cache = ttsAudioCacheRef.current
@@ -1051,7 +994,32 @@ export function useTtsNarration({
     }
   }, [flushStreamingTtsChunks, speakableStreamingText])
 
+  const narrationSetting: NarrationSetting = ttsConfig?.configured
+    ? {
+        enabled: ttsEnabled,
+        problem: effectiveTtsStatus === 'failed' ? 'The narration voice could not be played just now.' : '',
+        voice:
+          ttsVoice && ttsAccent && ttsQuality
+            ? {
+                voices: ttsVoices,
+                voice: ttsVoice,
+                accents: ttsAccents,
+                accent: ttsAccent,
+                qualities: ttsQualities,
+                quality: ttsQuality,
+                onChange: chooseTtsVoice,
+                onPlaySample: playTtsSample,
+              }
+            : undefined,
+      }
+    : ttsConfigLoadFailed
+      ? { enabled: false, problem: 'Could not check whether narration is available. Refresh to try again.' }
+      : ttsConfig
+        ? 'none'
+        : null
+
   return {
+    narrationSetting,
     ttsEnabled,
     ttsSpeaking,
     effectiveTtsStatus,

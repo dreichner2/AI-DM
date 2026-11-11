@@ -167,6 +167,25 @@ export type BadTurnFeedbackResponse = { feedback: TurnFeedbackReport }
 
 export type CoherenceFeedbackResponse = { feedback_id: number; feedback: TurnFeedbackReport }
 
+export type TtsChoice = {
+  id: string
+  label: string
+}
+
+export type TtsConfigResponse = {
+  provider: 'openai' | 'deepgram' | null
+  configured: boolean
+  model: string | null
+  voice: string | null
+  audio_format: string | null
+  accent?: string
+  voices?: string[]
+  qualities?: TtsChoice[]
+  accents?: TtsChoice[]
+  connect_timeout_seconds?: number
+  read_timeout_seconds?: number
+}
+
 export type BetaIncidentsResponse = { incidents: JsonRecord[]; summary: { failed_turn_count: number; failed_canon_job_count: number; bad_turn_report_count: number; telemetry_incident_count: number }; limit: number; session_id?: number }
 
 export type BetaAuditsResponse = { state_mutations: JsonRecord[]; operator_actions: JsonRecord[]; summary: { state_mutation_count: number; operator_action_count: number }; limit: number; session_id?: number }

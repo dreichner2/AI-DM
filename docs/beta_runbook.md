@@ -107,12 +107,24 @@ apps, plugins, skills, MCP, computer/browser use, and multi-agent features
 disabled. Unexpected tool events or malformed structured output fail closed.
 
 ## Optional TTS
+The narrator voice is OpenAI or Deepgram. `AIDM_TTS_PROVIDER` (`openai` or `deepgram`) picks one; left unset, the server uses OpenAI when `AIDM_OPENAI_API_KEY` (or `OPENAI_API_KEY`) is set, else Deepgram when `AIDM_DEEPGRAM_API_KEY` is set, else no voice. Keys live only in the server environment.
+
+OpenAI (Realtime API; its older speech models `tts-1`, `tts-1-hd` and `gpt-4o-mini-tts` are removed on 6 January 2027):
+1. Set `AIDM_OPENAI_API_KEY`.
+2. Optionally set the defaults for requests that name none: `AIDM_OPENAI_TTS_MODEL` (default `gpt-realtime-2.1`), `AIDM_OPENAI_TTS_VOICE` (default `cedar`) and `AIDM_OPENAI_TTS_ACCENT` (default `default`). Players choose voice, accent and quality (**Best** = `gpt-realtime-2.1`, about 6 cents for a ~40-second narrated turn at list prices; **Faster** = `gpt-realtime-2.1-mini`, under 2 cents) in Settings → Sound, and the browser sends them with every request.
+3. Confirm `GET /api/tts/config` returns `provider: openai`, `configured: true` and `audio_format: audio/pcm;rate=24000;channels=1`.
+4. `POST /api/tts/stream` with `{"text": "...", "voice": "cedar", "accent": "british", "quality": "best"}` (all but `text` optional) answers with raw 16-bit 24 kHz mono PCM (`X-AIDM-Audio-Format: pcm_s16le_24000_mono`). A failure before the first audio is a 502; a missing key is a 503.
+5. Telemetry: `system.tts_phase_latency_ms` (phase `first_audio_byte`), `system.tts_speak.usage_tokens_total` by token kind, and `system.tts_speak.verbatim_mismatch_total` when the spoken transcript differs from the text by more than 10 % of words. Neither the key nor the text is logged.
+
+Deepgram:
 1. Set `AIDM_DEEPGRAM_API_KEY`.
 2. Optionally set `AIDM_DEEPGRAM_TTS_MODEL` (default: `aura-2-draco-en`).
 3. Tune `AIDM_DEEPGRAM_TTS_CONNECT_TIMEOUT_SECONDS` and `AIDM_DEEPGRAM_TTS_READ_TIMEOUT_SECONDS` only when provider/network timing needs local adjustment.
 4. Confirm `GET /api/tts/config` returns `configured: true` and reports the expected model plus connect/read timeouts.
-5. Toggle TTS in the React frontend. DM responses should be queued for speech; playback or provider failures should surface as visible frontend errors.
-6. For direct checks, prefer `POST /api/tts/stream`; `/api/tts/speak` remains a compatible alias. Inspect `X-AIDM-TTS-Chunk-Count` and `X-AIDM-TTS-First-Chunk-Chars` on long responses.
+
+For either voice:
+1. Toggle TTS in the React frontend. DM responses should be queued for speech; playback or provider failures should surface as visible frontend errors.
+2. For direct checks, prefer `POST /api/tts/stream`; `/api/tts/speak` remains a compatible alias. Inspect `X-AIDM-TTS-Chunk-Count` and `X-AIDM-TTS-First-Chunk-Chars` on long responses.
 
 ## Operational Checks
 1. Confirm `/api/health` returns `status: ok`.

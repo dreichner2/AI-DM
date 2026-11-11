@@ -10,16 +10,33 @@ from sqlalchemy import text
 from aidm_server.database import db
 
 
-def test_tts_config_reports_missing_key(client):
+def test_tts_config_reports_no_voice_without_a_key(client):
     response = client.get('/api/tts/config')
 
     assert response.status_code == 200
-    payload = response.get_json()
-    assert payload['provider'] == 'deepgram'
-    assert payload['configured'] is False
-    assert payload['model'] == 'aura-2-draco-en'
-    assert payload['connect_timeout_seconds'] == 3.0
-    assert payload['read_timeout_seconds'] == 60.0
+    assert response.get_json() == {
+        'provider': None,
+        'configured': False,
+        'model': None,
+        'voice': None,
+        'audio_format': None,
+    }
+
+
+def test_tts_config_reports_deepgram_when_only_its_key_is_set(client, app):
+    app.config['AIDM_DEEPGRAM_API_KEY'] = 'test-key'
+
+    payload = client.get('/api/tts/config').get_json()
+
+    assert payload == {
+        'provider': 'deepgram',
+        'configured': True,
+        'model': 'aura-2-draco-en',
+        'voice': None,
+        'audio_format': 'audio/mpeg',
+        'connect_timeout_seconds': 3.0,
+        'read_timeout_seconds': 60.0,
+    }
 
 
 def test_tts_speak_requires_api_key(client):
@@ -27,6 +44,7 @@ def test_tts_speak_requires_api_key(client):
 
     assert response.status_code == 503
     assert response.get_json()['error_code'] == 'tts_not_configured'
+    assert response.get_json()['error'] == 'No narrator voice is set up on this server.'
 
 
 def test_tts_speak_rejects_oversized_raw_text_before_sanitizing(client, monkeypatch):

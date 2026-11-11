@@ -9,8 +9,10 @@ import requests
 from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 from sqlalchemy import func
 
+from aidm_server import tts_openai
 from aidm_server.capabilities import CAPABILITY_DESCRIPTIONS, capability_forbidden_response, current_actor_capabilities
 from aidm_server.canon_jobs import canon_job_queue_snapshot
+from aidm_server.config import SUPPORTED_TTS_PROVIDERS
 from aidm_server.database import db, release_clean_scoped_session
 from aidm_server.errors import error_response
 from aidm_server.http_client import post as http_post
@@ -43,6 +45,15 @@ DEEPGRAM_FIRST_CHUNK_LIMIT = 360
 TTS_MAX_CHARS = 6000
 TTS_MAX_INPUT_CHARS = TTS_MAX_CHARS * 4
 TTS_REQUEST_FAILED_MESSAGE = 'Deepgram TTS is temporarily unavailable. Please retry.'
+OPENAI_TTS_REQUEST_FAILED_MESSAGE = 'The narrator voice is temporarily unavailable. Please retry.'
+TTS_NOT_CONFIGURED_MESSAGE = 'No narrator voice is set up on this server.'
+# Below this word-level similarity the spoken transcript is counted as not verbatim.
+TTS_VERBATIM_MIN_RATIO = 0.9
+TTS_REQUEST_CHOICES = {
+    'voice': tts_openai.OPENAI_TTS_VOICES,
+    'quality': tuple(tts_openai.OPENAI_TTS_QUALITY_MODELS),
+    'accent': tuple(accent['id'] for accent in tts_openai.OPENAI_TTS_ACCENTS),
+}
 BAD_TURN_CATEGORIES = {'continuity', 'rules', 'latency', 'safety', 'state', 'other'}
 TELEMETRY_INCIDENT_EVENT_NAMES = (
     'socket.dm_provider_degraded',
@@ -71,15 +82,59 @@ def _tts_model() -> str:
     ).strip()
 
 
+def _openai_api_key() -> str:
+    return str(
+        current_app.config.get('AIDM_OPENAI_API_KEY')
+        or os.getenv('AIDM_OPENAI_API_KEY')
+        or os.getenv('OPENAI_API_KEY')
+        or ''
+    ).strip()
+
+
+def _tts_setting(name: str, default: str) -> str:
+    return str(current_app.config.get(name) or os.getenv(name) or default).strip()
+
+
+def _tts_provider() -> str | None:
+    """The configured narrator voice provider; unset picks OpenAI, then Deepgram, by which key is present."""
+    configured = _tts_setting('AIDM_TTS_PROVIDER', '').lower()
+    if configured in SUPPORTED_TTS_PROVIDERS:
+        return configured
+    if _openai_api_key():
+        return 'openai'
+    if _deepgram_api_key():
+        return 'deepgram'
+    return None
+
+
 def _tts_config_payload() -> dict:
-    connect_timeout, read_timeout = _tts_timeout()
-    return {
-        'provider': 'deepgram',
-        'configured': bool(_deepgram_api_key()),
-        'model': _tts_model(),
-        'connect_timeout_seconds': connect_timeout,
-        'read_timeout_seconds': read_timeout,
-    }
+    provider = _tts_provider()
+    if provider == 'openai':
+        return {
+            'provider': 'openai',
+            'configured': bool(_openai_api_key()),
+            'model': _tts_setting('AIDM_OPENAI_TTS_MODEL', tts_openai.DEFAULT_OPENAI_TTS_MODEL),
+            'voice': _tts_setting('AIDM_OPENAI_TTS_VOICE', tts_openai.DEFAULT_OPENAI_TTS_VOICE),
+            'accent': _tts_setting('AIDM_OPENAI_TTS_ACCENT', tts_openai.DEFAULT_OPENAI_TTS_ACCENT),
+            'audio_format': tts_openai.PCM_CONTENT_TYPE,
+            'voices': list(tts_openai.OPENAI_TTS_VOICES),
+            'qualities': [dict(quality) for quality in tts_openai.OPENAI_TTS_QUALITIES],
+            'accents': [dict(accent) for accent in tts_openai.OPENAI_TTS_ACCENTS],
+            'connect_timeout_seconds': tts_openai.CONNECT_TIMEOUT_SECONDS,
+            'read_timeout_seconds': tts_openai.EVENT_TIMEOUT_SECONDS,
+        }
+    if provider == 'deepgram':
+        connect_timeout, read_timeout = _tts_timeout()
+        return {
+            'provider': 'deepgram',
+            'configured': bool(_deepgram_api_key()),
+            'model': _tts_model(),
+            'voice': None,
+            'audio_format': 'audio/mpeg',
+            'connect_timeout_seconds': connect_timeout,
+            'read_timeout_seconds': read_timeout,
+        }
+    return {'provider': None, 'configured': False, 'model': None, 'voice': None, 'audio_format': None}
 
 
 def _isoformat(value) -> str | None:
@@ -422,6 +477,145 @@ def _stream_tts_chunks(
             executor.shutdown(wait=False, cancel_futures=True)
 
 
+def _tts_request_choices(payload: dict) -> tuple[dict[str, str], tuple | None]:
+    """The optional voice, quality and accent of a speak request; an unknown value is a 400."""
+    choices: dict[str, str] = {}
+    for name, allowed in TTS_REQUEST_CHOICES.items():
+        value = payload.get(name)
+        if value is None or value == '':
+            continue
+        if value not in allowed:
+            return {}, error_response(
+                'validation_error',
+                f'{name} must be one of: {", ".join(allowed)}.',
+                400,
+                {name: list(allowed)},
+            )
+        choices[name] = value
+    return choices, None
+
+
+def _record_openai_response(text: str, spoken: tts_openai.SpokenResponse, *, model: str) -> None:
+    usage = spoken.usage
+    details = usage.get('output_token_details') if isinstance(usage.get('output_token_details'), dict) else {}
+    for kind, count in (
+        ('input', usage.get('input_tokens')),
+        ('output', usage.get('output_tokens')),
+        ('audio', details.get('audio_tokens')),
+        ('text', details.get('text_tokens')),
+        ('reasoning', details.get('reasoning_tokens')),
+    ):
+        if isinstance(count, int) and not isinstance(count, bool):
+            telemetry_metric('system.tts_speak.usage_tokens_total', count, tags={'model': model, 'kind': kind})
+    if spoken.status != 'completed':
+        return
+    ratio = tts_openai.verbatim_ratio(text, spoken.transcript)
+    if ratio < TTS_VERBATIM_MIN_RATIO:
+        telemetry_metric('system.tts_speak.verbatim_mismatch_total', 1, tags={'model': model})
+        current_app.logger.warning(
+            'Narrator voice did not read the text verbatim: words=%s spoken=%s ratio=%.2f',
+            len(tts_openai.spoken_words(text)),
+            len(tts_openai.spoken_words(spoken.transcript)),
+            ratio,
+        )
+
+
+def _openai_narration_audio(narration: tts_openai.RealtimeNarration, chunks: list[str], *, model: str):
+    for chunk in chunks:
+        spoken = yield from narration.speak(chunk)
+        _record_openai_response(chunk, spoken, model=model)
+        if spoken.status != 'completed':
+            _log_openai_failure_after_audio(model=model, reason=f'response:{spoken.status}')
+            return
+
+
+def _log_openai_failure_after_audio(*, model: str, reason: str) -> None:
+    telemetry_metric('system.tts_speak.chunk_failures_total', 1)
+    telemetry_event(
+        'system.tts_speak.chunk_failed_after_stream_start',
+        payload={'model': model, 'error_type': reason},
+        severity='error',
+    )
+    current_app.logger.warning('Narrator voice stopped mid-stream: reason=%s', reason)
+
+
+def _speak_with_openai(api_key: str, chunks: list[str], choices: dict[str, str]):
+    quality = choices.get('quality')
+    model = (
+        tts_openai.OPENAI_TTS_QUALITY_MODELS[quality]
+        if quality
+        else _tts_setting('AIDM_OPENAI_TTS_MODEL', tts_openai.DEFAULT_OPENAI_TTS_MODEL)
+    )
+    voice = choices.get('voice') or _tts_setting(
+        'AIDM_OPENAI_TTS_VOICE',
+        tts_openai.DEFAULT_OPENAI_TTS_VOICE,
+    )
+    accent = choices.get('accent') or _tts_setting(
+        'AIDM_OPENAI_TTS_ACCENT',
+        tts_openai.DEFAULT_OPENAI_TTS_ACCENT,
+    )
+
+    # Authentication and rate limiting may have opened a read transaction.
+    # Do not retain its database connection while the narrator voice streams audio.
+    release_clean_scoped_session(boundary='TTS provider')
+    narration = tts_openai.RealtimeNarration(
+        api_key=api_key,
+        model=model,
+        voice=voice,
+        accent=accent,
+        connect=tts_openai.connect_realtime_socket,
+    )
+    audio = tts_openai.whole_samples(_openai_narration_audio(narration, chunks, model=model))
+    tts_request_started = time.perf_counter()
+    streaming = False
+    try:
+        narration.open()
+        _record_tts_phase_timing('request', tts_request_started, model=model)
+        # Read up to the first audio so a refusal still gets an error status instead of an empty stream.
+        first_audio = next(audio)
+        streaming = True
+    except tts_openai.OpenAiTtsError as exc:
+        current_app.logger.warning('Narrator voice request failed: reason=%s', exc.reason)
+        return error_response(
+            'tts_request_failed',
+            OPENAI_TTS_REQUEST_FAILED_MESSAGE,
+            502,
+            {'status_code': exc.status_code} if exc.status_code else None,
+        )
+    except StopIteration:
+        current_app.logger.warning('Narrator voice request failed: reason=no_audio')
+        return error_response('tts_request_failed', OPENAI_TTS_REQUEST_FAILED_MESSAGE, 502)
+    finally:
+        if not streaming:
+            narration.close()
+    _record_tts_phase_timing('first_audio_byte', tts_request_started, model=model)
+
+    def stream_audio():
+        try:
+            yield first_audio
+            yield from audio
+        except tts_openai.OpenAiTtsError as exc:
+            _log_openai_failure_after_audio(model=model, reason=exc.reason)
+        finally:
+            # Also reached when the client disconnects and the server closes this generator.
+            narration.close()
+
+    response = Response(
+        stream_with_context(stream_audio()),
+        content_type=tts_openai.PCM_CONTENT_TYPE,
+        direct_passthrough=True,
+    )
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['X-Accel-Buffering'] = 'no'
+    response.headers['X-AIDM-Audio-Format'] = tts_openai.PCM_FORMAT_HEADER
+    response.headers['X-AIDM-TTS-Provider'] = 'openai'
+    response.headers['X-AIDM-TTS-Model'] = model
+    response.headers['X-AIDM-TTS-Voice'] = voice
+    response.headers['X-AIDM-TTS-Chunk-Count'] = str(len(chunks))
+    response.headers['X-AIDM-TTS-First-Chunk-Chars'] = str(len(chunks[0]) if chunks else 0)
+    return response
+
+
 @system_bp.route('/tts/speak', methods=['POST'])
 @system_bp.route('/tts/stream', methods=['POST'])
 def speak_text():
@@ -450,13 +644,21 @@ def speak_text():
             {'max_chars': TTS_MAX_CHARS},
         )
 
-    api_key = _deepgram_api_key()
-    if not api_key:
-        return error_response('tts_not_configured', 'Deepgram TTS is missing its API key.', 503)
+    choices, choice_error = _tts_request_choices(payload)
+    if choice_error is not None:
+        return choice_error
 
-    model = _tts_model()
+    provider = _tts_provider()
+    api_key = _openai_api_key() if provider == 'openai' else _deepgram_api_key() if provider == 'deepgram' else ''
+    if not api_key:
+        return error_response('tts_not_configured', TTS_NOT_CONFIGURED_MESSAGE, 503)
+
     chunks = _chunk_text_for_tts(text)
     telemetry_metric('system.tts_speak.chunks_total', len(chunks))
+    if provider == 'openai':
+        return _speak_with_openai(api_key, chunks, choices)
+
+    model = _tts_model()
 
     # Authentication and rate limiting may have opened a read transaction.
     # Do not retain its database connection while Deepgram streams audio.

@@ -249,9 +249,21 @@ Known open items and decisions, in no particular order:
   music state are shared (see `docs/socketio_worker_model.md`).
 - **Scene music.** One long track carries every scene tag, so the music never
   changes with the scene.
-- **Live AI provider quality and latency** were not measured during the
-  overhaul (no provider calls were made). Play several turns with each real
-  provider and record time to first text before widening the beta.
+- **Live AI provider latency.** The first live session (DeepSeek, commit
+  `a88f45f`) measured about 8–18 s a turn on DeepSeek V4 Pro and 5–7 s on
+  DeepSeek V4 Flash, so V4 Flash is the faster choice for play. The other
+  providers are still unmeasured: record time to first text with each before
+  widening the beta. The defects that session found (the narrator resolving
+  searches, travel and gains only the engine may resolve) are addressed by the
+  engine brief, the narration hygiene pass and sentence-level mapping (see
+  `docs/gameplay_systems.md`, "How a Player Acts") and await a live re-test.
+- **Narrator voice (OpenAI Realtime).** Built and tested against fakes; not yet
+  heard live in the app. `AIDM_TTS_PROVIDER` chooses OpenAI or Deepgram (unset:
+  OpenAI when its key is set, else Deepgram). OpenAI's older speech models are
+  removed on 6 January 2027, so OpenAI narrates through `gpt-realtime-2.1`
+  (**Best**, about 6 cents for a ~40-second narrated turn at list prices) or
+  `gpt-realtime-2.1-mini` (**Faster**, under 2 cents), with voice, accent and
+  quality chosen per browser. Keys live only in the server environment.
 - **Guest hero picker.** Signed-out guests on the hosted beta do not get the
   ready-made hero choice, because the hero list requires sign-in; making it
   public means adding it to the public-endpoint inventory. Decision pending.

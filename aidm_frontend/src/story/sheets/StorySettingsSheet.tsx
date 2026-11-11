@@ -1,7 +1,7 @@
 import { type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { ModalShell } from '../../ModalShell'
-import type { LlmProviderOption } from '../../types'
+import type { LlmProviderOption, TtsChoice } from '../../types'
 import {
   setMusicEnabled,
   setMusicVolume,
@@ -13,12 +13,29 @@ import {
   type StoryTypeface,
 } from './storyPreferences'
 
-/** Narration voice: `null` when narration is not configured at this table. */
+/** Narration voice: `'none'` when the server has no voice set up, `null` until it has said. */
 export type NarrationSetting = {
   enabled: boolean
   /** Why the voice cannot be used right now; empty when it can. */
   problem: string
-} | null
+  /** Present when the server's voice offers a choice of voice, accent and quality. */
+  voice?: NarrationVoiceSetting
+} | 'none' | null
+
+/** The player's voice choices, kept in this browser and sent with every narration request. */
+export type NarrationVoiceSetting = {
+  /** Voice ids, the best first. */
+  voices: string[]
+  voice: string
+  accents: TtsChoice[]
+  accent: string
+  qualities: TtsChoice[]
+  quality: string
+  /** Applies from the next narration; a playing sample stops. */
+  onChange: (choice: { voice?: string; accent?: string; quality?: string }) => void
+  /** Speaks a short line in the chosen voice. */
+  onPlaySample: () => void
+}
 
 /** The table's narrator: who narrates now and which providers the server offers. */
 export type NarratorSetting = {
@@ -68,6 +85,7 @@ const ON_OFF: ReadonlyArray<[boolean, string]> = [
   [true, 'On'],
   [false, 'Off'],
 ]
+const NO_NARRATOR_VOICE = 'No narrator voice is set up on this server.'
 const SCRIPTED_PROVIDER = 'fallback'
 const SCRIPTED_NARRATOR = 'Scripted narrator'
 const NO_AI_NARRATOR =
@@ -181,6 +199,39 @@ function NarratorSection({
   )
 }
 
+const choiceLabels = (choices: TtsChoice[]) => choices.map(({ id, label }): [string, string] => [id, label])
+
+/** Voice, a sample of it, accent and quality: the narration voice's own choices. */
+function NarrationVoiceRows({ voice }: { voice: NarrationVoiceSetting }) {
+  return (
+    <>
+      <SettingRow
+        name="Voice"
+        choices={voice.voices.map((id): [string, string] => [id, id.charAt(0).toUpperCase() + id.slice(1)])}
+        value={voice.voice}
+        onChange={(id) => voice.onChange({ voice: id })}
+      />
+      <div className="story-dialog-links story-dialog-links-quiet">
+        <button type="button" className="story-link" onClick={voice.onPlaySample}>
+          Play sample
+        </button>
+      </div>
+      <SettingRow
+        name="Accent"
+        choices={choiceLabels(voice.accents)}
+        value={voice.accent}
+        onChange={(accent) => voice.onChange({ accent })}
+      />
+      <SettingRow
+        name="Voice quality"
+        choices={choiceLabels(voice.qualities)}
+        value={voice.quality}
+        onChange={(quality) => voice.onChange({ quality })}
+      />
+    </>
+  )
+}
+
 /** Settings a player recognises: narrator, reading, sound, motion and view, with the table's plumbing tucked away. */
 export function StorySettingsSheet({
   diagnostics,
@@ -225,15 +276,23 @@ export function StorySettingsSheet({
         <hr className="story-rule" />
         <section className="story-dialog-section" aria-labelledby="settings-sound">
           <h3 id="settings-sound" className="story-label">Sound</h3>
-          {narration ? (
-            <SettingRow
-              name="Narration voice"
-              choices={ON_OFF}
-              value={narration.enabled}
-              onChange={onNarrationChange}
-              disabled={Boolean(narration.problem) && !narration.enabled}
-              note={narration.problem || undefined}
-            />
+          {narration === 'none' ? (
+            <div className="story-dialog-setting">
+              <span className="story-dialog-setting-name">Narration voice</span>
+              <span className="story-dialog-setting-value">{NO_NARRATOR_VOICE}</span>
+            </div>
+          ) : narration ? (
+            <>
+              <SettingRow
+                name="Narration voice"
+                choices={ON_OFF}
+                value={narration.enabled}
+                onChange={onNarrationChange}
+                disabled={Boolean(narration.problem) && !narration.enabled}
+                note={narration.problem || undefined}
+              />
+              {narration.voice ? <NarrationVoiceRows voice={narration.voice} /> : null}
+            </>
           ) : null}
           <SettingRow name="Music" choices={ON_OFF} value={preferences.musicEnabled} onChange={setMusicEnabled} />
           <label className="story-dialog-setting">

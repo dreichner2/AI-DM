@@ -4,7 +4,7 @@ import { createRef, type ComponentProps } from 'react'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LlmProviderOption } from '../../types'
-import { StorySettingsSheet, type NarratorSetting } from './StorySettingsSheet'
+import { StorySettingsSheet, type NarrationVoiceSetting, type NarratorSetting } from './StorySettingsSheet'
 
 type SettingsProps = ComponentProps<typeof StorySettingsSheet>
 
@@ -163,7 +163,7 @@ describe('StorySettingsSheet', () => {
     expect(stored('aidm:chatTextSettings')).toEqual({ size: 'large', font: 'default' })
   })
 
-  it('hides the narration voice when narration is not configured and explains when it cannot play', () => {
+  it('hides the narration voice until the server has answered and explains when it cannot play', () => {
     const { rerender } = render(<StorySettingsSheet {...settingsProps({ narration: null })} />)
     expect(screen.queryByRole('group', { name: 'Narration voice' })).not.toBeInTheDocument()
 
@@ -179,6 +179,70 @@ describe('StorySettingsSheet', () => {
     )
     expect(screen.getByText('The narration voice could not be played just now.')).toBeInTheDocument()
     expect(within(setting('Narration voice')).getByRole('button', { name: 'On' })).toBeDisabled()
+  })
+
+  it('says so when the server has no narrator voice, with nothing to switch on', () => {
+    render(<StorySettingsSheet {...settingsProps({ narration: 'none' })} />)
+
+    const sound = screen.getByRole('region', { name: 'Sound' })
+    expect(sound).toHaveTextContent('Narration voiceNo narrator voice is set up on this server.')
+    expect(screen.queryByRole('group', { name: 'Narration voice' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Voice' })).not.toBeInTheDocument()
+  })
+
+  it('offers the voice, a sample of it, the accent and the quality when the server has them', () => {
+    const voice: NarrationVoiceSetting = {
+      voices: ['cedar', 'marin', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'alloy'],
+      voice: 'cedar',
+      accents: [
+        { id: 'default', label: 'Default' },
+        { id: 'british', label: 'British' },
+        { id: 'northern', label: 'Northern English' },
+        { id: 'scottish', label: 'Scottish' },
+        { id: 'welsh', label: 'Welsh' },
+        { id: 'west_country', label: 'West Country' },
+      ],
+      accent: 'british',
+      qualities: [
+        { id: 'best', label: 'Best' },
+        { id: 'faster', label: 'Faster' },
+      ],
+      quality: 'best',
+      onChange: vi.fn(),
+      onPlaySample: vi.fn(),
+    }
+    render(<StorySettingsSheet {...settingsProps({ narration: { enabled: true, problem: '', voice } })} />)
+
+    const sound = screen.getByRole('region', { name: 'Sound' })
+    const rows = within(sound).getAllByRole('group').map((group) => group.getAttribute('aria-label'))
+    expect(rows.slice(0, 4)).toEqual(['Narration voice', 'Voice', 'Accent', 'Voice quality'])
+    const voices = setting('Voice')
+    expect(within(voices).getAllByRole('button').map((choice) => choice.textContent)).toEqual([
+      'Cedar', 'Marin', 'Ash', 'Ballad', 'Coral', 'Echo', 'Sage', 'Shimmer', 'Verse', 'Alloy',
+    ])
+    expect(within(voices).getByRole('button', { name: 'Cedar' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(setting('Accent')).getAllByRole('button').map((choice) => choice.textContent)).toEqual([
+      'Default', 'British', 'Northern English', 'Scottish', 'Welsh', 'West Country',
+    ])
+    expect(within(setting('Accent')).getByRole('button', { name: 'British' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(setting('Voice quality')).getByRole('button', { name: 'Best' })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(within(voices).getByRole('button', { name: 'Marin' }))
+    expect(voice.onChange).toHaveBeenLastCalledWith({ voice: 'marin' })
+    fireEvent.click(within(setting('Accent')).getByRole('button', { name: 'West Country' }))
+    expect(voice.onChange).toHaveBeenLastCalledWith({ accent: 'west_country' })
+    fireEvent.click(within(setting('Voice quality')).getByRole('button', { name: 'Faster' }))
+    expect(voice.onChange).toHaveBeenLastCalledWith({ quality: 'faster' })
+    fireEvent.click(within(sound).getByRole('button', { name: 'Play sample' }))
+    expect(voice.onPlaySample).toHaveBeenCalledOnce()
+  })
+
+  it('offers no voice rows when the server voice has no choices', () => {
+    render(<StorySettingsSheet {...settingsProps()} />)
+
+    expect(setting('Narration voice')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Voice' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Play sample' })).not.toBeInTheDocument()
   })
 
   it('turns music off and sets its volume in the music preferences', () => {

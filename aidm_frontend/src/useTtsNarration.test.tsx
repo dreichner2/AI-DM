@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import type { StreamingTurn } from './types'
+import type { NarrationVoiceSetting } from './story/sheets/StorySettingsSheet'
+import type { StreamingTurn, TtsRuntimeConfig } from './types'
 import { useTtsNarration } from './useTtsNarration'
 
 type AudioInstance = {
@@ -48,17 +49,73 @@ function installAudioMock({ rejectPlay = false } = {}) {
   return instances
 }
 
-function renderTtsHarness(pushError = vi.fn()) {
+const DEEPGRAM_CONFIG: TtsRuntimeConfig = {
+  provider: 'deepgram',
+  configured: true,
+  model: 'aura-2-draco-en',
+}
+
+const OPENAI_CONFIG: TtsRuntimeConfig = {
+  provider: 'openai',
+  configured: true,
+  model: 'gpt-realtime-2.1',
+  voice: 'cedar',
+  accent: 'default',
+  audio_format: 'audio/pcm;rate=24000;channels=1',
+  voices: ['cedar', 'marin', 'ash'],
+  accents: [
+    { id: 'default', label: 'Default' },
+    { id: 'british', label: 'British' },
+  ],
+  qualities: [
+    { id: 'best', label: 'Best' },
+    { id: 'faster', label: 'Faster' },
+  ],
+}
+
+type FakeSource = { onended: (() => void) | null; stop: Mock<() => void> }
+
+function installAudioContextMock() {
+  const sources: FakeSource[] = []
+  const contexts: unknown[] = []
+  vi.stubGlobal(
+    'AudioContext',
+    vi.fn(function MockAudioContext(this: Record<string, unknown>) {
+      Object.assign(this, {
+        state: 'running',
+        currentTime: 0,
+        destination: {},
+        resume: vi.fn(() => Promise.resolve()),
+        createBuffer: (_channels: number, length: number, rate: number) => ({
+          duration: length / rate,
+          copyToChannel: vi.fn(),
+        }),
+        createBufferSource: () => {
+          const source = { onended: null, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn() }
+          sources.push(source)
+          return source
+        },
+      })
+      contexts.push(this)
+    }),
+  )
+  return { sources, contexts, finishPlaying: () => sources.forEach((source) => source.onended?.()) }
+}
+
+function pcmResponse() {
+  return new Response(new Uint8Array([1, 2, 3, 4]), {
+    status: 200,
+    headers: { 'Content-Type': 'audio/pcm;rate=24000;channels=1' },
+  })
+}
+
+function renderTtsHarness(pushError = vi.fn(), ttsConfig: TtsRuntimeConfig = DEEPGRAM_CONFIG) {
   const rendered = renderHook(
     ({ streamingTurn }: { streamingTurn: StreamingTurn | null }) =>
       useTtsNarration({
         auth: 'token',
         baseUrl: 'https://backend.example.test',
-        ttsConfig: {
-          provider: 'deepgram',
-          configured: true,
-          model: 'aura-2-draco-en',
-        },
+        ttsConfig,
         selectedSessionId: 20,
         sendPending: false,
         streamingTurn,
@@ -297,5 +354,140 @@ describe('useTtsNarration streaming', () => {
     expect(pushError).toHaveBeenCalledTimes(1)
     expect(fetchHandler).toHaveBeenCalledOnce()
     await waitFor(() => expect(result.current.ttsEnabled).toBe(false))
+  })
+
+  describe('with a voice that streams PCM', () => {
+    const line = 'The first torch gutters out, and a cold draft rolls over the stone.'
+
+    function voiceSetting(setting: unknown) {
+      return (setting as { voice: NarrationVoiceSetting }).voice
+    }
+
+    it('sends the stored voice, accent and quality with every narration request', async () => {
+      localStorage.setItem('aidm:ttsVoice', JSON.stringify({ voice: 'marin', accent: 'british', quality: 'faster' }))
+      installAudioMock()
+      installAudioContextMock()
+      fetchHandler.mockImplementation(async () => pcmResponse())
+      const { stream } = renderTtsHarness(vi.fn(), OPENAI_CONFIG)
+
+      stream(90, line)
+
+      await waitFor(() => expect(fetchHandler).toHaveBeenCalledOnce())
+      expect(fetchBodies).toEqual([{ text: line, voice: 'marin', accent: 'british', quality: 'faster' }])
+    })
+
+    it('uses the server defaults for a choice the server does not offer', async () => {
+      localStorage.setItem('aidm:ttsVoice', JSON.stringify({ voice: 'darth', accent: 'texan' }))
+      installAudioMock()
+      installAudioContextMock()
+      fetchHandler.mockImplementation(async () => pcmResponse())
+      const { result, stream } = renderTtsHarness(vi.fn(), OPENAI_CONFIG)
+
+      stream(91, line)
+
+      await waitFor(() => expect(fetchHandler).toHaveBeenCalledOnce())
+      expect(fetchBodies).toEqual([{ text: line, voice: 'cedar', accent: 'default', quality: 'best' }])
+      expect(voiceSetting(result.current.narrationSetting)).toMatchObject({
+        voices: ['cedar', 'marin', 'ash'],
+        voice: 'cedar',
+        accent: 'default',
+        quality: 'best',
+      })
+    })
+
+    it('plays the stream through one AudioContext made when narration is turned on, then replays it from the cache', async () => {
+      const audioInstances = installAudioMock()
+      const webAudio = installAudioContextMock()
+      fetchHandler.mockImplementation(async () => pcmResponse())
+      const { result, stream } = renderTtsHarness(vi.fn(), OPENAI_CONFIG)
+      expect(webAudio.contexts).toHaveLength(1)
+
+      stream(92, line)
+      await waitFor(() => expect(webAudio.sources).toHaveLength(1))
+      expect(result.current.ttsSpeaking).toBe(true)
+      expect(audioInstances).toHaveLength(0)
+      act(() => webAudio.finishPlaying())
+      await waitFor(() => expect(result.current.ttsSpeaking).toBe(false))
+
+      act(() => result.current.queueTtsNarrationRef.current?.(line))
+
+      await waitFor(() => expect(audioInstances).toHaveLength(1))
+      expect(audioInstances[0].src).toMatch(/^blob:tts-/)
+      expect(fetchHandler).toHaveBeenCalledOnce()
+      expect(webAudio.contexts).toHaveLength(1)
+    })
+
+    it('stops streamed narration at once', async () => {
+      installAudioMock()
+      const webAudio = installAudioContextMock()
+      fetchHandler.mockImplementation(async () => pcmResponse())
+      const { result, stream } = renderTtsHarness(vi.fn(), OPENAI_CONFIG)
+
+      stream(93, line)
+      await waitFor(() => expect(webAudio.sources).toHaveLength(1))
+      act(() => result.current.stopTtsAudio())
+
+      expect(webAudio.sources[0].stop).toHaveBeenCalledOnce()
+      await waitFor(() => expect(result.current.ttsSpeaking).toBe(false))
+    })
+
+    it('plays a sample line in the chosen voice, and a new choice stops it and is kept', async () => {
+      const webAudio = installAudioContextMock()
+      fetchHandler.mockImplementation(async () => pcmResponse())
+      const pushError = vi.fn()
+      const { result } = renderHook(() =>
+        useTtsNarration({
+          auth: 'token',
+          baseUrl: 'https://backend.example.test',
+          ttsConfig: OPENAI_CONFIG,
+          selectedSessionId: 20,
+          sendPending: false,
+          streamingTurn: null,
+          speakableDmEntry: null,
+          pushError,
+        }),
+      )
+      expect(result.current.ttsEnabled).toBe(false)
+
+      act(() => voiceSetting(result.current.narrationSetting).onPlaySample())
+
+      await waitFor(() => expect(webAudio.sources).toHaveLength(1))
+      expect(fetchBodies).toEqual([
+        { text: 'The road remembers every name it was given.', voice: 'cedar', accent: 'default', quality: 'best' },
+      ])
+      act(() => voiceSetting(result.current.narrationSetting).onChange({ voice: 'marin', accent: 'british' }))
+
+      expect(webAudio.sources[0].stop).toHaveBeenCalledOnce()
+      expect(voiceSetting(result.current.narrationSetting)).toMatchObject({ voice: 'marin', accent: 'british' })
+      expect(JSON.parse(localStorage.getItem('aidm:ttsVoice') ?? 'null')).toEqual({ voice: 'marin', accent: 'british' })
+      expect(pushError).not.toHaveBeenCalled()
+    })
+  })
+
+  it('reads the narration setting as none when the server has no voice, and says so on a request', () => {
+    const pushError = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ ttsConfig }: { ttsConfig: TtsRuntimeConfig | null }) =>
+        useTtsNarration({
+          auth: 'token',
+          baseUrl: 'https://backend.example.test',
+          ttsConfig,
+          selectedSessionId: 20,
+          sendPending: false,
+          streamingTurn: null,
+          speakableDmEntry: null,
+          pushError,
+        }),
+      { initialProps: { ttsConfig: null as TtsRuntimeConfig | null } },
+    )
+    expect(result.current.narrationSetting).toBeNull()
+
+    rerender({ ttsConfig: { provider: null, configured: false, model: null } })
+    expect(result.current.narrationSetting).toBe('none')
+    act(() => result.current.toggleTts())
+    expect(pushError).toHaveBeenCalledWith('tts', 'No narrator voice is set up on this server.')
+
+    rerender({ ttsConfig: DEEPGRAM_CONFIG })
+    expect(result.current.narrationSetting).toEqual({ enabled: false, problem: '', voice: undefined })
   })
 })

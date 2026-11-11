@@ -175,6 +175,24 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
     ),
     TypeContract('BadTurnFeedbackResponse', alias='{ feedback: TurnFeedbackReport }'),
     TypeContract('CoherenceFeedbackResponse', alias='{ feedback_id: number; feedback: TurnFeedbackReport }'),
+    TypeContract('TtsChoice', fields=(field('id', 'string'), field('label', 'string'))),
+    # GET /api/tts/config; the accent and the choice lists come only with the OpenAI voice.
+    TypeContract(
+        'TtsConfigResponse',
+        fields=(
+            field('provider', "'openai' | 'deepgram' | null"),
+            field('configured', 'boolean'),
+            field('model', 'string | null'),
+            field('voice', 'string | null'),
+            field('audio_format', 'string | null'),
+            field('accent', 'string', optional=True),
+            field('voices', 'string[]', optional=True),
+            field('qualities', 'TtsChoice[]', optional=True),
+            field('accents', 'TtsChoice[]', optional=True),
+            field('connect_timeout_seconds', 'number', optional=True),
+            field('read_timeout_seconds', 'number', optional=True),
+        ),
+    ),
     TypeContract(
         'BetaIncidentsResponse',
         alias='{ incidents: JsonRecord[]; summary: { failed_turn_count: number; failed_canon_job_count: number; bad_turn_report_count: number; telemetry_incident_count: number }; limit: number; session_id?: number }',
