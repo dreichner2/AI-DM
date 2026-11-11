@@ -107,7 +107,7 @@ select:focus-visible {
 .ops-bar {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: 168px 68px minmax(226px, 1.02fr) minmax(160px, 0.5fr) minmax(206px, 0.66fr) minmax(132px, 0.44fr) minmax(86px, 0.28fr) minmax(112px, 0.38fr) minmax(106px, 0.34fr) 244px;
+  grid-template-columns: 168px 68px minmax(226px, 1.02fr) minmax(160px, 0.5fr) minmax(206px, 0.66fr) minmax(132px, 0.44fr) minmax(86px, 0.28fr) minmax(112px, 0.38fr) 244px;
   align-items: stretch;
   min-width: 0;
   padding: 6px 10px 7px;

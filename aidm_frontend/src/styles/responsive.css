@@ -445,7 +445,6 @@
     grid-column: 1 / -1;
     display: flex;
     justify-content: flex-start;
-    flex-wrap: wrap;
     padding: 0;
     border-right: 0;
   }
@@ -896,9 +895,11 @@
     display: none;
   }
 
+  /* One line, always: a wrapped action spills out of the bar over the notice strip below it. */
   .ops-actions {
     grid-column: 4;
     grid-row: 1;
+    flex-wrap: nowrap;
     min-height: 0;
     gap: 5px;
     padding: 0;
@@ -2212,6 +2213,15 @@
   }
 }
 
+/* The wordmark, the rail toggle and five 44px actions (Return to Story view last) need about 400px on
+   one line, more with a wider system font; below 420px the flame stands alone so the actions keep
+   their size and stay in the bar. */
+@media (max-width: 419px) {
+  .ops-brand strong {
+    display: none;
+  }
+}
+
 @media (max-width: 359px) {
   .ops-bar {
     grid-template-columns: 28px 42px minmax(0, 1fr) auto;
@@ -2221,10 +2231,6 @@
 
   .ops-brand {
     justify-content: center;
-  }
-
-  .ops-brand strong {
-    display: none;
   }
 
   .ops-bar > .top-icon {

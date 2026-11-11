@@ -1,6 +1,8 @@
 /// <reference types="node" />
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { originScopedStorageKey } from './api'
@@ -1636,6 +1638,25 @@ describe('App user workflow regressions', () => {
     rendered.unmount()
 
     expect(legacyListeners.removeListener).toHaveBeenCalledWith(legacyListeners.addListener.mock.calls[0][0])
+  })
+
+  it('keeps Return to Story view an icon in the phone top bar’s one-line action group', async () => {
+    installMatchMediaMock(true)
+    const { container } = await renderLoadedApp()
+
+    const actions = container.querySelector<HTMLElement>('.ops-actions')!
+    const storyButton = within(actions).getByRole('button', { name: 'Return to Story view' })
+    expect(actions.lastElementChild).toBe(storyButton)
+    expect(storyButton.textContent).toBe('')
+    expect(storyButton.querySelector('svg')).not.toBeNull()
+
+    // jsdom has no layout: pin the rules that keep the group on one line inside the bar.
+    const css = readFileSync(resolve(__dirname, 'styles/responsive.css'), 'utf8')
+    const actionRules = [...css.matchAll(/\.ops-actions \{(?<body>[^}]*)\}/g)].map((rule) => rule.groups?.body ?? '')
+    expect(actionRules.some((body) => body.includes('flex-wrap: nowrap;'))).toBe(true)
+    expect(actionRules.some((body) => body.includes('flex-wrap: wrap;'))).toBe(false)
+    const narrow = css.slice(css.indexOf('@media (max-width: 419px)'))
+    expect(narrow.slice(0, narrow.indexOf('\n}\n'))).toMatch(/\.ops-brand strong \{\s*display: none;\s*\}/)
   })
 
 
