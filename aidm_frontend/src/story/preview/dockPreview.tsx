@@ -29,8 +29,8 @@ import { isStoryPreviewState, makeBoardFixture, makeInspectorFixture, type Story
  * Development-only harness for the Story dock and drawer (story-dock-preview.html).
  * `?state=idle|tray|roll|combat|combat-waiting|narrating|uncertain|ended|dying|trade|rest|ending`,
  * or the server-offered states `offered` (chips and the Scene tab from `offeredActions`, the
- * journal block and story beats), `wizard` (the combat ribbon for a spellcaster) and `downed`
- * (a stable hero out of combat, someone else at the table),
+ * journal block and story beats), `wizard` (the combat ribbon for a spellcaster), `downed`
+ * (a stable hero out of combat, someone else at the table) and `closein` (an attack that moves first),
  * plus `drawer=character|pack|magic|journal|map`, `section=<tray section>` (opens the tray there),
  * `operator=1` and `shell=1` (inside the real StoryView instead of a bare column). The composer
  * state is simulated locally so typing, the tray and the drawer can be exercised.
@@ -52,6 +52,7 @@ type DockPreviewState =
   | 'offered'
   | 'wizard'
   | 'downed'
+  | 'closein'
 
 const DOCK_STATES: DockPreviewState[] = [
   'idle',
@@ -69,6 +70,7 @@ const DOCK_STATES: DockPreviewState[] = [
   'offered',
   'wizard',
   'downed',
+  'closein',
 ]
 const DRAWER_TABS: StoryDrawerTab[] = ['character', 'pack', 'magic', 'journal', 'map']
 const params = new URLSearchParams(window.location.search)
@@ -78,10 +80,10 @@ const traySection = params.get('section')
 const operator = params.get('operator') === '1'
 const inShell = params.get('shell') === '1'
 document.body.style.margin = '0'
-const combatState = dockState === 'combat' || dockState === 'combat-waiting' || dockState === 'dying' || dockState === 'wizard'
+const combatState = ['combat', 'combat-waiting', 'dying', 'wizard', 'closein'].includes(dockState)
 
 function fixtureState(): StoryPreviewState {
-  if (dockState === 'combat-waiting' || dockState === 'wizard') return 'combat'
+  if (dockState === 'combat-waiting' || dockState === 'wizard' || dockState === 'closein') return 'combat'
   if (dockState === 'narrating') return 'streaming'
   if (dockState === 'offered' || dockState === 'downed') return 'exploration'
   return isStoryPreviewState(dockState) ? dockState : 'exploration'
@@ -142,9 +144,10 @@ function offeredBoard(board: SessionBoardProps): SessionBoardProps {
       offer('search', 'Search Caravan Ledger'),
       offer('inspect', 'Read the caravan ledger', { authored: true, check: { skill: 'investigation', ability: 'intelligence' } }),
     ]),
+    // The search failed once: it may be tried again by taking time. One chip still stands for the bench.
     sceneObject('inn_drivers_bench', "Driver's Bench", ['Open'], [
-      offer('search', "Search under the driver's bench", { authored: true }),
-      offer('inspect', "Look over the driver's bench", { authored: true, done: true, available: false }),
+      offer('search', "Search under the driver's bench", { authored: true, retry: true }),
+      offer('inspect', "Look over the driver's bench", { authored: true }),
     ]),
     sceneObject('inn_wagon_strongbox', 'Wagon Strongbox', ['Closed', 'Locked'], [
       offer('search', 'Search the strongbox', { authored: true, available: false, reason: 'It is closed and locked.' }),
@@ -306,13 +309,36 @@ function downedBoard(board: SessionBoardProps): SessionBoardProps {
   }
 }
 
+/** A fighter out of reach with the move unspent: the longsword attack closes in first. */
+function closeInBoard(board: SessionBoardProps): SessionBoardProps {
+  const [bundle] = board.combatState.legalActionBundles
+  const [bow, ...rest] = bundle.actions
+  const longsword = {
+    ...bow,
+    id: 'combat.attack.longsword',
+    label: 'Attack with Longsword',
+    description: 'Close in and strike with your longsword.',
+    weaponName: 'Longsword',
+    requiresMove: true,
+    targets: bow.targets.slice(0, 1),
+    cost: { action: 1, bonusAction: 0, movement: 1, reaction: 0 },
+  }
+  const combat = {
+    ...board.combatState,
+    legalActionBundles: [{ ...bundle, movementRemaining: 1, actions: [longsword, ...rest] }],
+  }
+  return { ...board, combatState: combat, worldState: { ...board.worldState, combat } }
+}
+
 function previewBoard(): SessionBoardProps {
   const board = makeBoardFixture(fixtureState())
   if (dockState === 'offered') return offeredBoard(board)
   if (dockState === 'wizard') return wizardBoard(board)
   if (dockState === 'downed') return downedBoard(board)
+  if (dockState === 'closein') return closeInBoard(board)
   if (dockState !== 'combat-waiting') return board
   const [bundle] = board.combatState.legalActionBundles
+  // Off the viewer's turn the server offers nothing legal.
   const combat = {
     ...board.combatState,
     turnOrder: board.combatState.turnOrder?.map((entry) => ({ ...entry, isCurrent: entry.id === 'lanternman-2' })),
@@ -321,6 +347,7 @@ function previewBoard(): SessionBoardProps {
       isCurrentActor: false,
       currentActorId: 'lanternman-2',
       currentActorName: 'Lanternman',
+      actions: bundle.actions.map((action) => ({ ...action, available: false, reason: 'Lanternman is acting now.' })),
     }],
   }
   return {

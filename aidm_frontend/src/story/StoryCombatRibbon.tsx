@@ -7,6 +7,7 @@ import {
   type CombatActionCost,
   type CombatLegalAction,
   type CombatLegalActionBundle,
+  type CombatLegalTarget,
   type CombatParticipantSummary,
   type CombatStatePanel,
 } from '../gameSelectors'
@@ -18,7 +19,7 @@ import type {
 } from '../gameplayControlState'
 import type { ActivePlayer } from '../types'
 import { combatActionSubmission, objectActionSubmission, spellCastSubmission } from './actionIntents'
-import { combatTargetLabel, enemyDetail, rangeBand } from './combatLabels'
+import { combatActionLabel, combatTargetLabel, enemyDetail, rangeBand } from './combatLabels'
 import { StoryVitality } from './StoryVitality'
 import { useEdgeFades } from './useEdgeFades'
 
@@ -88,6 +89,19 @@ function aimsInRibbon(spell: GameplaySpellControl) {
   return spell.maxTargets === 1 && spell.castLevels.length <= 1
 }
 
+/** The one target a choice can be used on now, when there is exactly one; the picker is for two or more. */
+function onlyLegalTarget<Target extends { available: boolean }>(targets: Target[]) {
+  const legal = targets.filter((target) => target.available)
+  return legal.length === 1 ? legal[0] : null
+}
+
+/** Below maximum HP, from the live roster or else the server's exact HP for the viewer's combatant. */
+function viewerHurt(player: ActivePlayer | undefined, participant: CombatParticipantSummary | undefined) {
+  const hp = player?.health && player.health.maxHp > 0
+    ? { current: player.health.currentHp, max: player.health.maxHp }
+    : participant?.hp ?? null
+  return hp ? hp.current < hp.max : false
+}
 
 function combatantLabel(participant: CombatParticipantSummary) {
   const conditions = participant.conditions.length ? `, ${participant.conditions.join(', ')}` : ''
@@ -261,8 +275,9 @@ function EconomyPips({ bundle }: { bundle: CombatLegalActionBundle }) {
  * Combat in one or two quiet lines: who is fighting and how they are holding
  * up, then — on the viewer's turn — one row of what they can do now: weapon
  * attacks, their latest spells, Cast…, class abilities, a story action the
- * scene offers, Advance, Fall back, a healing potion, More… and End turn.
- * Nothing that is not legal now is shown; everything else lives in More….
+ * scene offers, Advance, Fall back, a healing potion when hurt, More… and End
+ * turn. Nothing that is not legal now is shown; everything else lives in
+ * More…. A choice with exactly one legal target is taken on it at once.
  */
 export function StoryCombatRibbon({
   combat,
@@ -295,8 +310,16 @@ export function StoryCombatRibbon({
 
   const portraitFor = (participant: CombatParticipantSummary) =>
     activePlayers.find((player) => player.character_name === participant.name)?.profile_image ?? ''
-  const viewersTurn = bundle.isCurrentActor
+  const { combatants, dividerAfter } = orderedCombatants(combat)
+  const viewer = combatants.find((participant) => participant.id === bundle.actorId)
+  // Who acts is `flags.activeActorId` when the server sends it, else its turn pointer.
+  const actingId = combat.activeActorId || bundle.currentActorId
+  const actingName =
+    combatants.find((participant) => participant.id === actingId)?.name ??
+    (actingId === bundle.currentActorId ? bundle.currentActorName : '')
   const endTurn = bundle.actions.find(isEndTurn) ?? null
+  // The viewer's choices show on their turn, or whenever the server offers them anything legal.
+  const viewersTurn = actingId === bundle.actorId || bundle.actions.some((action) => action.available)
   const legal = bundle.actions.filter((action) => action.available && !isEndTurn(action))
   const firstOfType = (type: string) => legal.filter((action) => action.type === type).slice(0, 1)
   const castable = controls.spells.filter((spell) => spell.available)
@@ -311,10 +334,11 @@ export function StoryCombatRibbon({
   const actionChoice = (action: CombatLegalAction): RibbonChoice => ({
     kind: 'action',
     key: `action-${action.id}`,
-    label: action.label,
+    label: combatActionLabel(action),
     cost: costLetters(action.cost),
     action,
   })
+  const hurt = viewerHurt(activePlayers.find((player) => player.id === playerId), viewer)
   const choices: RibbonChoice[] = [
     ...legal.filter((action) => action.type === 'attack').slice(0, MAX_ATTACKS).map(actionChoice),
     ...latestSpells.map((spell): RibbonChoice => ({
@@ -336,20 +360,18 @@ export function StoryCombatRibbon({
     })),
     ...firstOfType('advance').map(actionChoice),
     ...firstOfType('reposition').map(actionChoice),
-    ...legal.filter(isHealingPotion).slice(0, 1).map(actionChoice),
+    ...(hurt ? legal.filter(isHealingPotion).slice(0, 1).map(actionChoice) : []),
     { kind: 'tray', key: 'more', label: 'More…', cost: '', section: 'combat' },
   ]
   const actionSpent = bundle.subTurnCountersTracked && bundle.actionRemaining <= 0
   const telegraphs = combat.telegraphs.slice(0, MAX_TELEGRAPHS)
-  const { combatants, dividerAfter } = orderedCombatants(combat)
-  const viewer = combatants.find((participant) => participant.id === bundle.actorId)
   const engagedIds = combatants
     .filter((participant) =>
       participant.id !== bundle.actorId &&
       (viewer?.engagedWith?.includes(participant.id) || participant.engagedWith?.includes(bundle.actorId)),
     )
     .map((participant) => participant.id)
-  const layoutKey = `${combatants.map((participant) => participant.id).join('|')}@${bundle.currentActorId}`
+  const layoutKey = `${combatants.map((participant) => participant.id).join('|')}@${actingId}`
   const endTurnReason = endTurn
     ? [endTurn.available ? '' : endTurn.reason || 'This action is not currently legal.', disabled ? RESOLVING_REASON : '']
         .filter(Boolean)
@@ -360,6 +382,16 @@ export function StoryCombatRibbon({
     submitAction(message, intent)
     setTargeting(null)
     setBlockedNote('')
+  }
+
+  const act = (action: CombatLegalAction, target: CombatLegalTarget | null) => {
+    const submission = combatActionSubmission(bundle.actorName, action, target)
+    if (submission) finish(submission.message, submission.intent)
+  }
+
+  const castAt = (spell: GameplaySpellControl, targetId: string) => {
+    const { message, intent } = spellCastSubmission(controls.actorName, spell, [targetId])
+    finish(message, intent)
   }
 
   const choose = (choice: RibbonChoice) => {
@@ -376,13 +408,16 @@ export function StoryCombatRibbon({
       const { message, intent } = objectActionSubmission(controls.actorName, choice.object, choice.action)
       finish(message, intent)
     } else if (choice.kind === 'spell') {
-      if (aimsInRibbon(choice.spell)) setTargeting({ kind: 'spell', spell: choice.spell })
-      else onOpenTray('magic', choice.spell.id)
+      const only = onlyLegalTarget(choice.spell.targets)
+      if (!aimsInRibbon(choice.spell)) onOpenTray('magic', choice.spell.id)
+      else if (only) castAt(choice.spell, only.id)
+      else setTargeting({ kind: 'spell', spell: choice.spell })
     } else if (choice.action.requiresTarget) {
-      setTargeting({ kind: 'action', action: choice.action })
+      const only = onlyLegalTarget(choice.action.targets)
+      if (only) act(choice.action, only)
+      else setTargeting({ kind: 'action', action: choice.action })
     } else {
-      const submission = combatActionSubmission(bundle.actorName, choice.action, null)
-      if (submission) finish(submission.message, submission.intent)
+      act(choice.action, null)
     }
   }
 
@@ -392,8 +427,7 @@ export function StoryCombatRibbon({
       setBlockedNote(endTurnReason)
       return
     }
-    const submission = combatActionSubmission(bundle.actorName, endTurn, null)
-    if (submission) finish(submission.message, submission.intent)
+    act(endTurn, null)
   }
 
   // Reasons for blocked targets live outside the buttons so they describe, not rename, them.
@@ -416,23 +450,19 @@ export function StoryCombatRibbon({
         id: target.id,
         label: combatTargetLabel(combat, target),
         reason: target.available ? '' : target.reason || 'This target is not currently legal.',
-        submit: () => {
-          const submission = combatActionSubmission(bundle.actorName, targeting.action, target)
-          if (submission) finish(submission.message, submission.intent)
-        },
+        submit: () => act(targeting.action, target),
       }))
     }
     return targeting.spell.targets.map((target) => ({
       id: target.id,
       label: combatTargetLabel(combat, target),
       reason: target.available ? '' : target.reason || 'This target is not currently legal.',
-      submit: () => {
-        const { message, intent } = spellCastSubmission(controls.actorName, targeting.spell, [target.id])
-        finish(message, intent)
-      },
+      submit: () => castAt(targeting.spell, target.id),
     }))
   }
-  const targetingLabel = targeting ? (targeting.kind === 'action' ? targeting.action.label : targeting.spell.name) : ''
+  const targetingLabel = targeting
+    ? (targeting.kind === 'action' ? combatActionLabel(targeting.action) : targeting.spell.name)
+    : ''
 
   return (
     <section className="story-ribbon" aria-label={`Combat, round ${bundle.round}`}>
@@ -447,7 +477,7 @@ export function StoryCombatRibbon({
               <Combatant
                 participant={participant}
                 portrait={participant.team === 'enemy' ? '' : portraitFor(participant)}
-                current={participant.id === bundle.currentActorId}
+                current={participant.id === actingId}
                 vitality={participant.team === 'enemy' ? null : characterVitality(participant.conditions, participant.deathSaves)}
               />
             </Fragment>
@@ -532,7 +562,7 @@ export function StoryCombatRibbon({
         </div>
       ) : (
         <p className="story-ribbon-waiting">
-          {bundle.currentActorName ? `${bundle.currentActorName} is acting` : 'Waiting for the turn order'}
+          {actingName ? `${actingName} is acting` : 'Waiting for the turn order'}
           <span className="story-dots" aria-hidden="true"><i /><i /><i /></span>
         </p>
       )}

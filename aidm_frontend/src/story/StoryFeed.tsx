@@ -632,7 +632,12 @@ function TurnBeatsView({ beat, onOpen }: { beat: TurnBeatsBeat; onOpen: (target:
         if (turnBeat.look === 'hint') {
           return (
             <li key={key} className="story-turn-line" style={style}>
-              <button type="button" className="story-label story-turn-hint" onClick={() => onOpen('settings')}>
+              <button
+                type="button"
+                className="story-turn-note story-turn-hint"
+                title={turnBeat.text}
+                onClick={() => onOpen('settings')}
+              >
                 {turnBeat.text}
               </button>
             </li>

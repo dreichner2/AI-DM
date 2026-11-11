@@ -22,9 +22,9 @@ import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
 import { recentSpellNames } from './recentSpells'
 import { StoryRollPrompt } from './StoryRollPrompt'
-import { storySuggestions, type StorySuggestion } from './storySuggestions'
+import { MORE_SUGGESTION, storySuggestions, type StorySuggestion } from './storySuggestions'
 import type { StoryComposerProps } from './types'
-import { useEdgeFades } from './useEdgeFades'
+import { useChipsThatFit } from './useChipsThatFit'
 import { useStagedComposerAction } from './useStagedComposerAction'
 
 const HINTS_SEEN_KEY = 'aidm:storyHintsSeen'
@@ -96,6 +96,39 @@ function Dots() {
   return <span className="story-dots" aria-hidden="true"><i /><i /><i /></span>
 }
 
+/** One line of suggestions; chips that would not fit wait behind `More…` instead of being cut off. */
+function SuggestionRow({
+  suggestions,
+  onChoose,
+}: {
+  suggestions: StorySuggestion[]
+  onChoose: (suggestion: StorySuggestion) => void
+}) {
+  const chips = suggestions.filter((suggestion) => suggestion.kind !== 'more')
+  const rowRef = useChipsThatFit<HTMLDivElement>(chips.length < suggestions.length)
+  return (
+    <div ref={rowRef} className="story-suggestions" role="group" aria-label="Suggestions">
+      {[...chips, MORE_SUGGESTION].map((suggestion, index) => {
+        const Icon = SUGGESTION_ICONS[suggestion.kind]
+        return (
+          <button
+            key={suggestion.key}
+            type="button"
+            className="story-chip"
+            data-kind={suggestion.kind}
+            data-fit={suggestion.kind === 'more' ? 'more' : 'chip'}
+            style={{ animationDelay: `${index * 30}ms` }}
+            onClick={() => onChoose(suggestion)}
+          >
+            {Icon ? <Icon aria-hidden="true" /> : null}
+            {suggestion.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 /**
  * Story mode's dock: one status line, then whatever the moment needs — a roll,
  * the combat ribbon or a few suggestions — above a single line to type in.
@@ -118,7 +151,6 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const [sentCount, setSentCount] = useState(readSentCount)
   const [tradeMerchantId, setTradeMerchantId] = useState('')
   const stage = useStagedComposerAction(composer)
-  const suggestionsRef = useEdgeFades<HTMLDivElement>()
   const snapshot = board.sessionState?.state_snapshot
   const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
 
@@ -403,30 +435,11 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               }}
             />
           ) : suggestions.length ? (
-            <div
+            <SuggestionRow
               key={suggestions.map((suggestion) => suggestion.key).join('|')}
-              ref={suggestionsRef}
-              className="story-suggestions story-scroll-row"
-              role="group"
-              aria-label="Suggestions"
-            >
-              {suggestions.map((suggestion, index) => {
-                const Icon = SUGGESTION_ICONS[suggestion.kind]
-                return (
-                  <button
-                    key={suggestion.key}
-                    type="button"
-                    className="story-chip"
-                    data-kind={suggestion.kind}
-                    style={{ animationDelay: `${index * 30}ms` }}
-                    onClick={() => chooseSuggestion(suggestion)}
-                  >
-                    {Icon ? <Icon aria-hidden="true" /> : null}
-                    {suggestion.label}
-                  </button>
-                )
-              })}
-            </div>
+              suggestions={suggestions}
+              onChoose={chooseSuggestion}
+            />
           ) : null}
 
           <div className="story-input-row">

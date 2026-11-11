@@ -411,6 +411,50 @@ describe('server story beats', () => {
     ])
   })
 
+  it('shows how a fight ended as a chip, a victory in the success tone', () => {
+    const [, turn] = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'The last cutthroat falls.', {
+        turn_id: 12,
+        storyBeats: [
+          { kind: 'combat_end', text: 'Victory' },
+          { kind: 'combat_end', text: 'The fight ends — they flee' },
+        ],
+      }),
+    ])
+    if (turn.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ look, glyph, tone }) => ({ look, glyph, tone }))).toEqual([
+      { look: 'chip', glyph: 'swords', tone: 'success' },
+      { look: 'chip', glyph: 'swords', tone: 'default' },
+    ])
+  })
+
+  it('reads a hint in sentence case', () => {
+    const [, turn] = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'The road waits.', {
+        turn_id: 8,
+        storyBeats: [{ kind: 'hint', text: 'scripted narrator — use the suggestions' }],
+      }),
+    ])
+    expect(turn).toMatchObject({ kind: 'turnBeats', beats: [{ kind: 'hint', text: 'Scripted narrator — use the suggestions' }] })
+  })
+
+  it('takes an attack’s AC only from the roll’s own target_ac, never from a hint or a requested DC', () => {
+    const attack = (roll: JsonRecord, metadata: JsonRecord = {}) =>
+      rollFromEntry(entry('log-1', 'player', 'Arden', 'I attack the cutthroat.', {
+        turn_id: 3,
+        authoritative_roll: { rule_type: 'attack', die: 'd20', rolls: [9], kept: 9, modifier: 4, total: 13, ...roll },
+        ...metadata,
+      }))
+    expect(attack({ task_dc: 14, outcome: 'success', target_ac: 13 }, { dc_hint: 'AC 14' })).toMatchObject({ attack: true, dc: 13, outcome: 'success' })
+    expect(attack({ task_dc: 14, outcome: 'success' }, { dc_hint: '14', target_ac: 13 })).toMatchObject({ dc: 13 })
+    expect(attack({ task_dc: 14, outcome: 'failure' }, { dc_hint: '14' })).toMatchObject({ attack: true, dc: null, outcome: 'failure' })
+
+    const fromText = (metadata: JsonRecord) =>
+      rollFromEntry(entry('log-2', 'player', 'Arden', 'I roll a d20+4 for longsword attack: 9 = 13', { rule_type: 'attack', ...metadata }))
+    expect(fromText({ dc_hint: '14', target_ac: 13 })).toMatchObject({ dc: 13, outcome: 'success' })
+    expect(fromText({ dc_hint: '14' })).toMatchObject({ dc: null, outcome: null })
+  })
+
   it('takes a DC only when the server states one', () => {
     const roll = (metadata: JsonRecord) =>
       rollFromEntry(entry('log-1', 'player', 'Liora', 'I roll a d20+3 for investigation: 11 = 14', metadata))

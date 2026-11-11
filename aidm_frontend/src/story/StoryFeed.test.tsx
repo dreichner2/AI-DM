@@ -380,6 +380,36 @@ describe('StoryFeed beats from the server', () => {
     expect(onOpenBeatTarget.mock.calls).toEqual([['journal'], ['map'], ['settings']])
     expect(within(changes).queryByRole('button', { name: 'Taken — Caravan Strongbox Key' })).toBeNull()
     expect(within(changes).getByText('The bell rings again')).toHaveClass('story-turn-note')
+    // The hint is one quiet line in the same secondary style, not a small-caps label.
+    const hint = within(changes).getByRole('button', { name: /^Scripted narrator/ })
+    expect(hint).toHaveClass('story-turn-note')
+    expect(hint).not.toHaveClass('story-label')
+  })
+
+  it('shows an attack against the AC the roll itself carries, or just hit or miss without one', () => {
+    const attack = (id: string, turnId: number, roll: JsonRecord) =>
+      entry(id, 'player', 'Arden Vale', 'I roll a d20+4 for longsword attack: 9 = 13', {
+        turn_id: turnId,
+        dc_hint: 'AC 14',
+        authoritative_roll: { rule_type: 'attack', die: 'd20', mode: 'normal', rolls: [9], kept: 9, modifier: 4, total: 13, task_dc: 14, ...roll },
+      })
+    const { container } = render(
+      <StoryFeed
+        board={board({
+          turnRows: [
+            attack('log-1', 4, { outcome: 'success', target_ac: 13 }),
+            attack('log-2', 5, { outcome: 'failure' }),
+          ],
+        })}
+        textSize="default"
+        onExitToTitle={vi.fn()}
+        onOpenBeatTarget={vi.fn()}
+      />,
+    )
+    expect([...container.querySelectorAll('.story-roll-outcome')].map((outcome) => outcome.textContent)).toEqual([
+      'hit vs AC 13',
+      'miss',
+    ])
   })
 
   it('without server beats, keeps the client’s change lines but never a raw change type', () => {

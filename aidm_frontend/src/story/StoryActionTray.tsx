@@ -52,6 +52,7 @@ import {
   capabilityTarget,
   combatActionSubmission,
   itemUseSubmission,
+  objectActionLabel,
   objectActionSubmission,
   pickupSubmission,
   restSubmission,
@@ -60,7 +61,7 @@ import {
   spellCastSubmission,
   type ActionSubmission,
 } from './actionIntents'
-import { combatTargetLabel } from './combatLabels'
+import { combatActionLabel, combatTargetLabel } from './combatLabels'
 import { CoinGlyph } from './glyphs'
 import { objectChoices } from './storySuggestions'
 import { coinLabel, copperValue, sellOffer, tradeLineKey, tradeRefusals, type Coins as CoinAmounts } from './trade'
@@ -167,6 +168,11 @@ function Price({ coins }: { coins: CoinAmounts }) {
       {coinLabel(coins)}
     </span>
   )
+}
+
+/** A target picker is shown only for two or more legal targets; one is used without asking. */
+function legalTargetCount(targets: GameplayTarget[]) {
+  return targets.filter((target) => target.available).length
 }
 
 function targetChipLabel(target: GameplayTarget) {
@@ -475,7 +481,9 @@ export function StoryActionTray({
       spell.maxTargets + Math.max(0, (castLevel ?? spell.level) - spell.level) * (spell.upcastTargetsPerLevel ?? 0),
     )
     const eligible = new Set(spell.targets.filter((target) => target.available).map((target) => target.id))
-    const chosen = spellTargets.filter((id) => eligible.has(id)).slice(0, maxTargets)
+    // With one legal target there is nothing to pick: the spell goes to it.
+    const [onlyTarget] = eligible.size === 1 && maxTargets > 0 ? [...eligible] : []
+    const chosen = onlyTarget ? [onlyTarget] : spellTargets.filter((id) => eligible.has(id)).slice(0, maxTargets)
     const countValid = chosen.length >= spell.minTargets && chosen.length <= maxTargets
     const castReason = mechanicsBusyReason || spell.reason ||
       (countValid ? '' : spell.minTargets === maxTargets
@@ -491,7 +499,7 @@ export function StoryActionTray({
     }
     return (
       <div className="story-tray-detail">
-        {maxTargets > 0 ? (
+        {maxTargets > 0 && !onlyTarget ? (
           <div className="story-tray-group" role="group" aria-label={`${spell.name} targets`}>
             <span className="story-label" aria-hidden="true">
               {maxTargets > 1 ? `Targets · ${chosen.length} of ${maxTargets}` : 'Target'}
@@ -680,7 +688,7 @@ export function StoryActionTray({
     const useReason = mechanicsBusyReason || capability.reason || (target ? '' : 'No legal target is available.')
     return (
       <div className="story-tray-detail">
-        {capability.targetPolicy !== 'self' && capability.targets.length ? (
+        {capability.targetPolicy !== 'self' && legalTargetCount(capability.targets) > 1 ? (
           <div className="story-tray-group" role="group" aria-label={`${capability.name} target`}>
             <span className="story-label" aria-hidden="true">Target</span>
             <div className="story-chip-row">
@@ -850,7 +858,7 @@ export function StoryActionTray({
         </button>
         {selected ? (
           <div className="story-tray-detail">
-            {item.targets.length > 1 ? (
+            {legalTargetCount(item.targets) > 1 ? (
               <TrayGroup label={`${item.name} target`} heading="Target">
                 {item.targets.map((candidate) => {
                   const reason = candidate.available ? '' : candidate.reason || 'Not a legal target.'
@@ -1054,8 +1062,9 @@ export function StoryActionTray({
   /**
    * One offered action: a link when it can be taken; dimmed, with the server's
    * reason beneath on hover or focus (and as its description), when it cannot.
+   * A retry that takes time says so beneath.
    */
-  const renderOffer = (key: string, label: string, reason: string, take: () => void) => (
+  const renderOffer = (key: string, label: string, reason: string, take: () => void, costsTime = false) => (
     <span key={key} className="story-tray-offer" data-blocked={reason ? '' : undefined}>
       <button
         type="button"
@@ -1068,6 +1077,7 @@ export function StoryActionTray({
       >
         {label}
       </button>
+      {costsTime ? <span className="story-tray-offer-note">costs time</span> : null}
       {reason ? <span className="story-tray-offer-reason" aria-hidden="true">{reason}</span> : null}
     </span>
   )
@@ -1105,9 +1115,10 @@ export function StoryActionTray({
               {offers.map((action) =>
                 renderOffer(
                   `${object.id}-${action.id}`,
-                  action.label,
+                  objectActionLabel(action),
                   action.available ? mechanicsBusyReason : action.reason || 'Not possible right now.',
                   () => submitTyped(objectActionSubmission(controls.actorName, object, action)),
+                  action.retry,
                 ),
               )}
             </div>
@@ -1133,27 +1144,31 @@ export function StoryActionTray({
       <ul className="story-tray-list" aria-label="Combat actions">
         {choices.map((action) => {
           const selected = action.id === combatTargetingId
+          const legalTargets = action.targets.filter((target) => target.available)
+          // One legal target is taken at once; the picker is for two or more.
+          const picks = action.requiresTarget && legalTargets.length !== 1
+          const label = combatActionLabel(action)
           return (
             <li key={action.id} data-selected={selected || undefined}>
               <button
                 type="button"
                 className="story-tray-row"
-                aria-expanded={action.requiresTarget ? selected : undefined}
+                aria-expanded={picks ? selected : undefined}
                 aria-disabled={mechanicsBusyReason ? true : undefined}
                 title={mechanicsBusyReason || undefined}
                 onClick={() => {
                   if (mechanicsBusyReason) return
-                  if (action.requiresTarget) setCombatTargetingId(selected ? '' : action.id)
-                  else take(action, null)
+                  if (picks) setCombatTargetingId(selected ? '' : action.id)
+                  else take(action, action.requiresTarget ? legalTargets[0] : null)
                 }}
               >
-                <span className="story-tray-row-name">{action.label}</span>
+                <span className="story-tray-row-name">{label}</span>
                 {action.description ? <span className="story-tray-row-summary">{action.description}</span> : null}
               </button>
               {selected ? (
                 <div className="story-tray-detail">
-                  <TrayGroup label={`${action.label} target`} heading="Target">
-                    {action.targets.filter((target) => target.available).map((target) => (
+                  <TrayGroup label={`${label} target`} heading="Target">
+                    {legalTargets.map((target) => (
                       <button key={target.id} type="button" className="story-chip" onClick={() => take(action, target)}>
                         {combatTargetLabel(board.combatState, target)}
                       </button>
@@ -1241,9 +1256,12 @@ export function StoryActionTray({
     if (!merchant) return null
     const purse = controls.currency ?? {}
     const purseValue = copperValue(purse)
+    // Only what the merchant would pay something for.
     const goods = (controls.tradeGoods ?? [])
       .map((good) => ({ good, offer: sellOffer(good, merchant) }))
-      .filter((entry): entry is { good: GameplayTradeGood; offer: CoinAmounts } => entry.offer !== null)
+      .filter((entry): entry is { good: GameplayTradeGood; offer: CoinAmounts } =>
+        entry.offer !== null && copperValue(entry.offer) > 0,
+      )
     const buyBlock = (entry: WorldMerchantStockEntry) =>
       entry.quantity === 0 ? 'Sold out.' : copperValue(entry.price) > purseValue ? 'You cannot afford this.' : ''
     return (

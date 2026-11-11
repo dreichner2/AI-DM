@@ -113,20 +113,21 @@ describe('StoryNotices', () => {
 })
 
 describe('Story fixes for the integrated app', () => {
-  it('reads an attack roll as hit or miss against AC', () => {
+  it('reads an attack roll as hit or miss against the AC the roll carries', () => {
     const hit = rollFromEntry(
       playerRoll('log-1', {
         turn_id: 4,
-        task_dc: 13,
-        authoritative_roll: { rule_type: 'attack', die: 'd20', rolls: [20], kept: 20, modifier: 6, total: 26 },
+        task_dc: 14,
+        authoritative_roll: { rule_type: 'attack', die: 'd20', rolls: [20], kept: 20, modifier: 6, total: 26, target_ac: 13 },
       }),
     )
+    // Without the roll's own AC the card says only hit or miss.
     const miss = rollFromEntry(
       playerRoll('log-2', {
         turn_id: 5,
         rule_type: 'spell_attack',
         task_dc: 15,
-        authoritative_roll: { die: 'd20', rolls: [4], kept: 4, modifier: 5, total: 9 },
+        authoritative_roll: { die: 'd20', rolls: [4], kept: 4, modifier: 5, total: 9, outcome: 'failure' },
       }),
     )
     const save = rollFromEntry(
@@ -137,14 +138,14 @@ describe('Story fixes for the integrated app', () => {
       }),
     )
     expect(hit).toMatchObject({ attack: true, outcome: 'success', dc: 13 })
-    expect(miss).toMatchObject({ attack: true, outcome: 'failure', dc: 15 })
+    expect(miss).toMatchObject({ attack: true, outcome: 'failure', dc: null })
     expect(save).toMatchObject({ attack: false, outcome: 'success', dc: 12 })
 
     const entries = [
       playerRoll('log-1', {
         turn_id: 4,
-        task_dc: 13,
-        authoritative_roll: { rule_type: 'attack', die: 'd20', rolls: [20], kept: 20, modifier: 6, total: 26 },
+        task_dc: 14,
+        authoritative_roll: { rule_type: 'attack', die: 'd20', rolls: [20], kept: 20, modifier: 6, total: 26, target_ac: 13 },
       }),
       playerRoll('log-3', {
         turn_id: 6,

@@ -213,6 +213,24 @@ describe('GameplayControls', () => {
     )
   })
 
+  it('names a failed check offered again as taking your time, and sends it with take_time', () => {
+    const state = controlState()
+    state.interactables[0] = {
+      ...state.interactables[0],
+      offered: true,
+      actions: [{ id: 'search', label: 'Search the shrine', available: true, reason: '', phrase: true, retry: true }],
+    }
+    const onSubmit = vi.fn(() => true)
+    render(<GameplayControls state={state} disabled={false} onSubmit={onSubmit} />)
+
+    const interactions = screen.getByRole('group', { name: 'Scene interactions' })
+    fireEvent.click(within(interactions).getByRole('button', { name: 'Search the shrine — take your time' }))
+    expect(onSubmit).toHaveBeenCalledWith('Search the shrine — take your time.', expect.objectContaining({
+      object: { id: 'moon_shrine', action: 'search', revision: 4 },
+      take_time: true,
+    }))
+  })
+
   it('disables exhausted or off-turn actions from the current snapshot', () => {
     const state = controlState()
     state.isActorTurn = false

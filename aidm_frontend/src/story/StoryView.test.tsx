@@ -2,6 +2,7 @@
 import '@testing-library/jest-dom/vitest'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import type { InspectorPanelProps } from '../InspectorPanel'
 import type { SessionBoardProps } from '../SessionBoard'
 import { makeBoardFixture, makeInspectorFixture } from './preview/fixtures'
 import { setStoryReduceMotion, setStoryTextSize, setStoryTypeface } from './sheets/storyPreferences'
@@ -26,11 +27,13 @@ const chrome: StoryChromeProps = {
 
 function renderView({
   board = makeBoardFixture('exploration'),
+  inspector = makeInspectorFixture(),
   drawerOpen = false,
   drawerTab = 'character',
   onDrawerOpenChange = vi.fn(),
 }: {
   board?: SessionBoardProps
+  inspector?: InspectorPanelProps
   drawerOpen?: boolean
   drawerTab?: StoryDrawerTab
   onDrawerOpenChange?: (open: boolean, tab?: StoryDrawerTab) => void
@@ -38,7 +41,7 @@ function renderView({
   const view = (props: SessionBoardProps) => (
     <StoryView
       board={props}
-      inspector={makeInspectorFixture()}
+      inspector={inspector}
       chrome={chrome}
       composer={<textarea aria-label="Your action" />}
       drawer={<div>Drawer contents</div>}
@@ -95,6 +98,19 @@ describe('StoryView', () => {
     expect(whileOpen).toHaveBeenLastCalledWith(true, 'map')
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(whileOpen).toHaveBeenLastCalledWith(false)
+    cleanup()
+
+    // A hero without spells has no Magic tab for G to open.
+    const noMagic = vi.fn()
+    const board = makeBoardFixture('exploration')
+    const inspector = makeInspectorFixture()
+    renderView({
+      board: { ...board, gameplayControls: { ...board.gameplayControls, spells: [], narratedSpells: [] } },
+      inspector: { ...inspector, spellbook: { ...inspector.spellbook, knownSpells: [] } },
+      onDrawerOpenChange: noMagic,
+    })
+    fireEvent.keyDown(document.body, { key: 'g' })
+    expect(noMagic).not.toHaveBeenCalled()
   })
 
   it('ignores hotkeys while typing or while a modal dialog is open', () => {

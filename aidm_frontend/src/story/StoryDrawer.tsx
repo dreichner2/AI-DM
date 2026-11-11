@@ -4,6 +4,7 @@ import { worldMapFromSnapshot } from '../gameSelectors'
 import { subscribeToMediaQueryChange } from '../mediaQuery'
 import { useModalFocusTrap } from '../useModalFocusTrap'
 import { travelSubmission } from './actionIntents'
+import { heroHasSpells } from './heroSpells'
 import { CharacterSection } from './drawer/CharacterSection'
 import { JournalSection } from './drawer/JournalSection'
 import { MagicSection } from './drawer/MagicSection'
@@ -51,6 +52,10 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
   const [rendered, setRendered] = useState(open)
   const sheetRef = useRef<HTMLElement | null>(null)
   const returnFocusRef = useRef<HTMLElement | null>(null)
+  const hasSpells = heroHasSpells(board, inspector)
+  const tabs = DRAWER_TABS.filter((candidate) => candidate.id !== 'magic' || hasSpells)
+  // A tab this hero does not have (Magic without spells) shows the character instead.
+  const shownTab = tabs.some((candidate) => candidate.id === tab) ? tab : 'character'
 
   if (open && !rendered) setRendered(true)
 
@@ -60,10 +65,10 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
     return () => window.clearTimeout(timer)
   }, [open, rendered])
 
-  const tabRef = useRef(tab)
+  const tabRef = useRef(shownTab)
   useEffect(() => {
-    tabRef.current = tab
-  }, [tab])
+    tabRef.current = shownTab
+  }, [shownTab])
 
   // Focus moves to the selected tab when the sheet opens (the modal trap does
   // the same for the overlay); later tab changes manage their own focus.
@@ -94,15 +99,15 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
   }
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
-    const index = DRAWER_TABS.findIndex((candidate) => candidate.id === tab)
+    const index = tabs.findIndex((candidate) => candidate.id === shownTab)
     let next: number | null = null
-    if (event.key === 'ArrowRight') next = (index + 1) % DRAWER_TABS.length
-    else if (event.key === 'ArrowLeft') next = (index - 1 + DRAWER_TABS.length) % DRAWER_TABS.length
+    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
+    else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length
     else if (event.key === 'Home') next = 0
-    else if (event.key === 'End') next = DRAWER_TABS.length - 1
+    else if (event.key === 'End') next = tabs.length - 1
     if (next === null) return
     event.preventDefault()
-    const nextTab = DRAWER_TABS[next].id
+    const nextTab = tabs[next].id
     onTabChange(nextTab)
     document.getElementById(drawerTabId(nextTab))?.focus()
   }
@@ -136,8 +141,8 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
       >
         <header className="story-drawer-header">
           <div className="story-drawer-tabs" role="tablist" aria-label="Character panel sections">
-            {DRAWER_TABS.map((candidate) => {
-              const selected = candidate.id === tab
+            {tabs.map((candidate) => {
+              const selected = candidate.id === shownTab
               return (
                 <button
                   key={candidate.id}
@@ -167,17 +172,17 @@ export function StoryDrawer({ board, inspector, open, tab, onTabChange, onClose 
           </button>
         </header>
         <div
-          id={drawerPanelId(tab)}
+          id={drawerPanelId(shownTab)}
           className="story-drawer-panel"
           role="tabpanel"
-          aria-labelledby={drawerTabId(tab)}
+          aria-labelledby={drawerTabId(shownTab)}
           tabIndex={0}
         >
-          {tab === 'character' ? <CharacterSection board={board} inspector={inspector} /> : null}
-          {tab === 'pack' ? <PackSection inspector={inspector} /> : null}
-          {tab === 'magic' ? <MagicSection board={board} inspector={inspector} /> : null}
-          {tab === 'journal' ? <JournalSection board={board} inspector={inspector} /> : null}
-          {tab === 'map' ? (
+          {shownTab === 'character' ? <CharacterSection board={board} inspector={inspector} withTraits={!hasSpells} /> : null}
+          {shownTab === 'pack' ? <PackSection inspector={inspector} /> : null}
+          {shownTab === 'magic' ? <MagicSection board={board} inspector={inspector} /> : null}
+          {shownTab === 'journal' ? <JournalSection board={board} inspector={inspector} /> : null}
+          {shownTab === 'map' ? (
             <Suspense fallback={<p className="story-sheet-meta">Loading map…</p>}>
               <MapSection inspector={inspector} worldMap={worldMap} travelBlockedReason={travelBlockedReason} onTravel={travel} />
             </Suspense>

@@ -9,6 +9,7 @@ import type {
 import {
   capabilitySubmission,
   capabilityTarget,
+  objectActionLabel,
   objectActionSubmission,
   selectedHealingAmount,
   spellCastSubmission,
@@ -287,7 +288,7 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
                         onSubmit(message, intent)
                       }}
                     >
-                      {action.label}
+                      {objectActionLabel(action)}
                     </button>
                   ))}
                 </div>

@@ -308,6 +308,37 @@ describe('StoryComposer', () => {
     expect(screen.queryByRole('button', { name: /Open Lead wagon|Search Lead wagon/ })).not.toBeInTheDocument()
   })
 
+  it('keeps the suggestions on one line: chips with no room wait behind More… instead of being cut off', () => {
+    let rowWidth = 400
+    // Chips measure 8px a character; jsdom lays nothing out by itself.
+    const layout = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const width = this.classList.contains('story-suggestions')
+        ? rowWidth
+        : this.classList.contains('story-chip') ? (this.textContent ?? '').length * 8 : 0
+      return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}) }
+    })
+    try {
+      const { props, rerender } = renderComposer()
+      const visible = () =>
+        within(screen.getByRole('group', { name: 'Suggestions' })).getAllByRole('button').map((chip) => chip.textContent)
+      // 144 + 144 + 160 px of chips do not fit 400: the last waits behind More… (40 px).
+      expect(visible()).toEqual(['Examine Lead wagon', 'Talk to Marta Vell', 'More…'])
+      fireEvent.click(screen.getByRole('button', { name: 'More…' }))
+      expect(screen.getByRole('region', { name: 'Scene' })).toBeInTheDocument()
+      fireEvent.keyDown(screen.getByRole('dialog', { name: 'Actions' }), { key: 'Escape' })
+
+      rowWidth = 460
+      rerender(<StoryComposer {...props} />)
+      expect(visible()).toEqual(['Examine Lead wagon', 'Talk to Marta Vell', 'Go to North causeway'])
+
+      rowWidth = 100
+      rerender(<StoryComposer {...props} />)
+      expect(visible()).toEqual(['More…'])
+    } finally {
+      layout.mockRestore()
+    }
+  })
+
   it('opens the tray on Scene from More…, and on the Combat list during a fight', () => {
     const many = ['Mara', 'Tovin', 'Osric'].map((name) => ({ id: name, name, race: '', role: '', disposition: '', status: 'present' }))
     renderComposer({ board: { worldState: testWorld({ presentNpcs: many }) } })

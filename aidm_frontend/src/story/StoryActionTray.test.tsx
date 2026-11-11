@@ -326,6 +326,8 @@ describe('StoryActionTray', () => {
             { id: 'trinket_1', name: 'Odd trinket', quantity: 1, price: null },
             // Mara stocks rope, but only the item's own price makes an offer.
             { id: 'rope_1', name: 'Rope', quantity: 1, price: null },
+            // Half of a copper is nothing: a line that would sell for 0 is not listed.
+            { id: 'torch_1', name: 'Torch', quantity: 3, price: { cp: 1 } },
           ],
         }),
       })
@@ -480,6 +482,34 @@ describe('StoryActionTray', () => {
     expect(withoutClientId(storySubmit.mock.calls[0][1])).toEqual(withoutClientId(classicSubmit.mock.calls[0][1]))
   })
 
+  it('offers a failed check again as taking your time, which costs time and is sent with take_time', () => {
+    const board = testBoard({
+      gameplayControls: testControls({
+        interactables: [{
+          ...testControls().interactables[0],
+          id: 'bench',
+          name: "Driver's Bench",
+          states: [],
+          offered: true,
+          actions: [{ id: 'search', label: "Search under the driver's bench", available: true, reason: '', phrase: true, authored: true, retry: true }],
+        }],
+      }),
+    })
+    renderDock(board)
+    const actions = within(openSection('Scene')).getByRole('group', { name: "Driver's Bench actions" })
+    const retry = within(actions).getByRole('button', { name: "Search under the driver's bench — take your time" })
+    expect(retry.closest('.story-tray-offer')).toHaveTextContent("Search under the driver's bench — take your timecosts time")
+    fireEvent.click(retry)
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith("Search under the driver's bench — take your time.", {
+      kind: 'object',
+      source: 'scene_panel',
+      text: "Search under the driver's bench — take your time.",
+      client_message_id: expect.any(String),
+      object: { id: 'bench', action: 'search', revision: 4 },
+      take_time: true,
+    })
+  })
+
   it('offers only Examine for an object from an older server', () => {
     renderDock(testBoard())
     const actions = within(openSection('Scene')).getByRole('group', { name: 'Lead wagon actions' })
@@ -508,12 +538,71 @@ describe('StoryActionTray', () => {
       'Attack with Longsword',
       'Dodge',
     ])
+    // The longsword has one legal target, so it is used on it at once.
     fireEvent.click(within(list).getByRole('button', { name: 'Attack with Longsword' }))
-    fireEvent.click(within(list).getByRole('button', { name: 'Goblin Sentry · Wounded' }))
     expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith(
       'Ysolde Marrow attacks Goblin Sentry with Longsword.',
       expect.objectContaining({ combat: { action_id: 'combat.attack.longsword', target_id: 'goblin_1' } }),
     )
+  })
+
+  it('asks for a target in the Combat list only among two or more, and names an attack that closes in', () => {
+    const [attack, ...rest] = testCombat().legalActionBundles[0].actions
+    const combat = testCombat({
+      bundle: {
+        actions: [
+          {
+            ...attack,
+            requiresMove: true,
+            targets: [
+              ...attack.targets,
+              { id: 'goblin_2', name: 'Goblin Scout', rangeBand: 'near', available: true, reason: '' },
+            ],
+          },
+          ...rest,
+        ],
+      },
+    })
+    const board = testBoard({ worldState: testWorld({ combat }) })
+    renderDock(board)
+    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
+    const list = within(screen.getByRole('region', { name: 'Combat' })).getByRole('list', { name: 'Combat actions' })
+    fireEvent.click(within(list).getByRole('button', { name: 'Close in and attack with Longsword' }))
+    expect(board.actionComposerProps.submitAction).not.toHaveBeenCalled()
+    const targets = within(list).getByRole('group', { name: 'Close in and attack with Longsword target' })
+    expect(within(targets).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Goblin Sentry · Wounded',
+      'Goblin Scout · near',
+    ])
+    fireEvent.click(within(targets).getByRole('button', { name: 'Goblin Scout · near' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith(
+      'Ysolde Marrow closes in and attacks Goblin Scout with Longsword.',
+      expect.objectContaining({ combat: { action_id: 'combat.attack.longsword', target_id: 'goblin_2' } }),
+    )
+  })
+
+  it('casts at the one legal target without a picker, and uses an ability on its only target the same way', () => {
+    const [missile] = testControls().spells
+    const [layOnHands] = testControls().capabilities
+    const board = testBoard({
+      gameplayControls: testControls({
+        spells: [{ ...missile, targets: missile.targets.map((target) => ({ ...target, available: target.id === 'goblin_1' })) }],
+        capabilities: [{ ...layOnHands, targets: layOnHands.targets.slice(1) }],
+      }),
+    })
+    renderDock(board)
+    const tray = openSection('Magic')
+    expect(within(tray).queryByRole('group', { name: 'Magic Missile targets' })).not.toBeInTheDocument()
+    fireEvent.click(within(tray).getByRole('button', { name: 'Cast Magic Missile' }))
+    expect(vi.mocked(board.actionComposerProps.submitAction).mock.calls[0]).toEqual([
+      'Ysolde casts Magic Missile at Goblin.',
+      expect.objectContaining({ spell: expect.objectContaining({ target_ids: ['goblin_1'] }) }),
+    ])
+
+    const abilities = openSection('Abilities')
+    expect(within(abilities).queryByRole('group', { name: 'Lay on Hands target' })).not.toBeInTheDocument()
+    fireEvent.click(within(abilities).getByRole('button', { name: 'Use Lay on Hands' }))
+    expect(vi.mocked(board.actionComposerProps.submitAction).mock.calls[1][0]).toBe('Ysolde uses Lay on Hands on Brannoc for up to 1 hit points.')
   })
 
   it('takes a short rest spending the chosen hit dice, otherwise with the classic rest intent', async () => {

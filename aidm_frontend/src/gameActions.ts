@@ -185,6 +185,8 @@ export type ActionIntent = {
     action: SceneObjectAction
     revision?: number
   }
+  /** Retry a failed object check slowly: the clock advances and the check is taken as a 20. */
+  take_time?: boolean
   inventory_action?: InventoryAction
   cost_gold?: number
   interaction?: {

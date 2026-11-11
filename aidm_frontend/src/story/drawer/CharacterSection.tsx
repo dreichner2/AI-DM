@@ -5,6 +5,7 @@ import type { SessionBoardProps } from '../../SessionBoard'
 import { profileIconSrcForCharacter } from '../../profileIcons'
 import type { ActivePlayer } from '../../types'
 import { StoryVitality } from '../StoryVitality'
+import { TraitList } from './TraitList'
 
 /** Conditions the vitality mark already shows. */
 const VITALITY_CONDITIONS = new Set(['dying', 'stable', 'dead', 'unconscious'])
@@ -78,9 +79,11 @@ function playerAvatar(player: ActivePlayer) {
 type CharacterSectionProps = {
   board: SessionBoardProps
   inspector: InspectorPanelProps
+  /** Show the abilities and traits here (a hero without spells has no Magic tab to hold them). */
+  withTraits: boolean
 }
 
-export function CharacterSection({ board, inspector }: CharacterSectionProps) {
+export function CharacterSection({ board, inspector, withTraits }: CharacterSectionProps) {
   const [manageOpen, setManageOpen] = useState(false)
   const { displayCharacter, statBlock, xpProgress } = inspector
   const viewer = inspector.activePlayers.find((player) => player.id === inspector.selectedPlayerId)
@@ -213,6 +216,8 @@ export function CharacterSection({ board, inspector }: CharacterSectionProps) {
           </div>
         ))}
       </dl>
+
+      {withTraits ? <TraitList traits={inspector.characterTraits} /> : null}
 
       <div className="story-sheet-actions" aria-label="Character actions">
         <button

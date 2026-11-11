@@ -2,6 +2,7 @@ import { Sparkle } from 'lucide-react'
 import type { SpellSummary } from '../../gameSelectors'
 import type { InspectorPanelProps } from '../../InspectorPanel'
 import type { SessionBoardProps } from '../../SessionBoard'
+import { TraitList } from './TraitList'
 
 function ordinal(level: number) {
   const suffix = level === 1 ? 'st' : level === 2 ? 'nd' : level === 3 ? 'rd' : 'th'
@@ -100,20 +101,7 @@ export function MagicSection({ board, inspector }: MagicSectionProps) {
         </p>
       ) : null}
 
-      {characterTraits.length ? (
-        <>
-          <hr className="story-rule" />
-          <h3 className="story-label">Abilities and traits</h3>
-          <ul className="story-trait-list">
-            {characterTraits.map((trait) => (
-              <li key={trait.id || trait.name}>
-                <span className="story-trait-name">{trait.name}</span>
-                {trait.description ? <span className="story-trait-summary">{trait.description}</span> : null}
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+      <TraitList traits={characterTraits} />
     </div>
   )
 }

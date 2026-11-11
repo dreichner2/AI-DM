@@ -257,6 +257,7 @@ function hookOptions(overrides: Partial<SocketHookOptions> = {}): SocketHookOpti
     setOptimisticEntries: vi.fn(),
     setStreamingTurn: vi.fn(),
     setTurnStatuses: vi.fn(),
+    setTurnStoryBeats: vi.fn(),
     setClarificationRequest: vi.fn(),
     setSceneMusicSyncState: vi.fn(),
     setSceneState: vi.fn(),
@@ -433,6 +434,33 @@ describe('useSessionSocket connection lifetime', () => {
     })
 
     expect(optimistic).toEqual([expect.objectContaining({ role: 'dm', metadata: expect.objectContaining({ turn_id: 8, storyBeats }) })])
+  })
+
+  it('takes a turn’s story beats from its final saved status, once its changes have landed', () => {
+    let beatsByTurn: Record<number, unknown[]> = {}
+    const setTurnStoryBeats = vi.fn((update: unknown) => {
+      beatsByTurn = typeof update === 'function'
+        ? (update as (current: Record<number, unknown[]>) => Record<number, unknown[]>)(beatsByTurn)
+        : update as Record<number, unknown[]>
+    })
+    renderHook(() => useSessionSocket(hookOptions({ setTurnStoryBeats })))
+    const storyBeats = [
+      { kind: 'check', text: 'Investigation check: 15 — success' },
+      { kind: 'combat_end', text: 'Victory' },
+    ]
+
+    act(() => {
+      latestSocket().fire('turn_status', { session_id: 20, turn_id: 9, status: 'saved', details: { stage: 'narration' } })
+      latestSocket().fire('turn_status', { session_id: 20, turn_id: 9, status: 'canon_pending', details: { storyBeats: [] } })
+      latestSocket().fire('turn_status', { session_id: 21, turn_id: 9, status: 'saved', details: { stage: 'post_turn', storyBeats: [] } })
+    })
+    expect(setTurnStoryBeats).not.toHaveBeenCalled()
+
+    act(() => {
+      latestSocket().fire('turn_status', { session_id: 20, turn_id: 9, status: 'saved', details: { stage: 'post_turn', storyBeats } })
+      latestSocket().fire('turn_status', { session_id: 20, turn_id: 10, status: 'saved', details: { stage: 'post_turn', storyBeats: [] } })
+    })
+    expect(beatsByTurn).toEqual({ 9: storyBeats, 10: [] })
   })
 
   it('tells the composer when a new_message echoes a client message id', () => {

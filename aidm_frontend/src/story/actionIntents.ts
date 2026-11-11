@@ -29,17 +29,23 @@ function combatClientMessageId() {
   return `combat-hud-${randomId ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
 }
 
-/** A server-issued combat action, optionally against one of its legal targets. */
+/**
+ * A server-issued combat action, optionally against one of its legal targets.
+ * An attack that needs a move first is still one action: the server closes in, then attacks.
+ */
 export function combatActionSubmission(
   actorName: string,
   action: CombatLegalAction,
   target: CombatLegalTarget | null,
 ): ActionSubmission | null {
   if (action.requiresTarget && !target) return null
+  const weapon = action.weaponName || 'their weapon'
   const message = !target
     ? action.message
     : action.type === 'attack'
-      ? `${actorName} attacks ${target.name} with ${action.weaponName || 'their weapon'}.`
+      ? action.requiresMove
+        ? `${actorName} closes in and attacks ${target.name} with ${weapon}.`
+        : `${actorName} attacks ${target.name} with ${weapon}.`
       : `${actorName}: ${action.label} on ${target.name}.`
   return {
     message,
@@ -149,16 +155,23 @@ function phraseLine(label: string) {
   return `${label.trim().replace(/[.!?…\s]+$/, '')}.`
 }
 
+/** An offered action's label; a failed check that may be retried slowly says so ("… — take your time"). */
+export function objectActionLabel(action: GameplayObjectAction) {
+  return action.retry ? `${action.label} — take your time` : action.label
+}
+
 /**
  * A scene object action carrying the object's current revision. An action
- * whose label is a whole phrase is sent as that phrase.
+ * whose label is a whole phrase is sent as that phrase; a retry takes time.
  */
 export function objectActionSubmission(
   actorName: string,
   object: GameplayInteractableControl,
   action: GameplayObjectAction,
 ): ActionSubmission {
-  const message = action.phrase ? phraseLine(action.label) : `${actorName} attempts to ${action.id} ${object.name}.`
+  const message = action.phrase
+    ? phraseLine(objectActionLabel(action))
+    : `${actorName} attempts to ${action.id} ${object.name}.`
   return {
     message,
     intent: {
@@ -171,6 +184,7 @@ export function objectActionSubmission(
         action: action.id,
         ...(object.revision === null ? {} : { revision: object.revision }),
       },
+      ...(action.retry ? { take_time: true } : {}),
     },
   }
 }

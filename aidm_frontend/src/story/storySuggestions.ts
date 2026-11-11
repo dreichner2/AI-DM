@@ -9,12 +9,12 @@ import type {
   GameplayInteractableControl,
   GameplayObjectAction,
 } from '../gameplayControlState'
+import { objectActionLabel } from './actionIntents'
 
 /** Chips shown before the `More…` chip. */
 export const STORY_SUGGESTION_LIMIT = 6
 
 const TAKE_LIMIT = 2
-const AUTHORED_LIMIT = 3
 const OBJECT_LIMIT = 3
 const TALK_LIMIT = 2
 const TRADE_LIMIT = 1
@@ -41,7 +41,15 @@ export type StorySuggestion =
 
 type ObjectSuggestion = Extract<StorySuggestion, { kind: 'object' }>
 
+/** Opens the action tray on whatever the row has no room for. */
+export const MORE_SUGGESTION: StorySuggestion = { kind: 'more', key: 'more', label: 'More…' }
+
 const UNREACHABLE_NPC_STATUSES = new Set(['dead', 'deceased', 'destroyed'])
+
+/** The contract's order of object actions. */
+const ACTION_ORDER: GameplayObjectAction['id'][] = [
+  'search', 'use', 'trigger', 'open', 'unlock', 'inspect', 'close', 'lock', 'break', 'disarm', 'reset',
+]
 
 /**
  * What the player may do with an object: the server's offered actions that are
@@ -55,21 +63,27 @@ export function objectChoices(object: GameplayInteractableControl): GameplayObje
   return [{ id: 'inspect', label: `Examine ${object.name}`, available: true, reason: '', phrase: true }]
 }
 
-function objectSuggestion(object: GameplayInteractableControl, action: GameplayObjectAction): ObjectSuggestion {
-  return { kind: 'object', key: `object:${object.id}:${action.id}`, label: action.label, object, action }
+/**
+ * An object's one chip: its first choice in the contract's action order,
+ * preferring one the pack authored; null when it offers nothing.
+ */
+function objectSuggestion(object: GameplayInteractableControl): ObjectSuggestion | null {
+  const choices = [...objectChoices(object)].sort(
+    (left, right) => ACTION_ORDER.indexOf(left.id) - ACTION_ORDER.indexOf(right.id),
+  )
+  const action = choices.find((choice) => choice.authored) ?? choices[0]
+  return action
+    ? { kind: 'object', key: `object:${object.id}:${action.id}`, label: objectActionLabel(action), object, action }
+    : null
 }
 
-/** Authored actions first (scene order, the server's order within an object), then one choice per object not yet shown. */
+/** One chip per object: authored ones first, each group in scene order, at most three. */
 function objectSuggestions(objects: GameplayInteractableControl[]): ObjectSuggestion[] {
-  const choices = objects.map((object) => ({ object, actions: objectChoices(object) }))
-  const authored = choices
-    .flatMap(({ object, actions }) => actions.filter((action) => action.authored).map((action) => objectSuggestion(object, action)))
-    .slice(0, AUTHORED_LIMIT)
-  const shown = new Set(authored.map((suggestion) => suggestion.object.id))
-  const firsts = choices.flatMap(({ object, actions }) =>
-    !shown.has(object.id) && actions.length ? [objectSuggestion(object, actions[0])] : [],
-  )
-  return [...authored, ...firsts].slice(0, OBJECT_LIMIT)
+  const chips = objects.map(objectSuggestion).filter((chip): chip is ObjectSuggestion => chip !== null)
+  return [
+    ...chips.filter((chip) => chip.action.authored),
+    ...chips.filter((chip) => !chip.action.authored),
+  ].slice(0, OBJECT_LIMIT)
 }
 
 /**
@@ -127,5 +141,5 @@ export function storySuggestions(
     ...travel.slice(0, TRAVEL_LIMIT),
   ].slice(0, STORY_SUGGESTION_LIMIT)
   const candidates = take.length + objectCandidates + talk.length + trade.length + travel.length
-  return candidates > chips.length ? [...chips, { kind: 'more', key: 'more', label: 'More…' }] : chips
+  return candidates > chips.length ? [...chips, MORE_SUGGESTION] : chips
 }

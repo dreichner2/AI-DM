@@ -99,6 +99,11 @@ const strongbox = object('strongbox', 'Wagon Strongbox', [
   offer('unlock', 'Unlock the strongbox', { authored: true, available: false, reason: 'It is locked, and you carry no key that fits.' }),
   offer('inspect', 'Examine Wagon Strongbox'),
 ])
+// Both of its entries are legal and authored, sent out of the contract's order.
+const openBench = object('bench', "Driver's Bench", [
+  offer('inspect', "Look over the driver's bench", { authored: true }),
+  offer('search', "Search under the driver's bench", { authored: true }),
+])
 const bell = object('bell', 'Wagon Bell', [offer('use', 'Ring the wagon bell', { authored: true })])
 const wagon = object('wagon', 'Lead Wagon', [offer('search', 'Search the lead wagon', { authored: true })])
 const key = { id: 'key', name: 'Caravan Strongbox Key', quantity: 1, type: 'key', takeLabel: 'Take the Caravan Strongbox Key' }
@@ -120,7 +125,19 @@ const CASES: Case[] = [
     labels: ['Read the caravan ledger', "Search under the driver's bench", 'Examine Wagon Strongbox', 'More…'],
   },
   {
-    name: 'at most three authored actions, then nothing more for other objects',
+    name: 'one chip per object: its first legal entry in the contract’s order, authored objects first',
+    world: {},
+    objects: [strongbox, openBench],
+    labels: ["Search under the driver's bench", 'Examine Wagon Strongbox', 'More…'],
+  },
+  {
+    name: 'a failed check that may be retried says it takes time',
+    world: {},
+    objects: [object('bench', "Driver's Bench", [offer('search', "Search under the driver's bench", { authored: true, retry: true })])],
+    labels: ["Search under the driver's bench — take your time"],
+  },
+  {
+    name: 'at most three objects, then nothing more for other objects',
     world: {},
     objects: [ledger, bench, bell, wagon],
     labels: ['Read the caravan ledger', "Search under the driver's bench", 'Ring the wagon bell', 'More…'],

@@ -418,6 +418,25 @@ describe('game selector helpers', () => {
     expect(turnPersistenceLabel(timeline.at(-1) as TimelineEntry)).toBe('streaming')
   })
 
+  it('puts the story beats from a turn’s final status on its narration until the log carries its own', () => {
+    const beats = [{ kind: 'clue', text: 'Clue — Erased Caravan Ledger' }]
+    const logged = [{ kind: 'xp', text: '+25 XP' }]
+    const timeline = buildTimeline({
+      logEntries: [
+        { id: 1, entry_type: 'player', message: 'Ember: Read the caravan ledger.', timestamp: null, metadata: { turn_id: 11 } },
+        { id: 2, entry_type: 'dm', message: 'DM: The names are scratched away.', timestamp: null, metadata: { turn_id: 11 } },
+        { id: 3, entry_type: 'dm', message: 'DM: The bell rings.', timestamp: null, metadata: { turn_id: 12, storyBeats: logged } },
+      ],
+      optimisticEntries: [
+        { id: 'stream-13', role: 'dm', speaker: 'DM', text: 'Mara frowns.', timestamp: null, metadata: { turn_id: 13 } },
+      ],
+      streamingTurn: null,
+      turnStatuses: {},
+      turnStoryBeats: { 11: beats, 12: beats, 13: [] },
+    })
+    expect(timeline.map((entry) => entry.metadata.storyBeats)).toEqual([undefined, beats, logged, []])
+  })
+
   it('derives subtle combat panel state from the session snapshot', () => {
     const panel = worldStateFromSnapshot({
       currentScene: { name: 'Ash Road', sceneType: 'combat', mood: 'dangerous', dangerLevel: 8 },
@@ -1172,6 +1191,28 @@ describe('game selector helpers', () => {
       { id: 'player_30', name: 'Ember', team: 'player', isCurrent: true },
       { id: 'enemy_goblin_1', name: 'Goblin', team: 'enemy', isCurrent: false },
     ])
+  })
+
+  it('reads who is acting from activeActorId and an attack that closes in first', () => {
+    const panel = worldStateFromSnapshot({
+      combat: {
+        status: 'active',
+        turnIndex: 1,
+        flags: { activeActorId: 'player_30' },
+        participants: [{ id: 'enemy_goblin_1', name: 'Goblin', team: 'enemy' }],
+        legalActions: [{
+          playerId: 30,
+          actorId: 'player_30',
+          actions: [
+            { id: 'combat.attack.blade', type: 'attack', available: true, requiresMove: true },
+            { id: 'combat.attack.bow', type: 'attack', available: true },
+          ],
+        }],
+      },
+    })
+    expect(panel.combat.activeActorId).toBe('player_30')
+    expect(panel.combat.legalActionBundles[0].actions.map((action) => action.requiresMove)).toEqual([true, undefined])
+    expect(worldStateFromSnapshot({ combat: { status: 'active', flags: {} } }).combat.activeActorId).toBeUndefined()
   })
 
   it('prioritizes active and recent NPCs while hiding player-character duplicates', () => {

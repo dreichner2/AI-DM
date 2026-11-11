@@ -50,7 +50,7 @@ type DmResponseEndPayload = {
   text?: string
   requires_roll?: boolean
   rules_hint?: RulesHint
-  /** The turn's player-visible story beats (see the Story feed). */
+  /** Story beats, if a server sends them here; they normally arrive on the turn's final `turn_status`. */
   storyBeats?: unknown
   ok?: boolean
   error?: string
@@ -142,6 +142,8 @@ type UseSessionSocketOptions = {
   setOptimisticEntries: Dispatch<SetStateAction<TimelineEntry[]>>
   setStreamingTurn: Dispatch<SetStateAction<StreamingTurn | null>>
   setTurnStatuses: Dispatch<SetStateAction<Record<number, string>>>
+  /** Each turn's story beats as its final `turn_status` delivers them, by turn id. */
+  setTurnStoryBeats: Dispatch<SetStateAction<Record<number, unknown[]>>>
   setClarificationRequest: Dispatch<SetStateAction<ClarificationRequest | null>>
   setSceneMusicSyncState: Dispatch<SetStateAction<SceneMusicSyncState | null>>
   setSceneState: Dispatch<SetStateAction<SceneDisplayState | null>>
@@ -162,6 +164,17 @@ type UseSessionSocketOptions = {
   onRollRequired: (payload: RollRequiredPayload) => void
   onRollResolved: (payload: RollResolvedPayload) => void
   onTurnDuplicate: (payload: TurnDuplicatePayload) => void
+}
+
+/**
+ * A turn's story beats, from its final `turn_status` (`saved`, stage
+ * `post_turn`): they are only known once the turn's changes have landed, after
+ * the narration has ended. Null for any other status.
+ */
+function postTurnStoryBeats(status: string, details: JsonRecord | undefined): unknown[] | null {
+  return status === 'saved' && details?.stage === 'post_turn' && Array.isArray(details.storyBeats)
+    ? details.storyBeats
+    : null
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
@@ -819,9 +832,20 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
       if (payload.session_id !== selectedSessionId || typeof payload.turn_id !== 'number') return
       const status = stringValue(payload.status)
       if (!status) return
-      const { loadSessionData, pushError, refreshPlayerDetail, setSendPending, setTurnStatuses } = latest.current
+      const {
+        loadSessionData,
+        pushError,
+        refreshPlayerDetail,
+        setSendPending,
+        setTurnStatuses,
+        setTurnStoryBeats,
+      } = latest.current
       if (turnStatusAllowsNextSend(status, payload.details)) {
         setSendPending(false)
+      }
+      const storyBeats = postTurnStoryBeats(status, payload.details)
+      if (storyBeats) {
+        setTurnStoryBeats((current) => ({ ...current, [payload.turn_id as number]: storyBeats }))
       }
       if (status === 'canon_applied' || status === 'state_applied') {
         const playerId = Number(payload.details?.player_id)

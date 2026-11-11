@@ -541,6 +541,15 @@ describe('gameplayControlsFromSnapshot offered actions', () => {
       reason: 'Scene interactions are unavailable during combat until they consume turn economy.',
     })
   })
+
+  it('marks a failed check the server lets the hero retry by taking time', () => {
+    const [strongbox] = gameplayControlsFromSnapshot(offeredSnapshot('none', [
+      { action: 'search', label: 'Search the strongbox', legal: true, done: false, retry: true },
+    ]), 30).interactables
+    expect(strongbox.actions).toEqual([
+      { id: 'search', label: 'Search the strongbox', available: true, reason: '', phrase: true, authored: false, done: false, retry: true },
+    ])
+  })
 })
 
 function itemSnapshot(): Record<string, unknown> {

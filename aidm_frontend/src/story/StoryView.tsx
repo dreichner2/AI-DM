@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { partyVitalityFromSnapshot } from '../gameSelectors'
+import { heroHasSpells } from './heroSpells'
 import { setStoryTextSize, useStoryPreferences } from './sheets/storyPreferences'
 import { StoryAtmosphere } from './StoryAtmosphere'
 import { StoryFeed } from './StoryFeed'
@@ -48,6 +49,7 @@ export function StoryView({
   const viewer = board.activePlayers.find((player) => player.id === viewerPlayerId)
   const snapshot = board.sessionState?.state_snapshot
   const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
+  const hasSpells = heroHasSpells(board, inspector)
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -61,13 +63,14 @@ export function StoryView({
         return
       }
       const tab = DRAWER_HOTKEYS[event.key.toLowerCase()]
-      if (!tab || event.shiftKey) return
+      // A hero without spells has no Magic tab.
+      if (!tab || event.shiftKey || (tab === 'magic' && !hasSpells)) return
       event.preventDefault()
       onDrawerOpenChange(!(drawerOpen && drawerTab === tab), tab)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [drawerOpen, drawerTab, onDrawerOpenChange])
+  }, [drawerOpen, drawerTab, hasSpells, onDrawerOpenChange])
 
   return (
     <div

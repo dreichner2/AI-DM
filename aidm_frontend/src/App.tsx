@@ -727,6 +727,7 @@ function AIDMApp() {
   const [optimisticEntries, setOptimisticEntries] = useState<TimelineEntry[]>([])
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null)
   const [turnStatuses, setTurnStatuses] = useState<Record<number, string>>({})
+  const [turnStoryBeats, setTurnStoryBeats] = useState<Record<number, unknown[]>>({})
   const [reportedBadTurnIds, setReportedBadTurnIds] = useState<Set<number>>(() => new Set())
   const [reportingBadTurnIds, setReportingBadTurnIds] = useState<Set<number>>(() => new Set())
   const [ratedTurnQualityIds, setRatedTurnQualityIds] = useState<Set<number>>(() => new Set())
@@ -1248,8 +1249,8 @@ function AIDMApp() {
   }, [campaignWorldId, worlds])
 
   const timeline = useMemo(
-    () => buildTimeline({ logEntries, optimisticEntries, streamingTurn, turnStatuses }),
-    [logEntries, optimisticEntries, streamingTurn, turnStatuses],
+    () => buildTimeline({ logEntries, optimisticEntries, streamingTurn, turnStatuses, turnStoryBeats }),
+    [logEntries, optimisticEntries, streamingTurn, turnStatuses, turnStoryBeats],
   )
   const streamingTurnStatus = streamingTurn ? turnStatuses[streamingTurn.turnId] : ''
   const dmResponseBlocking = Boolean(streamingTurn && !turnStatusAllowsNextSend(streamingTurnStatus))
@@ -3090,10 +3091,12 @@ function AIDMApp() {
       setSessionRecap('')
       setDirectorCommentary(null)
       setTurnStatuses({})
+      setTurnStoryBeats({})
       setClarificationRequest(null)
       return
     }
     setTurnStatuses({})
+    setTurnStoryBeats({})
     setClarificationRequest(null)
     loadSessionData(activeSessionId).then(clearAuthTokenErrors).catch((error: unknown) => {
       if (isUnauthorizedError(error)) {
@@ -3300,6 +3303,7 @@ function AIDMApp() {
     setOptimisticEntries,
     setStreamingTurn,
     setTurnStatuses,
+    setTurnStoryBeats,
     setClarificationRequest,
     setSceneMusicSyncState,
     setSceneState,

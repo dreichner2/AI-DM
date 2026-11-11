@@ -90,6 +90,42 @@ describe('StoryDrawer', () => {
     expect(onTabChange).toHaveBeenLastCalledWith('character')
   })
 
+  it('has no Magic tab for a hero without spells, and shows their abilities and traits on Character instead', () => {
+    mockViewportWidth(1440)
+    const base = testInspector()
+    const inspector = testInspector({
+      spellbook: { ...base.spellbook, knownSpells: [] },
+      characterTraits: [{
+        id: 'second_wind',
+        name: 'Second Wind',
+        category: 'class',
+        typeLabel: 'Feature',
+        source: 'Fighter',
+        description: 'Regain 1d10 + level hit points.',
+        actionType: 'bonus action',
+        cooldown: 'short rest',
+        active: true,
+      }],
+    })
+    const board = testBoard({ gameplayControls: { ...testBoard().gameplayControls, spells: [], narratedSpells: [] } })
+    const { onTabChange } = renderDrawer({ tab: 'magic', board, inspector })
+
+    const tabs = within(screen.getByRole('tablist', { name: 'Character panel sections' })).getAllByRole('tab')
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Character', 'Pack', 'Journal', 'Map'])
+    expect(screen.getByRole('tab', { name: 'Character' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('Second WindRegain 1d10 + level hit points.')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Character' }), { key: 'ArrowRight' })
+    expect(onTabChange).toHaveBeenLastCalledWith('pack')
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Pack' }), { key: 'ArrowRight' })
+    expect(onTabChange).toHaveBeenLastCalledWith('journal')
+    cleanup()
+
+    // A spellcaster keeps the Magic tab, and the traits stay there.
+    renderDrawer({ inspector: testInspector({ characterTraits: inspector.characterTraits }) })
+    expect(screen.getByRole('tab', { name: 'Magic' })).toBeInTheDocument()
+    expect(screen.getByRole('tabpanel')).not.toHaveTextContent('Second Wind')
+  })
+
   it('sits beside the story on wide screens and closes with Escape or the close button', () => {
     mockViewportWidth(1440)
     const { onClose } = renderDrawer()

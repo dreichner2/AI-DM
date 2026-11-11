@@ -223,10 +223,38 @@ function combatAction(overrides: Partial<CombatLegalAction>): CombatLegalAction 
   }
 }
 
+/** A fight in round 2. Off the viewer's turn the server offers nothing legal: every action names who is acting. */
 export function testCombat({
   current = true,
   bundle = {},
 }: { current?: boolean; bundle?: Partial<CombatLegalActionBundle> } = {}): CombatStatePanel {
+  const actions = [
+    combatAction({
+      id: 'combat.attack.longsword',
+      type: 'attack',
+      label: 'Attack with Longsword',
+      requiresTarget: true,
+      weaponName: 'Longsword',
+      targets: [
+        { id: 'goblin_1', name: 'Goblin Sentry', rangeBand: 'near', available: true, reason: '' },
+        { id: 'archer_1', name: 'Distant Archer', rangeBand: 'far', available: false, reason: 'Target is at far range.' },
+      ],
+    }),
+    combatAction({
+      id: 'combat.disengage',
+      type: 'disengage',
+      label: 'Disengage',
+      message: 'Ysolde Marrow disengages and moves to a safer position.',
+      available: false,
+      reason: 'Your movement is already spent.',
+    }),
+    combatAction({
+      id: 'combat.end_turn',
+      type: 'end_turn',
+      label: 'End turn',
+      message: 'Ysolde Marrow ends their turn.',
+    }),
+  ]
   return {
     ...emptyCombat(),
     active: true,
@@ -254,33 +282,9 @@ export function testCombat({
         bonusActionRemaining: 0,
         movementRemaining: 1,
         reactionRemaining: 1,
-        actions: [
-          combatAction({
-            id: 'combat.attack.longsword',
-            type: 'attack',
-            label: 'Attack with Longsword',
-            requiresTarget: true,
-            weaponName: 'Longsword',
-            targets: [
-              { id: 'goblin_1', name: 'Goblin Sentry', rangeBand: 'near', available: true, reason: '' },
-              { id: 'archer_1', name: 'Distant Archer', rangeBand: 'far', available: false, reason: 'Target is at far range.' },
-            ],
-          }),
-          combatAction({
-            id: 'combat.disengage',
-            type: 'disengage',
-            label: 'Disengage',
-            message: 'Ysolde Marrow disengages and moves to a safer position.',
-            available: false,
-            reason: 'Your movement is already spent.',
-          }),
-          combatAction({
-            id: 'combat.end_turn',
-            type: 'end_turn',
-            label: 'End turn',
-            message: 'Ysolde Marrow ends their turn.',
-          }),
-        ],
+        actions: current
+          ? actions
+          : actions.map((action) => ({ ...action, available: false, reason: 'Goblin Sentry is acting now.' })),
         ...bundle,
       },
     ],

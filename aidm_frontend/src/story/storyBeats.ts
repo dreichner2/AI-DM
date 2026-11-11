@@ -37,8 +37,9 @@ export type StoryTurnBeatTarget = 'journal' | 'map' | 'settings'
 
 /**
  * One of the server's `storyBeats` for a turn, shown exactly as sent. `chip`
- * beats have an icon; `hint` is a quiet label-style line; any kind the client
- * does not know is a plain quiet line, so later kinds need no client change.
+ * beats have an icon; `hint` is one quiet line in sentence case that opens
+ * Settings; any kind the client does not know is a plain quiet line, so later
+ * kinds need no client change.
  */
 export type StoryTurnBeat = {
   kind: string
@@ -66,7 +67,7 @@ export type StoryRoll = {
   kept: number | null
   modifier: number | null
   total: number | null
-  /** The target number: a DC, or the target's AC for an attack. */
+  /** The target number: a DC, or for an attack the target's AC as the roll itself records it (`target_ac`). */
   dc: number | null
   /** An attack or spell attack: the outcome reads hit/miss against AC. */
   attack: boolean
@@ -158,6 +159,7 @@ const TURN_BEAT_STYLES: Record<string, TurnBeatStyle> = {
   condition: { tone: 'arcane', glyph: 'spark', target: null },
   hp: { tone: 'default', glyph: 'heart', target: null },
   death_save: { tone: 'default', glyph: 'dice', target: null },
+  combat_end: { tone: 'default', glyph: 'swords', target: null },
   defeat: { tone: 'fail', glyph: 'swords', target: null },
   ending: { tone: 'success', glyph: 'scroll', target: null },
 }
@@ -170,6 +172,7 @@ export function hasRawChangeType(text: string) {
 function turnBeatTone(kind: string, text: string, fallback: StoryChangeTone): StoryChangeTone {
   if (kind === 'hp') return /^took\b/i.test(text) ? 'fail' : /^healed\b/i.test(text) ? 'success' : fallback
   if (kind === 'coins' && /^[−-]/.test(text)) return 'default'
+  if (kind === 'combat_end' && /^victory\b/i.test(text)) return 'success'
   return fallback
 }
 
@@ -178,7 +181,9 @@ function turnBeat(value: JsonRecord): StoryTurnBeat | null {
   const text = stringValue(value.text).trim()
   if (!text) return null
   const refId = stringValue(value.refId)
-  if (kind === 'hint') return { kind, text, refId, look: 'hint', tone: 'default', glyph: null, target: 'settings' }
+  if (kind === 'hint') {
+    return { kind, text: capitalize(text), refId, look: 'hint', tone: 'default', glyph: null, target: 'settings' }
+  }
   const style = TURN_BEAT_STYLES[kind]
   if (!style) return { kind, text, refId, look: 'plain', tone: 'default', glyph: null, target: null }
   return { kind, text, refId, look: 'chip', ...style, tone: turnBeatTone(kind, text, style.tone) }
@@ -226,6 +231,16 @@ function dcValue(...values: unknown[]): number | null {
     if (match) return Number(match[1] ?? match[2])
   }
   return null
+}
+
+/**
+ * An attack's target number: only the AC the roll event itself carries, the
+ * one the engine compared against. Hints and requested DCs are never used, so
+ * the card cannot disagree with the narration.
+ */
+function targetAc(record: JsonRecord | null, metadata: JsonRecord): number | null {
+  const value = numberValue(record?.target_ac ?? metadata.target_ac)
+  return value !== null && value > 0 ? value : null
 }
 
 function inspirationValue(value: unknown): StoryInspiration | null {
@@ -283,6 +298,7 @@ function rollFromRecord(record: JsonRecord, entry: TimelineEntry, name: string):
     numberValue(metadata.roll_value) ??
     (kept !== null ? kept + (modifier ?? 0) : null)
   const ability = isRecord(record.ability) ? record.ability : null
+  const attack = isAttackRule(ruleType)
   return finishRoll(
     {
       name,
@@ -292,8 +308,10 @@ function rollFromRecord(record: JsonRecord, entry: TimelineEntry, name: string):
       kept,
       modifier,
       total,
-      dc: dcValue(record.task_dc, record.dc, metadata.task_dc, metadata.dc, metadata.dc_hint),
-      attack: isAttackRule(ruleType),
+      dc: attack
+        ? targetAc(record, metadata)
+        : dcValue(record.task_dc, record.dc, metadata.task_dc, metadata.dc, metadata.dc_hint),
+      attack,
       mode: rollMode(record.mode),
       inspiration: inspirationValue(record.inspiration),
     },
@@ -304,6 +322,7 @@ function rollFromRecord(record: JsonRecord, entry: TimelineEntry, name: string):
 function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRoll | null {
   const metadata = entry.metadata
   const attack = isAttackRule(stringValue(metadata.rule_type ?? metadata.roll_type))
+  const dc = attack ? targetAc(null, metadata) : dcValue(metadata.task_dc, metadata.dc, metadata.dc_hint)
   const canonical = CANONICAL_ROLL_RE.exec(text)
   if (canonical) {
     const [, die, sign, modifierText, reason, keptText, detail, inspirationDie, inspirationRoll, totalText] = canonical
@@ -319,7 +338,7 @@ function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRo
         kept,
         modifier,
         total: Number(totalText),
-        dc: dcValue(metadata.task_dc, metadata.dc, metadata.dc_hint),
+        dc,
         attack,
         mode: rollMode(detail?.split(';')[0]),
         inspiration: inspirationDie ? { die: inspirationDie.toLowerCase(), roll: Number(inspirationRoll) } : null,
@@ -338,7 +357,7 @@ function rollFromText(text: string, entry: TimelineEntry, name: string): StoryRo
         kept: null,
         modifier: null,
         total: Number(resolved[1]),
-        dc: dcValue(metadata.task_dc, metadata.dc, metadata.dc_hint),
+        dc,
         attack,
         mode: 'normal',
         inspiration: null,

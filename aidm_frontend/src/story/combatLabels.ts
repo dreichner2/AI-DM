@@ -1,6 +1,13 @@
-import type { CombatParticipantSummary, CombatStatePanel } from '../gameSelectors'
+import type { CombatLegalAction, CombatParticipantSummary, CombatStatePanel } from '../gameSelectors'
 
 const RANGE_BANDS = new Set(['melee', 'near', 'far', 'distant'])
+
+/** A combat action's name; an attack that spends the move first reads "Close in and attack with Longsword". */
+export function combatActionLabel(action: CombatLegalAction) {
+  return action.type === 'attack' && action.requiresMove
+    ? `Close in and attack with ${action.weaponName || 'your weapon'}`
+    : action.label
+}
 
 /** "Wounded", or '' when the server sends nothing to judge by. */
 export function healthWord(participant: CombatParticipantSummary) {

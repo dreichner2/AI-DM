@@ -262,6 +262,8 @@ export type CombatLegalAction = {
   cost?: CombatActionCost
   /** A class capability's effect type (`restore_slots` for Arcane Recovery). */
   capabilityEffect?: string
+  /** A weapon attack that first spends the move to close on a target out of reach. */
+  requiresMove?: boolean
 }
 
 export type CombatLegalActionBundle = {
@@ -311,6 +313,8 @@ export type CombatStatePanel = {
   legalActionBundles: CombatLegalActionBundle[]
   /** Initiative order for the turn ribbon (visible participants only). */
   turnOrder?: CombatTurnOrderEntry[]
+  /** Who is acting now (`combat.flags.activeActorId`), when the server says. */
+  activeActorId?: string
 }
 
 export type WorldClockSummary = {
@@ -659,6 +663,7 @@ function combatLegalAction(action: JsonRecord): CombatLegalAction | null {
     weaponName: stringValue(weapon.name),
     cost: combatActionCost(action, economy),
     capabilityEffect: isRecord(action.capability) ? stringValue(action.capability.effectType) : '',
+    ...(action.requiresMove === true ? { requiresMove: true } : {}),
   }
 }
 
@@ -697,6 +702,7 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const encounterGoal = isRecord(combat.encounterGoal) ? combat.encounterGoal : {}
   const flags = isRecord(combat.flags) ? combat.flags : {}
   const difficultyAI = isRecord(flags.combatDifficultyAI) ? flags.combatDifficultyAI : {}
+  const activeActorId = stringValue(flags.activeActorId ?? flags.active_actor_id)
   const enemyGroups = recordArray(flags.enemyGroups)
   const participants = recordArray(combat.participants).map(combatParticipantSummary)
   const legalActionBundles = recordArray(combat.legalActions)
@@ -745,6 +751,7 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
         isCurrent: entry.isCurrent === true,
       }))
       .filter((entry) => Boolean(entry.id)),
+    ...(activeActorId ? { activeActorId } : {}),
   }
 }
 
@@ -1852,21 +1859,28 @@ export function buildTimeline({
   optimisticEntries,
   streamingTurn,
   turnStatuses,
+  turnStoryBeats = {},
 }: {
   logEntries: SessionLogEntry[]
   optimisticEntries: TimelineEntry[]
   streamingTurn: StreamingTurn | null
   turnStatuses: Record<number, string>
+  /** Story beats from each turn's final status event, shown on its narration until the log carries them. */
+  turnStoryBeats?: Record<number, unknown[]>
 }): TimelineEntry[] {
   const withStatus = (entry: TimelineEntry): TimelineEntry => {
     const turnId = metadataTurnId(entry.metadata)
     const persistenceStatus = turnId !== null ? turnStatuses[turnId] : undefined
-    return persistenceStatus
+    const storyBeats = turnId !== null && entry.role === 'dm' && !Array.isArray(entry.metadata.storyBeats)
+      ? turnStoryBeats[turnId]
+      : undefined
+    return persistenceStatus || storyBeats
       ? {
           ...entry,
           metadata: {
             ...entry.metadata,
-            persistence_status: persistenceStatus,
+            ...(persistenceStatus ? { persistence_status: persistenceStatus } : {}),
+            ...(storyBeats ? { storyBeats } : {}),
           },
         }
       : entry
