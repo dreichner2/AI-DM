@@ -77,6 +77,7 @@ from aidm_server.game_state.validation.validator import (
 )
 from aidm_server.models import Campaign, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.price_list import catalog_item, normalize_price
+from aidm_server.telemetry import telemetry_metric
 from aidm_server.turn_events import record_turn_event
 
 
@@ -2374,6 +2375,61 @@ def _with_fresh_player_characters(
     return fresh_state
 
 
+def _engine_resolved_turn(pipeline: dict[str, Any], state_before_dm: dict[str, Any], *, pending_roll: bool) -> bool:
+    """Whether the engine resolved everything the turn does before narration.
+
+    Every declared action was named without the pre-narration helper or a
+    clarification, needed no Dungeon Master resolution and validated, every
+    change it made was applied, and no fight is running or was started. The
+    narration of such a turn describes what the engine did, so it is not read
+    for state. A turn waiting on a roll or opening with enemy turns is never one.
+    """
+
+    if pending_roll or pipeline.get('openingEnemyTurns') is True:
+        return False
+    pre_extraction = pipeline.get('preDmExtraction') if isinstance(pipeline.get('preDmExtraction'), dict) else {}
+    helper_debug = pre_extraction.get('debug') if isinstance(pre_extraction.get('debug'), dict) else {}
+    declared_actions = pre_extraction.get('declaredActions') if isinstance(pre_extraction.get('declaredActions'), list) else []
+    if (
+        helper_debug.get('helperAttempted') is not False
+        or 'clarification_resume' in (pre_extraction.get('notes') or [])
+        or not declared_actions
+        or not all(isinstance(action, dict) and action.get('requiresDMResolution') is False for action in declared_actions)
+    ):
+        return False
+    pre_validation = pipeline.get('preDmValidation') if isinstance(pipeline.get('preDmValidation'), dict) else {}
+    if not all(isinstance(result, dict) and result.get('status') == 'valid' for result in pre_validation.get('validatedActions') or []):
+        return False
+    if pipeline.get('pendingImmediateChanges') or not pipeline.get('immediateAppliedChanges'):
+        return False
+    combat_debug = pipeline.get('combatDebug') if isinstance(pipeline.get('combatDebug'), dict) else {}
+    return not _combat_is_running(state_before_dm) and combat_debug.get('triggered') is not True
+
+
+def _skipped_post_extraction(reason: str) -> dict[str, Any]:
+    """Count a turn whose narration is not read for state and return its empty post-narration extraction."""
+
+    telemetry_metric('state_pipeline.post_dm.skipped_total', 1, tags={'reason': reason})
+    return {
+        'proposedChanges': [],
+        'uncertainChanges': [],
+        'notes': [f'post_dm_skipped_{reason}'],
+        'debug': {
+            'source': 'skipped',
+            'reason': reason,
+            'helperAttempted': False,
+            'helperSchemaValid': False,
+            'helperModel': None,
+            'helperRawText': None,
+            'helperRawPreview': None,
+            'helperParsed': None,
+            'helperError': None,
+            'fallbackRan': False,
+            'fallbackReason': None,
+        },
+    }
+
+
 def post_dm_pipeline(
     *,
     turn: DmTurn,
@@ -2427,25 +2483,9 @@ def post_dm_pipeline(
     skip_post_extraction = not opening_enemy_turns and bool(
         turn.requires_roll and turn.roll_value is None and str(turn.outcome_status or '').lower() == 'deferred'
     )
+    engine_resolved = _engine_resolved_turn(pipeline, state_before_dm, pending_roll=skip_post_extraction)
     if skip_post_extraction:
-        post_extraction = {
-            'proposedChanges': [],
-            'uncertainChanges': [],
-            'notes': ['post_dm_skipped_pending_roll'],
-            'debug': {
-                'source': 'skipped',
-                'reason': 'pending_roll',
-                'helperAttempted': False,
-                'helperSchemaValid': False,
-                'helperModel': None,
-                'helperRawText': None,
-                'helperRawPreview': None,
-                'helperParsed': None,
-                'helperError': None,
-                'fallbackRan': False,
-                'fallbackReason': None,
-            },
-        }
+        post_extraction = _skipped_post_extraction('pending_roll')
         post_validation = {'accepted': [], 'rejected': [], 'modified': []}
         players = _lock_campaign_players(campaign, player)
         players_by_id = {player_obj.player_id: player_obj for player_obj in players}
@@ -2477,57 +2517,61 @@ def post_dm_pipeline(
         else:
             session_obj.state_snapshot = safe_json_dumps(final_state, {})
     else:
-        helper_session_released = False
+        if engine_resolved:
+            # The narration only describes what the engine already did: no model reads it for state or a fight.
+            post_extraction = _skipped_post_extraction('engine_resolved')
+        else:
+            helper_session_released = False
 
-        def _before_provider_call() -> None:
-            nonlocal helper_session_released
-            if before_helper_call:
-                before_helper_call()
-                helper_session_released = True
+            def _before_provider_call() -> None:
+                nonlocal helper_session_released
+                if before_helper_call:
+                    before_helper_call()
+                    helper_session_released = True
 
-        # Authored read-aloud text the narration carries is content, not a claim of new state.
-        narrated_claims = _without_authored_text(
-            dm_response_text,
-            pipeline.get('dmContextPacket') if isinstance(pipeline.get('dmContextPacket'), dict) else {},
-        )
-        post_extraction = extract_post_dm_outcomes(
-            state_before_dm=compact_state_for_extraction(state_before_dm),
-            player_message=turn.player_input,
-            validated_actions=pipeline.get('preDmValidation') if isinstance(pipeline.get('preDmValidation'), dict) else {},
-            already_applied_changes=already_applied,
-            dm_response=narrated_claims,
-            recent_timeline=recent_timeline,
-            actor_id=actor_id,
-            turn_id=turn.turn_id,
-            before_provider_call=_before_provider_call if before_helper_call else None,
-        )
-        if helper_session_released:
-            turn, session_obj, campaign, player = _reload_post_dm_orm(orm_token)
-        combat_session_released = False
+            # Authored read-aloud text the narration carries is content, not a claim of new state.
+            narrated_claims = _without_authored_text(
+                dm_response_text,
+                pipeline.get('dmContextPacket') if isinstance(pipeline.get('dmContextPacket'), dict) else {},
+            )
+            post_extraction = extract_post_dm_outcomes(
+                state_before_dm=compact_state_for_extraction(state_before_dm),
+                player_message=turn.player_input,
+                validated_actions=pipeline.get('preDmValidation') if isinstance(pipeline.get('preDmValidation'), dict) else {},
+                already_applied_changes=already_applied,
+                dm_response=narrated_claims,
+                recent_timeline=recent_timeline,
+                actor_id=actor_id,
+                turn_id=turn.turn_id,
+                before_provider_call=_before_provider_call if before_helper_call else None,
+            )
+            if helper_session_released:
+                turn, session_obj, campaign, player = _reload_post_dm_orm(orm_token)
+            combat_session_released = False
 
-        def _before_combat_provider_call() -> None:
-            nonlocal combat_session_released
-            if before_helper_call:
-                before_helper_call()
-                combat_session_released = True
+            def _before_combat_provider_call() -> None:
+                nonlocal combat_session_released
+                if before_helper_call:
+                    before_helper_call()
+                    combat_session_released = True
 
-        post_combat_prepare = prepare_combat_from_dm_response(
-            state=state_before_dm,
-            session_obj=session_obj,
-            campaign=campaign,
-            turn=turn,
-            player_message=turn.player_input or '',
-            dm_response=narrated_claims,
-            workspace_id=campaign.workspace_id,
-            before_intent_provider_call=(
-                _before_combat_provider_call if before_helper_call else None
-            ),
-            before_creature_provider_call=(
-                _before_combat_provider_call if before_helper_call else None
-            ),
-        )
-        if combat_session_released:
-            turn, session_obj, campaign, player = _reload_post_dm_orm(orm_token)
+            post_combat_prepare = prepare_combat_from_dm_response(
+                state=state_before_dm,
+                session_obj=session_obj,
+                campaign=campaign,
+                turn=turn,
+                player_message=turn.player_input or '',
+                dm_response=narrated_claims,
+                workspace_id=campaign.workspace_id,
+                before_intent_provider_call=(
+                    _before_combat_provider_call if before_helper_call else None
+                ),
+                before_creature_provider_call=(
+                    _before_combat_provider_call if before_helper_call else None
+                ),
+            )
+            if combat_session_released:
+                turn, session_obj, campaign, player = _reload_post_dm_orm(orm_token)
         # Character edits committed while narration or the helpers ran (another
         # session, a sheet edit) must survive: apply post-DM changes onto the
         # current rows, never onto the pre-narration actor copies.

@@ -118,6 +118,15 @@ keeps. Safe Mode and emergency fallback text are not touched.
 - Both stay off inside the test suite (`AIDM_ENV=test`) unless a test opts in
   with `AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS` or
   `AIDM_STATE_PIPELINE_HELPER_IN_TESTS`.
+- The second model call after narration (post-narration outcome extraction,
+  and the combat preparation that may ask a model whether the narration started
+  a fight) is not made on a turn waiting on a roll, nor on a turn the engine
+  resolved before narration, for example a search, pickup or travel from a
+  button or typed words: every declared action was named without the
+  pre-narration helper, needs no Dungeon Master resolution and is valid, every
+  change is already applied, and no fight is running or was started. That
+  narration only describes what the engine did. Talk, improvised actions, turns
+  the pre-narration helper interpreted and every turn in a fight keep the call.
 
 ## Codex CLI Isolation
 

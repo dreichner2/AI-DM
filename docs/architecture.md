@@ -105,6 +105,20 @@ provider, and state contracts live in [API surface](api_surface.md),
   computes story beats from the before and after player projections
   (`game_state/orchestration/story_beats.py`) and stores them on the turn, its
   log entry and the final `turn_status` event.
+- After narration, `post_dm_pipeline` reads the narration for state (the
+  post-narration helper `extract_post_dm_outcomes`, then
+  `prepare_combat_from_dm_response` for a fight it may have started) except on
+  two kinds of turn. A turn waiting on a roll is skipped as `pending_roll`. A
+  turn the engine resolved before narration is skipped as `engine_resolved`:
+  every declared action was named without the pre-narration helper or a
+  clarification and needs no Dungeon Master resolution, every action
+  validated, every change was applied with none left pending, and no fight is
+  running or was started (for example a search, a pickup or travel, from a
+  button or typed words). Its stored `postDmExtraction` is empty with
+  `debug.source` `skipped`, and every later step (confirmed changes,
+  validation, engine-played turns, defeat recovery, persistence, story beats)
+  runs as before. Each skip counts in `state_pipeline.post_dm.skipped_total`,
+  tagged with its `reason`.
 - `aidm_server/player_rolls.py` owns player dice generation. Clients may request
   a die, mode, reason, and permitted ability selection, but faces, modifiers,
   totals, and persisted provenance are server-owned. The committed result is

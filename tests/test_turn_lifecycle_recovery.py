@@ -288,7 +288,10 @@ def test_new_submission_resumes_turn_abandoned_after_pre_dm_mechanics(app, socke
         assert follow_up.status == 'completed'
         assert follow_up.turn_id > abandoned_id
         stats = safe_json_loads(db.session.get(Player, ids['player_id']).stats, {})
-        assert stats['gold'] == 110
+        # The engine resolved Second Wind before narration, so the resumed turn finishes without
+        # consulting the post-narration extractor: its prose is description, not a source of state.
+        assert stats['gold'] == 100
+        assert _metadata(resumed)['state_pipeline']['postDmExtraction']['debug']['reason'] == 'engine_resolved'
         assert stats['class_feature_state']['second_wind']['current'] == uses_after_pre_dm
         assert [change['type'] for change in _metadata(resumed)['state_pipeline']['immediateAppliedChanges']] == [
             'class_feature.use'
