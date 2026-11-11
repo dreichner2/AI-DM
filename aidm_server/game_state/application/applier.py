@@ -1507,6 +1507,9 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         # Discovering a place the party has already visited never downgrades it.
         if key == 'status' and record.get('status') == 'visited' and payload.get('status') == 'discovered':
             continue
+        # A change that names the place only by id never replaces the name it already has.
+        if key == 'name' and record.get('name') and _text(payload.get('name')) == _text(payload.get('id')):
+            continue
         _set_if_present(record, key, payload.get(key))
     _merge_rich_text(record, 'description', payload.get('description'))
     for key in ('connectedLocationIds', 'npcIds', 'questIds', 'tags'):

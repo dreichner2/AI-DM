@@ -2701,6 +2701,32 @@ def test_missing_location_update_is_applied_as_discovery():
     assert result['nextState']['locations'][0]['id'] == 'rensira'
 
 
+def test_discovering_a_known_place_by_id_keeps_its_name():
+    state = _state()
+    state['locations'] = [
+        {'id': 'old_harbor', 'name': 'Old Harbor', 'type': 'town', 'status': 'discovered', 'connectedLocationIds': []}
+    ]
+
+    result = apply_state_changes(
+        state,
+        [
+            {
+                'id': 'rediscover_old_harbor',
+                'type': 'location.discover',
+                'source': 'deterministic',
+                'reason': 'Learned of at the banner-stone.',
+                'turnId': 24,
+                'locationId': 'old_harbor',
+                'status': 'discovered',
+            }
+        ],
+    )
+
+    assert [(location['id'], location['name']) for location in result['nextState']['locations']] == [
+        ('old_harbor', 'Old Harbor')
+    ]
+
+
 def test_quest_add_creates_quest_with_objective():
     state = _state()
     validation = validate_state_changes(

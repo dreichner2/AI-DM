@@ -3,7 +3,7 @@
   "packId": "original_fantasy.road_of_unremembered_kings",
   "title": "The Road of Unremembered Kings",
   "version": "1.0.1",
-  "description": "An original heroic-fantasy campaign for AIDM about memory, mercy, and ancient protection gone wrong. In the western roadlands, travelers vanish from an old road once built to protect the weak. The party must uncover why the road ward has awakened, restore the names of forgotten guardians, and decide whether the last road-stone should be renewed, destroyed, hidden, or claimed.",
+  "description": "A heroic-fantasy adventure about memory, mercy, and ancient protection gone wrong. In the western roadlands, travelers vanish from an old road once built to protect the weak. Uncover why the road ward has awakened, restore the names of its forgotten guardians, and decide the fate of the last road-stone.",
   "world": {
     "name": "The Western Roadlands",
     "description": "A grounded heroic-fantasy borderland of old roads, rain-dark inns, broken watch-posts, burial hills, hidden valleys, and scattered settlements that survive by trade and courage. Great powers are distant. The story belongs to ordinary travelers, wardens, masons, rangers, and forgotten dead whose oaths still echo under stone."
@@ -417,7 +417,8 @@
             "inspect"
           ],
           "actionLabels": {
-            "search": "Study the memorial wall"
+            "search": "Study the memorial wall",
+            "inspect": "Look over the memorial wall"
           },
           "searchable": true,
           "description": "A wall of fitted stone carved with the names of roadwardens who died keeping the road. Many names are freshly chiseled away, and stone dust still lies white along its foot. Patient work with charcoal and a careful eye can raise the shallow ghosts of the cut letters and copy them down.",
