@@ -89,7 +89,7 @@ type MusicStatePayload = {
   updatedByPlayerId?: number | null
 }
 
-type SocketErrorCategory = 'connection' | 'workspace'
+type SocketErrorCategory = 'connection' | 'workspace' | 'validation'
 /** How long the next action waits for a turn's log update after its narration ends, at most. */
 const TURN_SETTLE_TIMEOUT_MS = 30_000
 const TERMINAL_SESSION_ERROR_CODES = new Set([
@@ -954,8 +954,16 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
         }
         return
       }
-      if (payload.error_code === 'turn_out_of_order') {
+      // The server refused the action before anything happened (not this hero's turn, an enemy out
+      // of reach, the action already spent): the line that was being sent is taken back.
+      if (
+        payload.error_code === 'turn_out_of_order' ||
+        payload.error_code === 'combat_action_unavailable' ||
+        payload.error_code === 'combat_action_invalid'
+      ) {
         onTurnRejected({ message: socketMessage(payload), details: recordValue(payload.details) ?? {} })
+        // A refused fight action says why, where the player is looking.
+        if (payload.error_code !== 'turn_out_of_order') pushError('validation', socketMessage(payload))
         return
       }
       if (
