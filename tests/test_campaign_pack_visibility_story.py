@@ -118,6 +118,8 @@ def _search(view: dict) -> dict:
 
 def test_offered_actions_are_judged_for_the_named_hero():
     snapshot = _snapshot()
+    # Out of a fight an object's actions are judged by the object and the hero alone.
+    snapshot['combat']['status'] = 'ended'
 
     keyless = filter_session_snapshot_for_player(snapshot, private_player_ids={1}, acting_player_id=1)
     keyed = filter_session_snapshot_for_player(snapshot, private_player_ids={2}, acting_player_id=2)

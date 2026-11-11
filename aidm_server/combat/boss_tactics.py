@@ -296,7 +296,6 @@ def deterministic_boss_tactic(enemy: dict[str, Any], combat: dict[str, Any], set
             'movementGoal': 'force a player toward the strongest battlefield hazard',
             'reason': f"{enemy.get('name')} uses the battlefield instead of trading simple attacks.",
             'confidence': 0.82,
-            'visibleTelegraph': f"{enemy.get('name')} shifts attention toward the dangerous terrain.",
             'suggestedSpeech': 'The battlefield itself answers to me.',
         }
     if ability and ability.get('id'):
@@ -314,7 +313,6 @@ def deterministic_boss_tactic(enemy: dict[str, Any], combat: dict[str, Any], set
         'targetId': target.get('id') if target else None,
         'reason': f"{enemy.get('name')} keeps pressure on the most vulnerable target.",
         'confidence': 0.68,
-        'visibleTelegraph': f"{enemy.get('name')} studies the weakest opening.",
     }
 
 

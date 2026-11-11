@@ -1,3 +1,16 @@
+"""Enemy intents: candidates scored by the enemy's behaviour, then selected deterministically or by a helper.
+
+Two rules bound every planner, the LLM-assisted ones included: an intent that
+does nothing mechanically (``QUIET_INTENTS``) may be taken by an enemy at most
+once in any three of its turns and never on two turns in a row; and an enemy
+may parley or give ground (``PARLEY_INTENTS``) only when it is at half HP or
+less, its side has lost a member in this fight, or it is round 4 or later and
+it has been hurt (an encounter's ``allowParley`` lifts this). Forbidden
+candidates are removed before selection, and a helper's forbidden choice is
+replaced by the best damaging candidate. Each enemy's last turns are tracked
+on the combat state (``ENEMY_TURN_HISTORY_FLAG``).
+"""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +39,14 @@ from aidm_server.combat.state import (
 
 _NON_HELPER_BOSS_TACTIC_SOURCES = {'deterministic', 'deterministic_fallback'}
 OFFENSIVE_RESOLUTION_MODES = {'attack', 'attack_with_save', 'save'}
+# Intents that deal no damage and apply no condition or movement.
+QUIET_INTENTS = frozenset({'complete_objective', 'delay', 'protect_ally', 'use_environment'})
+PARLEY_INTENTS = frozenset({'negotiate', 'surrender', 'yield', 'retreat', 'flee'})
+DAMAGING_INTENTS = frozenset({'attack', 'use_ability'})
+# combat.flags[ENEMY_TURN_HISTORY_FLAG][enemy id]: whether each of its last turns was quiet, oldest first.
+ENEMY_TURN_HISTORY_FLAG = 'enemyTurnHistory'
+QUIET_TURN_WINDOW = 2
+PARLEY_ROUND = 4
 
 
 def _hp_percent(participant: dict[str, Any]) -> int:
@@ -319,10 +340,19 @@ def _heal_candidate(enemy: dict[str, Any], combat: dict[str, Any]) -> dict[str, 
             ability=ability,
             reason=f"{enemy.get('name')} tends to {patient.get('name') or 'an ally'}, badly hurt.",
             confidence=0.74,
-            telegraph=f"{enemy.get('name')} turns to mend {patient.get('name') or 'its wounds'}.",
+            telegraph=f"{_prose_name(enemy)} turns to mend {'its wounds' if patient.get('id') == enemy.get('id') else _prose_name(patient)}.",
         ),
         60 + round((0.5 - _hp_fraction(patient)) * 60),
     )
+
+
+def _prose_name(participant: dict[str, Any]) -> str:
+    """A combatant as the world sees it: ``The pale lantern``; a proper name keeps its capitals."""
+
+    name = str(participant.get('name') or 'the enemy').strip()
+    if participant.get('team') == 'player' or participant.get('proper') is True:
+        return name
+    return f'The {name[4:] if name.lower().startswith("the ") else name.lower()}'
 
 
 def _intent(
@@ -1108,7 +1138,7 @@ def _environment_candidate(
             reason=f"{enemy.get('name')} uses {feature_name} to advance its objective.",
             confidence=0.74,
             movement_goal=movement_goal,
-            telegraph=f"{enemy.get('name')} glances toward {feature_name}.",
+            telegraph=f"{_prose_name(enemy)} glances toward {feature_name}.",
         ),
         score,
     )
@@ -1152,7 +1182,7 @@ def _cover_candidate(enemy: dict[str, Any], behavior: dict[str, Any], facts: dic
             reason=f"{enemy.get('name')} uses {cover_name} instead of standing exposed.",
             confidence=0.68,
             movement_goal=f"move to {cover_name}",
-            telegraph=f"{enemy.get('name')} edges toward {cover_name}.",
+            telegraph=f"{_prose_name(enemy)} edges toward {cover_name}.",
         ),
         score,
     )
@@ -1204,7 +1234,7 @@ def _protect_ally_candidate(
             reason=f"{enemy.get('name')} moves to protect {ally_name}.",
             confidence=0.72,
             movement_goal=f"interpose near {ally_name} and pressure {target.get('name') or 'the attacker'}",
-            telegraph=f"{enemy.get('name')} shifts between {ally_name} and the party.",
+            telegraph=f"{_prose_name(enemy)} shifts between {_prose_name(ally)} and you.",
         ),
         score,
     )
@@ -1238,6 +1268,76 @@ def _intent_from_boss_tactic(enemy: dict[str, Any], tactic: dict[str, Any], sour
     ) | {'tacticSource': source}
 
 
+def intent_is_quiet(intent: dict[str, Any], enemy: dict[str, Any], combat: dict[str, Any]) -> bool:
+    """The intent does nothing mechanically: protecting an ally counts only while no ally is below half HP."""
+
+    intent_type = str(intent.get('intentType') or '').strip()
+    if intent_type == 'protect_ally':
+        allies = [ally for ally in _living_participants(combat, enemy.get('team') or 'enemy') if ally.get('id') != enemy.get('id')]
+        return not any(_hp_percent(ally) < 50 for ally in allies)
+    return intent_type in QUIET_INTENTS
+
+
+def _quiet_turn_allowed(enemy: dict[str, Any], combat: dict[str, Any]) -> bool:
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    history = (flags.get(ENEMY_TURN_HISTORY_FLAG) or {}).get(str(enemy.get('id'))) if isinstance(flags.get(ENEMY_TURN_HISTORY_FLAG), dict) else None
+    return not any(entry is True for entry in (history or [])[-QUIET_TURN_WINDOW:])
+
+
+def _lost_a_member(enemy: dict[str, Any], combat: dict[str, Any]) -> bool:
+    for participant in combat.get('participants') or []:
+        if not isinstance(participant, dict) or participant.get('id') == enemy.get('id') or participant.get('team') != enemy.get('team'):
+            continue
+        hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
+        conditions = condition_keys(participant)
+        if participant.get('isAlive') is False or int_or_default(hp.get('current'), default=1) <= 0 or conditions & {'fled', 'escaped', 'retreated'}:
+            return True
+    return False
+
+
+def _parley_allowed(enemy: dict[str, Any], combat: dict[str, Any]) -> bool:
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    hp = enemy.get('hp') if isinstance(enemy.get('hp'), dict) else {}
+    hurt = int_or_default(hp.get('current'), default=0) < int_or_default(hp.get('max'), default=0)
+    return (
+        flags.get('allowParley') is True
+        or _hp_percent(enemy) <= 50
+        or _lost_a_member(enemy, combat)
+        or (int_or_default(combat.get('round'), default=1) >= PARLEY_ROUND and hurt)
+    )
+
+
+def intent_is_restricted(intent: dict[str, Any], enemy: dict[str, Any], combat: dict[str, Any]) -> bool:
+    """The intent breaks the quiet-turn limit or comes too early to parley."""
+
+    intent_type = str(intent.get('intentType') or '').strip()
+    if intent_type in PARLEY_INTENTS and not _parley_allowed(enemy, combat):
+        return True
+    return intent_is_quiet(intent, enemy, combat) and not _quiet_turn_allowed(enemy, combat)
+
+
+def _allowed_candidates(candidates: list[dict[str, Any]], enemy: dict[str, Any], combat: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        candidate
+        for candidate in candidates
+        if not intent_is_restricted(candidate.get('intent') if isinstance(candidate.get('intent'), dict) else candidate, enemy, combat)
+    ]
+
+
+def _within_limits(selected: dict[str, Any], candidates: list[dict[str, Any]], enemy: dict[str, Any], combat: dict[str, Any]) -> dict[str, Any]:
+    """A helper's forbidden choice becomes the best damaging candidate (else the best allowed one)."""
+
+    if not intent_is_restricted(selected, enemy, combat):
+        return selected
+    ranked = sorted(candidates, key=lambda item: item['score'], reverse=True)
+    replacement = next((item for item in ranked if item.get('intentType') in DAMAGING_INTENTS), ranked[0] if ranked else None)
+    if replacement is None:
+        return selected
+    replaced = deepcopy(replacement['intent'])
+    replaced.update({'selectionScore': replacement['score'], 'selectionMethod': 'intent_limit_replacement'})
+    return replaced
+
+
 def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], settings: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     raw_settings = settings if isinstance(settings, dict) else {}
     settings = normalize_combat_difficulty_ai(settings)
@@ -1257,7 +1357,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     reason=f"{enemy.get('name')} is turned and must move away.",
                     confidence=1.0,
                     movement_goal='away from the party',
-                    telegraph=f"{enemy.get('name')} recoils and flees from the holy power.",
+                    telegraph=f"{_prose_name(enemy)} recoils from the holy power.",
                 ),
                 100,
             )
@@ -1295,7 +1395,6 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     reason=f"{enemy.get('name')} cannot reach any player from its current zone.",
                     confidence=0.82,
                     movement_goal='move toward a reachable line of attack or pressure the nearest zone boundary',
-                    telegraph=f"{enemy.get('name')} moves for a better angle instead of striking across separated ground.",
                 ),
                 90 + int_or_default(behavior.get('discipline'), default=50) // 10,
             )
@@ -1337,7 +1436,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     confidence=0.88,
                     movement_goal='nearest safe exit or cover',
                     speech='No fight is worth dying here!' if intelligence not in {'animal', 'alien'} else None,
-                    telegraph=f"{enemy.get('name')} looks for a way out.",
+                    telegraph=f"{_prose_name(enemy)} looks for a way out.",
                 ),
                 retreat_score,
             )
@@ -1352,7 +1451,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     reason=f"{enemy.get('name')} is at {hp}% HP with morale {morale}.",
                     confidence=0.84,
                     speech='Wait! We can make a deal!',
-                    telegraph=f"{enemy.get('name')} lowers their weapon and hesitates.",
+                    telegraph=f"{_prose_name(enemy)} lowers its weapon and hesitates.",
                 ),
                 68 + max(0, surrender_threshold - morale) + max(0, surrender_hp_threshold - hp) + self_preservation // 5,
             )
@@ -1373,7 +1472,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     reason=f"{enemy.get('name')} still wants the objective but morale has dropped to {morale}.",
                     confidence=0.72,
                     speech='Nobody else has to bleed. Let us talk.',
-                    telegraph=f"{enemy.get('name')} shifts from attack posture to bargaining.",
+                    telegraph=f"{_prose_name(enemy)} lowers its guard as if to speak.",
                 ),
                 72 + max(0, negotiate_threshold - morale) + self_preservation // 8,
             )
@@ -1392,7 +1491,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     reason=f"{enemy.get('name')} is hurt enough to seek reinforcements.",
                     confidence=0.7,
                     speech='To me! We need help here!',
-                    telegraph=f"{enemy.get('name')} draws breath to shout for aid.",
+                    telegraph=f"{_prose_name(enemy)} draws breath to shout for aid.",
                 ),
                 call_help_score,
             )
@@ -1417,7 +1516,6 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     target=target,
                     reason=f"{enemy.get('name')} prioritizes the encounter objective: {primary_goal}.",
                     confidence=0.72,
-                    telegraph=f"{enemy.get('name')} keeps attention on the objective rather than simple bloodshed.",
                 ),
                 70 + int_or_default(behavior.get('discipline'), default=50) // 5,
             )
@@ -1433,7 +1531,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     ability=_best_attack_ability(enemy, target, combat),
                     reason=f"{enemy.get('name')} focuses the best target based on role and vulnerability.",
                     confidence=0.68,
-                    telegraph=f"{enemy.get('name')} tracks {target.get('name') or 'a vulnerable target'}.",
+                    telegraph=f"{_prose_name(enemy)} fixes its eyes on {_prose_name(target)}.",
                 ),
                 focus_score,
             )
@@ -1449,7 +1547,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
                     ability=special,
                     reason=f"{enemy.get('name')} has a useful ability and enough morale to press the advantage.",
                     confidence=0.76,
-                    telegraph=f"{enemy.get('name')} prepares {special.get('name')}.",
+                    telegraph=f"{_prose_name(enemy)} readies {special.get('name')}.",
                 ),
                 58 + int_or_default(behavior.get('aggression'), default=50) // 5,
             )
@@ -1468,6 +1566,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
             _score_attack(enemy, target, behavior, settings),
         )
     )
+    candidates = _allowed_candidates(candidates, enemy, combat)
     candidates.sort(key=lambda item: item['score'], reverse=True)
     _attach_candidate_contracts(candidates, enemy=enemy, combat=combat)
     _apply_candidate_matcher(candidates, enemy, settings)
@@ -1497,6 +1596,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
             freeform_intent['selectionMethod'] = 'freeform_tactics_compiler'
             freeform_intent['brainSource'] = freeform_intent.get('brainSource') or freeform_source
             candidates.append(_candidate(freeform_intent, min(96, freeform_score)))
+            candidates = _allowed_candidates(candidates, enemy, combat)
             candidates.sort(key=lambda item: item['score'], reverse=True)
             _attach_candidate_contracts(candidates, enemy=enemy, combat=combat)
             _apply_candidate_matcher(candidates, enemy, settings)
@@ -1535,6 +1635,7 @@ def _plan_intent_with_candidates(enemy: dict[str, Any], combat: dict[str, Any], 
             candidates=candidates,
         )
         selected['brainSource'] = selected.get('brainSource') or brain_source
+    selected = _within_limits(selected, candidates, enemy, combat)
     selected = resolve_selected_candidate_for_current_state(selected, candidates, enemy, combat)
     return selected, [_candidate_debug_view(item) for item in candidates]
 

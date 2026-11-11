@@ -335,6 +335,12 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
             'action': object_action,
             **({'revision': revision} if revision is not None else {}),
         }
+        # Retrying a failed check slowly; it sits next to ``object`` like ``hit_dice`` on a rest.
+        take_time = value.get('take_time')
+        if take_time is not None and not isinstance(take_time, bool):
+            return None, 'take_time must be true or false.'
+        if take_time:
+            normalized['take_time'] = True
 
     if kind == 'interact':
         interaction = value.get('interaction')

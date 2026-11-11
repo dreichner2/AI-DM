@@ -536,6 +536,13 @@ def _normalize_world_change_ids(change: dict[str, Any], raw_id: Any) -> None:
             change[key] = _as_string_list(change.get(key))
 
 
+DAMAGE_TARGET_KEYS = ('actorId', 'actor_id', 'target', 'targetId', 'target_id', 'participantId', 'participant_id', 'enemyId', 'enemy_id')
+
+
+def _names_damage_target(raw_change: dict[str, Any]) -> bool:
+    return any(str(raw_change.get(key) or '').strip() for key in DAMAGE_TARGET_KEYS)
+
+
 def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_id: str, source: str) -> dict[str, Any] | None:
     if not isinstance(raw_change, dict):
         return None
@@ -550,6 +557,9 @@ def normalize_state_change(raw_change: Any, *, fallback_actor_id: str, fallback_
             raw_change = {**raw_change, **nested_changes}
     is_world_change = change_type in WORLD_STATE_CHANGE_TYPES
     is_combat_change = change_type in COMBAT_STATE_CHANGE_TYPES
+    if change_type == 'health.damage' and not _names_damage_target(raw_change):
+        # Damage that names nobody is dropped, never pointed at the acting hero.
+        return None
     for field in POSITIVE_INT_FIELDS:
         if field in raw_change:
             try:
@@ -825,6 +835,13 @@ def normalize_post_extraction(raw_payload: dict[str, Any] | None, *, fallback_ac
                 changes.append(change)
     uncertain = payload.get('uncertainChanges') or payload.get('uncertain_changes') or []
     notes = _normalize_notes(payload.get('notes'))
+    if any(
+        isinstance(raw_change, dict)
+        and str(raw_change.get('type') or '').strip() == 'health.damage'
+        and not _names_damage_target(raw_change)
+        for raw_change in (raw_changes if isinstance(raw_changes, list) else [])
+    ):
+        notes.append('dropped_untargeted_damage')
     return {
         'proposedChanges': changes,
         'uncertainChanges': uncertain if isinstance(uncertain, list) else [],

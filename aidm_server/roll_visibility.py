@@ -20,6 +20,8 @@ PUBLIC_ROLL_KEYS = (
     # A landed result exposes its DC and outcome; roll specs (pre-roll) never do.
     'dc',
     'dcSource',
+    # An attack's target armour class, the number the engine compares against.
+    'target_ac',
     'outcome',
     'reason',
     'result_visibility',

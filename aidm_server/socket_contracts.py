@@ -183,6 +183,8 @@ def roll_resolved_payload(
     }
     if isinstance(projected_roll.get('inspiration'), dict):
         payload['inspiration'] = projected_roll['inspiration']
+    if isinstance(projected_roll.get('target_ac'), int):
+        payload['target_ac'] = projected_roll['target_ac']
     if include_private_provenance:
         payload.update(
             {

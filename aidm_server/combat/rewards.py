@@ -30,6 +30,10 @@ Consequences may be common, outcome-specific, or named ``onVictory`` / etc.
 They are limited to existing world-state consequence types.  Quest progression
 is represented by stable gameplay events rather than direct terminal quest
 mutation, preserving the quest engine as the source of truth.
+
+An encounter an object action settles without a fight (an applied
+``encounter.resolve``) runs the same derivation through
+:func:`derive_encounter_resolution_rewards`; the present heroes are eligible.
 """
 
 from __future__ import annotations
@@ -790,15 +794,85 @@ def derive_combat_outcome_rewards(
             end_reason=change_reason,
         )
 
+    return _outcome_outputs(
+        state,
+        outcome_change,
+        encounter=resolved_encounter,
+        encounter_id=encounter_id,
+        outcome=outcome,
+        end_reason=change_reason,
+        eligible_actor_ids=_eligible_actor_ids(state, combat),
+        applied_ledger_ids=applied_ledger_ids,
+    )
+
+
+def _present_actor_ids(state: dict[str, Any]) -> list[str]:
+    active_ids = {value for value in _list(state.get('activePlayerIds')) if isinstance(value, int) and not isinstance(value, bool)}
+    return sorted(
+        _text(actor.get('id'))
+        for actor in _list(state.get('playerCharacters'))
+        if isinstance(actor, dict) and _text(actor.get('id')) and (not active_ids or actor.get('playerId') in active_ids)
+    )
+
+
+def derive_encounter_resolution_rewards(
+    state: dict[str, Any],
+    resolve_change: dict[str, Any],
+    *,
+    applied_ledger_ids: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Derive exact-once changes and quest events for an encounter settled without a fight.
+
+    ``resolve_change`` is an applied ``encounter.resolve`` naming the encounter
+    and the combat end reason its outcome stands for.  Rewards go to the
+    present heroes.  Nothing is mutated.
+    """
+
+    if not isinstance(state, dict) or not isinstance(resolve_change, dict):
+        return _result(valid=False, reason='State and resolution change must be records.')
+    change_id = _text(resolve_change.get('id'))
+    end_reason = _key(resolve_change.get('endReason'))
+    outcome = canonical_combat_outcome(end_reason)
+    encounter_id = _text(resolve_change.get('encounterId'))
+    if _text(resolve_change.get('type')) != 'encounter.resolve' or not change_id or not encounter_id:
+        return _result(valid=False, reason='Rewards require an applied encounter.resolve with a stable ID.')
+    if outcome not in SUCCESSFUL_OUTCOMES:
+        return _result(valid=False, reason=f"Resolution '{end_reason or 'missing'}' is not rewardable.", end_reason=end_reason)
+    encounter = _pack_encounter(state, encounter_id) or {'id': encounter_id}
+    return _outcome_outputs(
+        state,
+        resolve_change,
+        encounter=encounter,
+        encounter_id=_record_id(encounter) or encounter_id,
+        outcome=outcome,
+        end_reason=end_reason,
+        eligible_actor_ids=_present_actor_ids(state),
+        applied_ledger_ids=applied_ledger_ids,
+    )
+
+
+def _outcome_outputs(
+    state: dict[str, Any],
+    outcome_change: dict[str, Any],
+    *,
+    encounter: dict[str, Any],
+    encounter_id: str,
+    outcome: str,
+    end_reason: str,
+    eligible_actor_ids: list[str],
+    applied_ledger_ids: list[Any] | None,
+) -> dict[str, Any]:
+    """The pending reward, consequence and quest-event outputs of one encounter outcome."""
+
+    outcome_change_id = _text(outcome_change.get('id'))
     scope_id = stable_change_id(SOURCE, outcome_change_id, encounter_id, outcome)
     known_ledger_ids = _ledger_ids(state, applied_ledger_ids)
-    eligible_actor_ids = _eligible_actor_ids(state, combat)
     if scope_id in known_ledger_ids:
         return _result(
             valid=True,
             reason='Encounter outcome rewards were already finalized.',
             outcome=outcome,
-            end_reason=change_reason,
+            end_reason=end_reason,
             encounter_id=encounter_id,
             outcome_ledger_id=scope_id,
             eligible_actor_ids=eligible_actor_ids,
@@ -806,15 +880,15 @@ def derive_combat_outcome_rewards(
             already_applied=True,
         )
 
-    specific = _outcome_spec(resolved_encounter, outcome, change_reason)
+    specific = _outcome_spec(encounter, outcome, end_reason)
     rewards = [
         reward
-        for source in _reward_sources(resolved_encounter, specific, outcome, change_reason)
+        for source in _reward_sources(encounter, specific, outcome, end_reason)
         for reward in _reward_records(source)
     ]
     reward_changes, reward_events, reward_skips = _derive_reward_changes(
         reward_records=rewards,
-        encounter=resolved_encounter,
+        encounter=encounter,
         outcome_spec=specific,
         outcome_change=outcome_change,
         encounter_id=encounter_id,
@@ -823,15 +897,15 @@ def derive_combat_outcome_rewards(
         eligible_actor_ids=eligible_actor_ids,
     )
     consequence_changes, consequence_skips = _derive_consequence_changes(
-        consequences=_consequence_records(resolved_encounter, specific, outcome, change_reason),
+        consequences=_consequence_records(encounter, specific, outcome, end_reason),
         outcome_change=outcome_change,
         encounter_id=encounter_id,
         outcome=outcome,
         scope_id=scope_id,
     )
     quest_events, quest_event_skips = _derive_quest_events(
-        encounter=resolved_encounter,
-        authored_events=_quest_event_records(resolved_encounter, specific, reward_events),
+        encounter=encounter,
+        authored_events=_quest_event_records(encounter, specific, reward_events),
         outcome_change=outcome_change,
         encounter_id=encounter_id,
         outcome=outcome,
@@ -855,7 +929,7 @@ def derive_combat_outcome_rewards(
         valid=True,
         reason='Derived authoritative encounter outcome rewards and consequences.',
         outcome=outcome,
-        end_reason=change_reason,
+        end_reason=end_reason,
         encounter_id=encounter_id,
         outcome_ledger_id=scope_id,
         eligible_actor_ids=eligible_actor_ids,
@@ -874,4 +948,5 @@ __all__ = [
     'SUPPORTED_OUTCOMES',
     'canonical_combat_outcome',
     'derive_combat_outcome_rewards',
+    'derive_encounter_resolution_rewards',
 ]

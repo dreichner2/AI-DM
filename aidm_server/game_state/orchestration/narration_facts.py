@@ -5,8 +5,9 @@ them, and sent in the narration packet as ``narration``: the objects acted on
 (their label, authored text, description when it has not been told yet, what a
 search turned up, the unlock/open steps taken on the way), whom the hero talked
 to and the next thing that person knows, how the free-text message mapped,
-the enemies' names in prose, who acts next in a fight, and a party defeat
-foreseen from the engine-resolved enemy turns.
+the enemies' names in prose, the authored setup and adjustments of a fight that
+starts, who acts next in a fight, and how a fight ends when the engine-resolved
+enemy turns end it (a party defeat among them).
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ DEFAULT_LABEL_VERBS = {
     'reset': 'Reset',
 }
 COIN_ORDER = ('pp', 'gp', 'ep', 'sp', 'cp')
+# Said before the result of a failed check taken again slowly.
+TAKE_TIME_LINE = 'You take your time over it; the light has changed by the time you are done.'
 # The validator's source for the changes of a typed pickup.
 PICKUP_SOURCE = 'pre_dm_world_action'
 
@@ -120,6 +123,8 @@ def object_facts(
             'labelAuthored': authored,
             'failed': failed,
         }
+        if event.get('takeTime') is True:
+            fact['takeTime'] = True
         if _text(action_text.get(action)):
             fact['actionText'] = _text(action_text.get(action))
         if not failed and action in {'inspect', 'search'}:
@@ -127,6 +132,11 @@ def object_facts(
             fact['nothingNew'] = told
         if not failed and action == 'search':
             fact['found'] = [item_phrase(item) for item in event.get('revealedItems') or [] if isinstance(item, dict)]
+            fact['uncovered'] = [
+                name
+                for revealed_id in event.get('revealedTargetIds') or []
+                if (name := _text(_scene_object(state_after, revealed_id).get('name')))
+            ]
         steps = [_text(step).lower() for step in event.get('steps') or [] if _text(step)]
         if steps:
             fact['steps'] = [{'action': step, 'label': object_label(entry, step)[0]} for step in steps]
@@ -173,6 +183,31 @@ def plain_results(state_after: dict[str, Any], applied_changes: Iterable[dict[st
     if taken:
         results['taken'] = taken
     return results
+
+
+def fight_start(state: dict[str, Any], applied_changes: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """The read-aloud ``setup`` of a pack encounter whose fight started this turn, and its applied adjustments' lines."""
+
+    start = next(
+        (change for change in applied_changes if isinstance(change, dict) and change.get('type') == 'combat.start'),
+        None,
+    )
+    combat = start.get('combat') if isinstance((start or {}).get('combat'), dict) else {}
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    encounter_id = (start or {}).get('campaignPackEncounterId') or flags.get('campaignPackEncounterId')
+    if not encounter_id:
+        return None
+    encounter = catalog_record(state, 'encounters', encounter_id)
+    scaling = flags.get('partyScaling') if isinstance(flags.get('partyScaling'), dict) else {}
+    adjustments = [
+        _text(adjustment.get('text'))
+        for adjustment in scaling.get('adjustments') or []
+        if isinstance(adjustment, dict) and _text(adjustment.get('text'))
+    ]
+    setup = _text(encounter.get('setup'))
+    if not setup and not adjustments:
+        return None
+    return {'setup': setup, 'adjustments': adjustments}
 
 
 def enemy_names(state: dict[str, Any]) -> list[dict[str, Any]]:

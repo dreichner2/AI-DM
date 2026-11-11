@@ -7,7 +7,10 @@ database. The hero is at the level the careful route's XP gives at that
 point, at full HP, with one Potion of Healing, and follows one policy: drink
 the potion at 40% HP or less; a caster casts its best damage spell while slots
 last, then its best damage cantrip; anyone else attacks with their best
-weapon; always the enemy with the least HP.
+weapon; always the enemy with the least HP. The enemies plan as the engine
+does, quiet-turn and parley limits included. A fight counts as the careful
+route meets it: the final binding with the Scribe's true name known and the
+Roadwardens appeased, so both of its adjustments apply.
 
 Usage: python scripts/solo_balance.py [--seeds 40]
 """
@@ -72,6 +75,8 @@ ROUTE_XP = (
     ('enc_hollow_marshal_pursuit', 950),
     ('enc_final_binding', 950),
 )
+# What the careful route knows when it reaches each encounter (the flags its adjustments read).
+ROUTE_FLAGS = {'enc_final_binding': {'true_name_known': True, 'roadwardens_appeased': True}}
 POTION_THRESHOLD = 0.4
 MAX_ROUNDS = 60
 ACTOR_ID = 'player_1'
@@ -88,13 +93,13 @@ def _hero(preset_id: str, level: int) -> dict[str, Any]:
     return player_character_from_model(player)
 
 
-def _state(pack: dict[str, Any], hero: dict[str, Any], seed: int) -> dict[str, Any]:
+def _state(pack: dict[str, Any], hero: dict[str, Any], seed: int, *, flags: dict[str, Any]) -> dict[str, Any]:
     return {
         'sessionId': seed,
         'playerCharacters': [hero],
         'currentScene': {'locationId': 'solo_balance', 'name': 'The road', 'items': [], 'interactables': [], 'hazards': []},
         'locations': [],
-        'flags': {},
+        'flags': deepcopy(flags),
         'combat': {'status': 'none', 'round': 1, 'participants': [], 'flags': {}},
         'campaignPack': {
             'packId': pack['packId'],
@@ -333,7 +338,7 @@ def fight(preset_id: str, encounter_id: str, seed: int, *, level: int, pack: dic
     pack = pack or _pack()
     rng = random.Random(f'{preset_id}:{encounter_id}:{seed}')
     encounter = next(record for record in pack['encounters'] if record['id'] == encounter_id)
-    state = _state(pack, _hero(preset_id, level), seed)
+    state = _state(pack, _hero(preset_id, level), seed, flags=ROUTE_FLAGS.get(encounter_id, {}))
     with _seeded_dice(rng):
         start = triggered_encounter_start(state, encounter, turn_id=seed * 1000, cause_id='solo_balance')
         state = _apply(state, [start])

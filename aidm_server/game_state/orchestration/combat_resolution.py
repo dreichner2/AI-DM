@@ -12,6 +12,7 @@ from aidm_server.combat.attacks import (
     TEXT_DAMAGE_PATTERN,
     ability_damage,
     ability_reach_profile,
+    attack_armor_class,
     attack_weapon_descriptor,
     bounded_int,
     resolve_attack,
@@ -19,8 +20,18 @@ from aidm_server.combat.attacks import (
     resolve_enemy_healing,
 )
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
-from aidm_server.combat.intent_planner import attach_intents_to_combat
-from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE, can_act, condition_keys, engaged_with, range_band, speed_is_zero, temp_hp_per_turn, tick_turn_boundary
+from aidm_server.combat.intent_planner import ENEMY_TURN_HISTORY_FLAG, QUIET_TURN_WINDOW, attach_intents_to_combat, intent_is_quiet
+from aidm_server.combat.modifiers import (
+    MODIFIER_ENGINE_SOURCE,
+    attack_context,
+    can_act,
+    condition_keys,
+    engaged_with,
+    range_band,
+    speed_is_zero,
+    temp_hp_per_turn,
+    tick_turn_boundary,
+)
 from aidm_server.combat.pipeline import (
     apply_start_turn_damage,
     death_saves_due,
@@ -55,6 +66,7 @@ __all__ = [
     'build_dm_combat_context',
     'combat_participant_update_signature',
     'derive_trusted_damage_changes',
+    'player_attack_target',
     'resolve_authoritative_player_attack',
     'settle_engine_controlled_turns',
     'without_trusted_damage_overlaps',
@@ -70,6 +82,7 @@ _TRUSTED_DAMAGE_SOURCE_TYPES = {
     'trap': 'trusted_environmental_hazard',
 }
 ENEMY_RESOLVED_SOURCE = 'enemy_resolved_action'
+ENEMY_TURN_HISTORY_SOURCE = 'enemy_turn_history'
 
 
 @dataclass(frozen=True)
@@ -77,10 +90,11 @@ class TrustedDamageChanges:
     enemy: list[dict[str, Any]]
     resolved: list[dict[str, Any]]
     death_saves: list[dict[str, Any]] = field(default_factory=list)
+    turn_history: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def all_changes(self) -> list[dict[str, Any]]:
-        return [*self.enemy, *self.resolved, *self.death_saves]
+        return [*self.enemy, *self.resolved, *self.death_saves, *self.turn_history]
 
 
 @dataclass(frozen=True)
@@ -196,6 +210,46 @@ def _random_roll(sides: int) -> int:
     return random.randint(1, max(1, int(sides)))
 
 
+def _attack_weapon_item(player_actor: dict[str, Any], combat_action: dict[str, Any]) -> dict[str, Any]:
+    weapon_id = str(combat_action.get('weapon_id') or '').strip()
+    weapon_name = str(combat_action.get('weapon_name') or 'weapon').strip() or 'weapon'
+    inventory = player_actor.get('inventory') if isinstance(player_actor.get('inventory'), dict) else {}
+    return next(
+        (item for item in inventory.get('items') or [] if isinstance(item, dict) and weapon_id and str(item.get('id') or '') == weapon_id),
+        {'id': weapon_id, 'name': weapon_name},
+    )
+
+
+def player_attack_target(state: dict[str, Any], *, actor_id: str, combat_action: Any) -> dict[str, int] | None:
+    """The armour class (and lowest critical d20) a server-issued HUD attack will be resolved against.
+
+    The roll is shown against this ``armorClass`` and the engine compares the
+    attack with the same number, so the roll card and the narration agree.
+    """
+
+    if not isinstance(combat_action, dict) or str(combat_action.get('action_type') or '').strip().lower() != 'attack':
+        return None
+    participants = _combat_participants(state)
+    actor = _participant_by_id(participants, actor_id)
+    target = _participant_by_id(participants, combat_action.get('target_id'))
+    if not isinstance(actor, dict) or not isinstance(target, dict):
+        return None
+    ranged = combat_action.get('ranged') is True
+    player_actor = _player_actors_by_id(state).get(actor_id) or {}
+    modifiers = attack_context(
+        actor,
+        target,
+        kind='weapon_attack',
+        ranged=ranged,
+        combat=state.get('combat') if isinstance(state.get('combat'), dict) else {},
+        weapon=attack_weapon_descriptor(player_actor, _attack_weapon_item(player_actor, combat_action), ranged=ranged),
+    )
+    return {
+        'armorClass': attack_armor_class(target, modifiers),
+        'criticalThreshold': 20 - max(0, int(modifiers['criticalRangeBonus'])),
+    }
+
+
 def resolve_authoritative_player_attack(
     *,
     state: dict[str, Any],
@@ -256,11 +310,7 @@ def resolve_authoritative_player_attack(
     weapon_name = str(combat_action.get('weapon_name') or 'weapon').strip() or 'weapon'
     ranged = combat_action.get('ranged') is True
     player_actor = _player_actors_by_id(state).get(actor_id) or {}
-    inventory = player_actor.get('inventory') if isinstance(player_actor.get('inventory'), dict) else {}
-    weapon_item = next(
-        (item for item in inventory.get('items') or [] if isinstance(item, dict) and weapon_id and str(item.get('id') or '') == weapon_id),
-        {'id': weapon_id, 'name': weapon_name},
-    )
+    weapon_item = _attack_weapon_item(player_actor, combat_action)
     ability = authoritative_roll.get('ability') if isinstance(authoritative_roll.get('ability'), dict) else {}
     economy = flags.get('turnEconomy') if isinstance(flags.get('turnEconomy'), dict) else {}
     once_per_turn_used = economy.get('oncePerTurnUsed') if str(economy.get('actorId') or '') == actor_id else []
@@ -287,6 +337,7 @@ def resolve_authoritative_player_attack(
         ability=ability.get('key'),
         rider=rider,
         once_per_turn_used=once_per_turn_used or [],
+        armor_class=authoritative_roll.get('target_ac') if isinstance(authoritative_roll.get('target_ac'), int) else None,
     )
     result = {
         'sourceType': 'player_attack',
@@ -845,6 +896,46 @@ def _trusted_enemy_resolved_damage_changes(
     return changes
 
 
+def _enemy_turn_history_changes(
+    *,
+    state: dict[str, Any],
+    dm_context_packet: dict[str, Any],
+    turn_id: int | None,
+    already_applied_changes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Records, per enemy that took its turn, whether that turn did nothing mechanically (the quiet-turn limit reads it)."""
+
+    combat_state = dm_context_packet.get('combatState') if isinstance(dm_context_packet.get('combatState'), dict) else {}
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    participants = _combat_participants(state)
+    quiet_turns: dict[str, bool] = {}
+    for action in combat_state.get('enemyResolvedActions') if isinstance(combat_state.get('enemyResolvedActions'), list) else []:
+        if not isinstance(action, dict) or action.get('turnLost'):
+            continue
+        enemy_id = str(action.get('enemyId') or action.get('actorId') or '').strip()
+        enemy = _participant_by_id(participants, enemy_id)
+        if isinstance(enemy, dict) and str(enemy.get('team') or '').strip().lower() == 'enemy':
+            intent_type = str(action.get('intentType') or action.get('type') or '').strip().lower()
+            quiet_turns[enemy_id] = intent_is_quiet({'intentType': intent_type}, enemy, combat)
+    if not quiet_turns:
+        return []
+    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    history = deepcopy(flags.get(ENEMY_TURN_HISTORY_FLAG)) if isinstance(flags.get(ENEMY_TURN_HISTORY_FLAG), dict) else {}
+    for enemy_id, quiet in quiet_turns.items():
+        history[enemy_id] = [*(history.get(enemy_id) or []), quiet][-QUIET_TURN_WINDOW:]
+    change = {
+        'id': stable_change_id('trusted_enemy_turn_history', turn_id, *sorted(quiet_turns.items())),
+        'turnId': turn_id,
+        'type': 'combat.update',
+        'flags': {ENEMY_TURN_HISTORY_FLAG: history},
+        'source': ENEMY_TURN_HISTORY_SOURCE,
+        'reason': 'Engine-recorded enemy turns.',
+        'visible': False,
+    }
+    already_ids = {str(applied.get('id') or '') for applied in already_applied_changes if isinstance(applied, dict)}
+    return [] if change['id'] in already_ids else [change]
+
+
 def _consume_change(consume: Any, *, turn_id: int | None, origin: tuple[Any, ...]) -> dict[str, Any] | None:
     """One trusted change spending the effects (and ``hidden``) a resolved roll used."""
 
@@ -1120,6 +1211,12 @@ def derive_trusted_damage_changes(
             ),
         ],
         death_saves=_trusted_death_save_changes(
+            state=state,
+            dm_context_packet=dm_context_packet,
+            turn_id=turn_id,
+            already_applied_changes=already_applied_changes,
+        ),
+        turn_history=_enemy_turn_history_changes(
             state=state,
             dm_context_packet=dm_context_packet,
             turn_id=turn_id,

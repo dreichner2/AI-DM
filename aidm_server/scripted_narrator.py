@@ -6,9 +6,12 @@ network call. It says only what happened: a reply is the result paragraphs,
 with the scene paragraph only in the opening, on arrival and when the hero
 looks around, and the closing question only in the opening. The pipeline's
 ``narration`` packet (``RULES_HINT.state_pipeline.narration``) names the
-objects acted on, the person talked to, how typed words mapped, who acts next
-in a fight and a party defeat. Phrasing varies by turn without randomness:
-each template has a few variants chosen by ``sha1(f"{turn_number}:{template_key}")``.
+objects acted on, the person talked to, how typed words mapped, the authored
+setup and adjustments of a fight that starts, who acts next in a fight, how a
+fight ends and a party defeat. An enemy turn is told as what it does in the
+world, never by the planner's name for it. Phrasing varies by turn without
+randomness: each template has a few variants chosen by
+``sha1(f"{turn_number}:{template_key}")``.
 
 Only one case ever asks for a roll: a turn whose rules hint requires a roll that
 has not been made yet. Every other sentence is kept free of roll-request
@@ -23,6 +26,7 @@ import re
 from typing import Any
 
 from aidm_server.character_state import ROLL_TYPE_BASE_DC, SKILL_ABILITY
+from aidm_server.game_state.orchestration.narration_facts import TAKE_TIME_LINE
 from aidm_server.turn_roll_policy import TurnRollPolicy
 from aidm_server.turn_rules import response_mentions_roll_request
 
@@ -38,6 +42,29 @@ DEFEAT_PARAGRAPH = (
 COIN_CODES = frozenset({'pp', 'gp', 'ep', 'sp', 'cp'})
 # After a failed check for an object action, said after the action's sentence.
 FAILED_CHECK_LINES = {'search': 'You come up empty.', 'inspect': 'You come up empty.'}
+# An enemy turn that rolls nothing, by intent; ``{enemy}`` is its name in prose, ``{ally}`` the ally it shields.
+ENEMY_TURN_LINES = {
+    'delay': '{enemy} hangs back, watching.',
+    'protect_ally': '{enemy} moves to shield {ally}.',
+    'complete_objective': '{enemy} turns back to its work.',
+    'use_environment': '{enemy} looks for an advantage in the ground.',
+    'negotiate': '{enemy} throws down its weapon and yields.',
+    'surrender': '{enemy} throws down its weapon and yields.',
+    'yield': '{enemy} throws down its weapon and yields.',
+    'reposition': '{enemy} moves for a better angle.',
+    'defend': '{enemy} takes cover.',
+    'hide': '{enemy} takes cover.',
+    'call_reinforcements': '{enemy} shouts for help.',
+}
+FLEEING_INTENTS = frozenset({'retreat', 'flee'})
+SAVE_ABILITY_NAMES = {
+    'str': 'Strength',
+    'dex': 'Dexterity',
+    'con': 'Constitution',
+    'int': 'Intelligence',
+    'wis': 'Wisdom',
+    'cha': 'Charisma',
+}
 
 ABILITY_NAMES = ('strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma')
 RULE_TYPE_LABELS = {
@@ -88,16 +115,7 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
         '{enemy} lunges at {target} with {ability} but falls short, {total} against AC {ac}.',
         '{enemy} answers with {ability}, but {total} against AC {ac} misses {target}.',
     ),
-    'enemy_save': (
-        '{enemy} uses {ability}; {target} {resist} with a {save_ability} save of {total} against DC {dc}, {outcome}{damage_clause}.',
-        '{enemy} turns {ability} on {target}, who {resist} with a {save_ability} save of {total} against DC {dc}, {outcome}{damage_clause}.',
-        '{ability} from {enemy} washes over {target}: a {save_ability} save of {total} against DC {dc}, {outcome}{damage_clause}.',
-    ),
-    'enemy_unrolled': (
-        '{enemy} moves to {intent}.',
-        '{enemy} chooses to {intent}.',
-        '{enemy} shifts tactics and moves to {intent}.',
-    ),
+    'enemy_save': ('{enemy} turns {ability} on {target}: a {save_ability} save of {total} against DC {dc}, {outcome}{damage_clause}.',),
     'conditions': (
         '{target} {be} now {conditions}.',
         'When it is over, {target_lower} {be} {conditions}.',
@@ -371,6 +389,7 @@ def narrate(
     own_blocks, aftermath = _change_blocks(turn)
     blocks.append([*_spell_lines(turn), *_capability_lines(turn)])
     blocks.extend(own_blocks)
+    blocks.extend(_fight_start_blocks(turn))
     blocks.append(_combat_lines(turn))
     blocks.append(aftermath)
     roll_paragraphs = _resolved_roll_paragraphs(turn)
@@ -471,6 +490,15 @@ def _scene_paragraphs(turn: NarrationInput) -> list[list[str]]:
 # Mechanical results ---------------------------------------------------------------------------------------------
 
 
+def _fight_start_blocks(turn: NarrationInput) -> list[list[str]]:
+    """A fight that starts: the encounter's read-aloud setup, then each adjustment's line, before the first blows."""
+
+    started = _dict(turn.facts.get('fightStart'))
+    blocks = [_safe_sentences(_split_sentences(_text(started.get('setup'))))]
+    blocks.extend(_safe_sentences([_sentence(line)]) for line in _string_items(started.get('adjustments')))
+    return [block for block in blocks if block]
+
+
 def _combat_lines(turn: NarrationInput) -> list[str]:
     """The fight in order: it starts, the hero's move or attack, the enemies' turns, who fell, death saves, its end."""
 
@@ -488,8 +516,15 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     for attack in attacks:
         lines.append(_player_attack_line(turn, attack))
         targets.append(_text(attack.get('targetName')))
-    for action in _dicts(combat_state.get('enemyResolvedActions')):
-        line = _enemy_action_line(turn, action)
+    enemy_actions = _dicts(combat_state.get('enemyResolvedActions'))
+    fleeing = [action for action in enemy_actions if _fled(action)]
+    routed = _key(turn.facts.get('fightEnds')) == 'enemies_fled'
+    for action in enemy_actions:
+        if routed and len(fleeing) > 1 and _fled(action):
+            # The last of several enemies breaking at once is told once.
+            line = 'The last of them break and run.' if action is fleeing[0] else None
+        else:
+            line = _enemy_action_line(turn, action, routed=routed)
         if line:
             lines.append(line)
         conditions = _string_items(action.get('conditionsApplied'))
@@ -526,13 +561,35 @@ def _player_attack_line(turn: NarrationInput, attack: dict) -> str:
     return _sentence(turn.pick(key, **values))
 
 
-def _enemy_action_line(turn: NarrationInput, action: dict) -> str | None:
+def _fled(action: dict) -> bool:
+    return (
+        action.get('resolvedWithoutRoll') is True
+        and _key(action.get('intentType')) in FLEEING_INTENTS
+        and action.get('moveOnly') is not True
+        and action.get('droppedByReaction') is not True
+    )
+
+
+def _unrolled_enemy_line(turn: NarrationInput, action: dict, enemy: str, *, routed: bool) -> str:
+    """What an enemy turn that rolled nothing did, in the world's words."""
+
+    intent = _key(action.get('intentType'))
+    if action.get('turnLost') is True:
+        return _sentence(f'{enemy} cannot act')
+    if action.get('moveOnly') is True:
+        return _sentence(f'{enemy} closes in')
+    if intent in FLEEING_INTENTS:
+        return _sentence(f'{enemy} breaks and runs' if routed else f'{enemy} gives ground')
+    template = ENEMY_TURN_LINES.get(intent, '{enemy} waits.')
+    return _sentence(template.format(enemy=enemy, ally=turn.creature(action.get('targetName')) or 'an ally'))
+
+
+def _enemy_action_line(turn: NarrationInput, action: dict, *, routed: bool = False) -> str | None:
     enemy = turn.creature(action.get('enemyName')) or 'The enemy'
     target = _target_ref(turn, action.get('targetName'))
     ability = _text(action.get('abilityName')) or 'an attack'
     if action.get('resolvedWithoutRoll') is True:
-        intent = _humanize(action.get('intentType')) or 'act'
-        return _sentence(turn.pick('enemy_unrolled', enemy=enemy, intent=intent))
+        return _unrolled_enemy_line(turn, action, enemy, routed=routed)
     damage = _number(action.get('damageTotal'))
     damage_type = _text(action.get('damageType')) or 'weapon'
     if action.get('saveDC') is not None and action.get('attackTotal') is None:
@@ -543,8 +600,7 @@ def _enemy_action_line(turn: NarrationInput, action: dict) -> str | None:
                 enemy=enemy,
                 ability=ability,
                 target=target,
-                resist=_person(turn, action.get('targetName'))['resist'],
-                save_ability=_humanize(action.get('saveAbility')).title() or 'ability',
+                save_ability=SAVE_ABILITY_NAMES.get(_key(action.get('saveAbility'))[:3], _humanize(action.get('saveAbility')).title() or 'ability'),
                 total=_number(action.get('saveTotal')),
                 dc=_number(action.get('saveDC')),
                 outcome='a success' if action.get('saveSucceeded') is True else 'a failure',
@@ -781,7 +837,7 @@ def _object_blocks(fact: dict) -> list[list[str]]:
 
     name = _text(fact.get('name'))
     action = _key(fact.get('action'))
-    opening = []
+    opening = [TAKE_TIME_LINE] if fact.get('takeTime') is True else []
     steps = _dicts(fact.get('steps'))
     if steps:
         opening.append(_steps_sentence(steps, _text(fact.get('keyName'))))
@@ -793,7 +849,7 @@ def _object_blocks(fact: dict) -> list[list[str]]:
     if description:
         blocks.append(_split_sentences(description))
     if action == 'search':
-        blocks.append([_found_sentence(fact.get('found'))])
+        blocks.append(_found_sentences(fact.get('found'), fact.get('uncovered')))
     elif fact.get('nothingNew') is True:
         blocks.append([f'You find nothing new on {_the(name)}.'])
     return blocks
@@ -822,12 +878,18 @@ def _steps_sentence(steps: list[dict], key_name: str) -> str:
     return _sentence(sentence)
 
 
-def _found_sentence(found: Any) -> str:
+def _found_sentences(found: Any, uncovered: Any) -> list[str]:
+    """What a search turned up: the items found, the hidden objects uncovered, or nothing more."""
+
     items = [_text(item) for item in (found if isinstance(found, list) else []) if _text(item)]
-    if not items:
-        return 'You find nothing more.'
-    coins = [item for item in items if item.split()[-1].lower() in COIN_CODES]
-    return f'You find {_join_words([*coins, *(item for item in items if item not in coins)])}.'
+    objects = [_text(name) for name in (uncovered if isinstance(uncovered, list) else []) if _text(name)]
+    sentences = []
+    if items:
+        coins = [item for item in items if item.split()[-1].lower() in COIN_CODES]
+        sentences.append(f'You find {_join_words([*coins, *(item for item in items if item not in coins)])}.')
+    if objects:
+        sentences.append(f'You uncover {_join_words([_the(name) for name in objects])}.')
+    return sentences or ['You find nothing more.']
 
 
 def _object_sentence(change: dict) -> str:
@@ -1021,11 +1083,17 @@ def _compose(turn: NarrationInput, blocks: list[list[str]]) -> str:
     if defeat:
         enemies = _text(defeat.get('enemies')) or 'the enemies'
         paragraphs.append([DEFEAT_PARAGRAPH.format(enemies=enemies, be='are' if defeat.get('plural') is not False else 'is')])
-    elif _text(facts.get('nextActorLine')):
+    elif _text(facts.get('nextActorLine')) and not _fight_ended(turn):
         paragraphs.append([_text(facts.get('nextActorLine'))])
     if _dict(facts.get('freeText')).get('more') is True:
         paragraphs.append([ONE_THING_AT_A_TIME])
     return '\n\n'.join(' '.join(paragraph) for paragraph in paragraphs)
+
+
+def _fight_ended(turn: NarrationInput) -> bool:
+    """The fight ends this turn, so its ending sentence stands alone."""
+
+    return bool(turn.facts.get('fightEnds')) or any(_text(change.get('type')) == 'combat.end' for change in turn.applied_changes)
 
 
 def _clip_blocks(blocks: list[list[str]], budget: int) -> list[list[str]]:

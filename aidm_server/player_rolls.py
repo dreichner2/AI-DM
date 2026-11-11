@@ -314,6 +314,26 @@ def resolve_authoritative_player_roll(
     return result
 
 
+def roll_against_armor_class(roll: dict[str, Any], target: dict[str, int]) -> dict[str, Any]:
+    """A HUD attack roll judged against the armour class the engine will use (``target_ac``).
+
+    A natural 1 misses, a natural roll at or above the critical threshold hits,
+    otherwise the total must meet the armour class.
+    """
+
+    armor_class = int(target['armorClass'])
+    kept = int(roll.get('kept') or 0)
+    hit = kept != 1 and (kept >= int(target['criticalThreshold']) or int(roll.get('total') or 0) >= armor_class)
+    return {
+        **roll,
+        'target_ac': armor_class,
+        'dc': armor_class,
+        'task_dc': armor_class,
+        'dcSource': 'target_ac',
+        'outcome': 'success' if hit else 'failure',
+    }
+
+
 def canonical_roll_sentence(roll: dict[str, Any]) -> str:
     modifier = int(roll.get('modifier') or 0)
     modifier_text = f'{modifier:+d}' if modifier else ''

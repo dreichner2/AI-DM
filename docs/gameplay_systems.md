@@ -98,7 +98,32 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
 ### Structured combat lifecycle
 
 - Hostile/campaign encounter triggers materialize stable participants and
-  explicit deterministic initiative.
+  explicit deterministic initiative. A pack encounter's `trigger` (`on_enter`,
+  `on_checkpoint`, `on_flag`, `on_interactable`) fires once unless `once:
+  false`, only while `when` holds and never while `unless` holds; each is a
+  flag predicate or `{anyOf: [predicate, ...]}`. An encounter an object action
+  settled never fires again.
+- Encounters authored for four heroes scale to the present party
+  (`PARTY_SCALING` in `game_state/campaign_pack_encounters.py`). By heroes
+  present (1 / 2 / 3): enemy HP × 0.30 / 0.60 / 0.80 (rounded up), every enemy
+  damage roll × 0.40 / 0.70 / 0.85 (rounded down, at least 1), enemy attack
+  bonuses and save DCs −3 / −1 / 0, and at most 1 / 3 / 4 enemies. Each group
+  keeps `max(1, round(count × party ÷ 4))` enemies; over the most, whole groups
+  drop from the end (never the first), then the last group loses enemies. Four
+  or more heroes, or `scaling: false`, change nothing. The record is
+  `combat.flags.partyScaling`. `scripts/solo_balance.py` plays every ready-made
+  hero alone through every Play Now fight (the careful route's knowledge
+  included) to tune the one-hero row.
+- What the party knows adjusts an encounter: its `adjustments` apply when its
+  combat is created, before party scaling. Each whose `when` flag holds either
+  multiplies one enemy group's HP (`hpMultiplier`, 0.25–1.5, together with the
+  scaling multiplier) or keeps groups away (`removeEnemyIds`, gone before the
+  most enemies is applied). Their `text` lines are recorded on
+  `partyScaling.adjustments` and must appear in that turn's narration: the
+  scripted narrator prints the encounter's read-aloud `setup`, then each line as
+  its own paragraph, before the first blows, and a narrating model is told the
+  same lines as ones it must convey (never `gmNotes`, `stakes` or
+  `description`).
 - `combat.flags.turnEconomy` persists action, bonus action, reaction, and
   movement budgets. Only the current present, conscious, living, non-fled,
   non-surrendered actor can spend the relevant budget.
@@ -139,8 +164,20 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   tallies persist on the Player row. Enemies and NPC allies are simply defeated
   at 0 HP.
 - When every present player character is down, combat ends with
-  `objective_failed` and the dying are left stable, unless the encounter flags
-  set `lethalDefeat: true`. Any other combat end also stabilizes the dying.
+  `objective_failed` and, unless the combat or its encounter sets
+  `lethalDefeat: true`, the party is beaten but not killed: the clock advances
+  one phase, every hero who is not dead wakes with 1 HP (no longer dying,
+  stable, unconscious or prone; death saves reset), the enemies leave the
+  scene, and the encounter records the outcome `defeat`, pays nothing, and is
+  re-armed so its trigger can fire again. The turn carries the beat
+  `Defeated — you wake later with 1 HP`. Any other combat end stabilizes the
+  dying.
+- Outside a fight the same waking applies at once, whatever caused it: when no
+  combat is active and every present hero is down (none can be left stable
+  forever), each one who is not dead comes to with 1 HP a phase later, before
+  their next action is judged; the turn carries `You come to — 1 HP`. A hero who
+  is down while a companion still stands is refused before narration (`You are
+  down and cannot act.`).
 - Movement does not end a turn automatically. Attack and spell actions require
   an explicit End Turn, which advances through the legal enemy block and then
   resets economy for the next round. The advance processes every turn end and
@@ -169,6 +206,12 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   and `near` bands. Ranged weapons reach every band; a ranged weapon or ranged
   spell attack made while engaged with an enemy that can act has disadvantage.
   Down, hidden and fully covered targets cannot be targeted.
+- Attacks close the distance: a melee weapon attack on a target out of reach is
+  still offered, with `requiresMove: true` on the target and (when every
+  reachable target needs it) on the action, while the hero's move is unspent
+  and closing on that target would bring it into reach. Taking it spends the
+  move and the action and is recorded as the advance followed by the attack in
+  one turn. With the move spent it is not offered.
 - Every character's HUD bundle carries the universal actions, each with a
   `cost` (`action`, `bonusAction`, `movement`, `reaction`, each 0 or 1) and,
   when unavailable, a plain reason: Advance (movement; one band inward, or close
@@ -216,7 +259,16 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   attack that is not in reach moves inward one band and attacks when that
   brings the target into reach, or spends its turn on a second move otherwise;
   a retreating enemy moves one band outward (provoking as above) before it
-  flees. Enemy targeting, in planning and at resolution, applies the same
+  flees. Enemies fight back: an intent that does nothing mechanically
+  (`complete_objective`, `delay`, `use_environment`, and `protect_ally` while no
+  ally is below half HP) may be chosen by an enemy at most once in any three of
+  its turns and never on two turns in a row; each enemy's last turns are kept in
+  `combat.flags.enemyTurnHistory`. An enemy may negotiate, surrender, yield or
+  retreat only when its HP is at or below half, its side has lost a member in
+  this fight, or it is round 4 or later and it has been hurt (an encounter's
+  `allowParley: true` lifts this). Forbidden candidates are removed before
+  selection; an LLM-assisted planner's forbidden choice is replaced by the best
+  damaging candidate. Enemy targeting, in planning and at resolution, applies the same
   range-band, engagement, cover and hidden rules as the player HUD, using each
   ability's declared range. Unsupported delivery shapes fail closed and are
   removed from narration context instead of becoming invented damage. Player
@@ -225,7 +277,12 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   participants, but not spent-action IDs or private planning data.
 - Engine-selected enemy retreat/flee, surrender, and negotiation intents apply
   authoritative conditions and feed the same combat end-condition engine as
-  defeat; narration cannot substitute a different ending.
+  defeat; narration cannot substitute a different ending. The scripted narrator
+  tells such turns in the world's words (`The pale lantern hangs back,
+  watching.`, `… gives ground.`, `… throws down its weapon and yields.`, `…
+  breaks and runs.`), never by the intent's name, and a fight that ends this
+  turn hands no turn on. A player-facing telegraph is a concrete cue from the
+  ability or intent; an abstract planner reason shows none.
 - Terminal combat outcomes can derive authored encounter rewards and
   consequences. XP, currency, and item rewards allocate only to exact present
   player participants; defeated or unconscious participants remain eligible,
@@ -242,7 +299,15 @@ their own journal hooks; they cannot reactivate or complete mechanical quests.
   player-started encounters; only stored legacy combats keep roster order.
 - Resolved player rolls report `dc` (the stated DC, else the roll type's base
   DC), `dcSource` (`stated` or `default`) and `outcome`, except initiative and
-  death saves; landed roll payloads expose them to players. Pending checks,
+  death saves; landed roll payloads expose them to players. A HUD weapon
+  attack's roll instead carries `target_ac`, the target's armour class with
+  effects and cover (`dc` and `outcome` follow it); the engine compares the
+  attack against that same number, so the roll card and the narration agree.
+- Narration never creates damage once the engine resolved the turn (a spell, an
+  attack, an object's effects or a fight's end), and narrated damage lands only
+  on a player character the sentence names (`you`, or the hero's name); a
+  damage claim whose target cannot be resolved is dropped and logged, never
+  pointed at the acting hero. Pending checks,
   saves, and attacks take their mode from the modifier engine unless the roll
   gate forces one, and roll and show effect bonus dice.
 
@@ -487,8 +552,28 @@ and registers the combat actions and Uncanny Dodge.
   quest objectives without allowing narration to complete them.
 - The Mechanical actions panel submits the exact public object ID, selected
   transition, and snapshot revision. Candidate availability is inferred only
-  from public state; hidden requirements still fail closed on the server. Object
-  actions remain disabled during combat until a turn-economy cost is defined.
+  from public state; hidden requirements still fail closed on the server.
+- During a fight only an object's `usableInCombat` actions can be taken, on the
+  hero's own turn while their action is unspent (all other requirements still
+  apply); taking one spends the action. Every other object action is offered
+  as not legal with `Not while the fight is on.`, and loose items cannot be
+  taken in a fight.
+- A failed check is never a dead end: outside a fight, the action's offered
+  entry becomes `legal: true, retry: true`. Sending the same typed action with
+  `take_time: true` (or words that name it again) advances the clock one phase
+  and resolves the check as if the die showed 20 (success when 20 plus the
+  hero's modifier meets the DC; otherwise it stays retryable). The narration
+  says first `You take your time over it; the light has changed by the time you
+  are done.` and the check beat ends ` (taking your time)`. Without `take_time`
+  the repeat is still refused.
+- An object action can settle an encounter peacefully:
+  `resolvesEncounter: {<action>: {encounterId, outcome}}`. When that action
+  succeeds the encounter is completed with the outcome (`victory`, `surrender`,
+  `negotiation` or `objective_completion`) through the same outcome transaction
+  a combat ending uses (consequences, once-only rewards, quest events,
+  objectives and beats); its combat, if active, ends at once with that outcome,
+  and its trigger never fires afterwards. Taking the action again settles
+  nothing more.
 
 ## AI Context
 

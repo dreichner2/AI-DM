@@ -155,7 +155,10 @@ def test_derive_trusted_damage_changes_separates_enemy_and_validated_event_sourc
         'trusted_player_attack',
         'trusted_environmental_hazard',
     ]
-    assert [change['amount'] for change in changes.all_changes] == [5, 4, 3]
+    assert [change['amount'] for change in [*changes.enemy, *changes.resolved]] == [5, 4, 3]
+    # Each enemy's turn is recorded for the quiet-turn limit.
+    assert changes.turn_history[0]['flags']['enemyTurnHistory'] == {'enemy_wolf': [False]}
+    assert changes.all_changes[-1] == changes.turn_history[0]
 
 
 def test_combat_signatures_and_overlap_filter_are_semantic():

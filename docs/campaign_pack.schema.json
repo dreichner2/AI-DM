@@ -407,6 +407,35 @@
         "proper": {
           "description": "The name is a proper noun, so refusals read \"Excalibur is locked.\" rather than \"The Excalibur is locked.\". A name that starts with \"The\" is never given another article.",
           "type": "boolean"
+        },
+        "usableInCombat": {
+          "description": "The actions a hero can take on this object during a fight, on their own turn while their action is unspent; taking one spends the action. Every other action is refused in a fight with \"Not while the fight is on.\".",
+          "type": "array",
+          "maxItems": 11,
+          "items": {
+            "$ref": "#/$defs/objectAction"
+          },
+          "uniqueItems": true
+        },
+        "resolvesEncounter": {
+          "description": "When the named action succeeds, the encounter is completed with the outcome through the same path a combat ending uses (consequences, once-only rewards, objectives); its combat, if active, ends at once and its trigger never fires afterwards. The linter errors on an unknown encounter or an outcome the encounter does not allow.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/encounterResolution"
+          }
+        }
+      }
+    },
+    "encounterResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encounterId", "outcome"],
+      "properties": {
+        "encounterId": {
+          "$ref": "#/$defs/id"
+        },
+        "outcome": {
+          "enum": ["victory", "surrender", "negotiation", "objective_completion"]
         }
       }
     },
@@ -446,6 +475,58 @@
           "items": {
             "$ref": "#/$defs/questPredicate"
           }
+        }
+      }
+    },
+    "flagCondition": {
+      "description": "A flag predicate, or anyOf a list of them (holds when any one does).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/flagPredicate"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["anyOf"],
+          "properties": {
+            "anyOf": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "$ref": "#/$defs/flagPredicate"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "encounterAdjustment": {
+      "description": "Applied when the encounter's combat is created, before party scaling, while its flag holds. text is a line the narration must say.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "text"],
+      "properties": {
+        "when": {
+          "$ref": "#/$defs/flagPredicate"
+        },
+        "enemyId": {
+          "$ref": "#/$defs/id"
+        },
+        "hpMultiplier": {
+          "description": "Multiplies that enemy's hit points, together with the party scaling multiplier.",
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 1.5
+        },
+        "removeEnemyIds": {
+          "description": "Enemy groups that stay away; they are gone before the party's most enemies is applied.",
+          "$ref": "#/$defs/idList"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
         }
       }
     },
@@ -994,15 +1075,27 @@
           "type": "boolean"
         },
         "when": {
-          "description": "The trigger fires only while this flag holds.",
-          "$ref": "#/$defs/flagPredicate"
+          "description": "The trigger fires only while this flag condition holds.",
+          "$ref": "#/$defs/flagCondition"
         },
         "unless": {
-          "description": "The trigger does not fire while this flag holds.",
-          "$ref": "#/$defs/flagPredicate"
+          "description": "The trigger does not fire while this flag condition holds (any one, for anyOf).",
+          "$ref": "#/$defs/flagCondition"
+        },
+        "adjustments": {
+          "description": "What the party knows adjusts the fight: each adjustment whose flag holds when the combat is created weakens one enemy group or keeps groups away, and its text is narrated.",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/encounterAdjustment"
+          }
         },
         "scaling": {
           "description": "Counts and HP are authored for four player characters and scale down for a smaller party; false disables that.",
+          "type": "boolean"
+        },
+        "allowParley": {
+          "description": "Its enemies may negotiate, surrender, yield or retreat from the first round; otherwise only at half HP or less, once their side has lost a member, or from round 4 once hurt.",
           "type": "boolean"
         }
       }

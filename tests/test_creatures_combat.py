@@ -1101,7 +1101,8 @@ def test_intent_planner_goblin_flees_zombie_attacks_bandit_negotiates_and_wolf_h
 
     bandit = instantiate_creature(core_creature('bandit_thug'), instance_id='bandit_1')
     bandit['morale'] = 24
-    bandit_plan = plan_enemy_intents(_combat_with(bandit))
+    # An encounter that allows parley lets a bandit bargain from the first round.
+    bandit_plan = plan_enemy_intents({**_combat_with(bandit), 'flags': {'allowParley': True}})
 
     wolf = instantiate_creature(core_creature('wolf'), instance_id='wolf_1')
     combat = _combat_with(wolf)
@@ -1372,7 +1373,7 @@ def test_sentient_enemy_brain_uses_helper_contract_when_enabled(app, monkeypatch
     monkeypatch.setattr(enemy_brain_module, 'get_helper_provider', lambda task=None: FakeBrainProvider())
     bandit = instantiate_creature(core_creature('bandit_thug'), instance_id='bandit_1')
     combat = _combat_with(bandit)
-    combat['flags'] = {'combatDifficultyAI': {'forceSentientEnemyBrain': True}}
+    combat['flags'] = {'combatDifficultyAI': {'forceSentientEnemyBrain': True}, 'allowParley': True}
 
     with app.app_context():
         app.config['AIDM_SENTIENT_ENEMY_BRAIN_HELPER_IN_TESTS'] = True
@@ -1477,7 +1478,7 @@ def test_sentient_enemy_brain_rejects_executable_fields_and_falls_back(app, monk
     monkeypatch.setattr(enemy_brain_module, 'get_helper_provider', lambda task=None: FakeBrainProvider())
     bandit = instantiate_creature(core_creature('bandit_thug'), instance_id='bandit_1')
     combat = _combat_with(bandit)
-    combat['flags'] = {'combatDifficultyAI': {'forceSentientEnemyBrain': True}}
+    combat['flags'] = {'combatDifficultyAI': {'forceSentientEnemyBrain': True}, 'allowParley': True}
 
     with app.app_context():
         app.config['AIDM_SENTIENT_ENEMY_BRAIN_HELPER_IN_TESTS'] = True
@@ -1685,7 +1686,8 @@ def test_sentient_selector_respects_round_call_budget(app, monkeypatch):
                 'allowSentientEnemyBrain': True,
                 'forceSentientEnemyBrain': True,
                 'maxLlmCallsPerRound': 2,
-            }
+            },
+            'allowParley': True,
         },
     }
 
@@ -1877,7 +1879,10 @@ def test_parallel_enemy_intents_preserve_order_and_worker_app_context(app, monke
         'round': 1,
         'participants': [player_combat_participant(_player()), *enemies],
         'battlefield': {'environmentType': 'forest', 'lighting': 'bright', 'visibility': 'clear'},
-        'flags': {'combatDifficultyAI': {'allowBossTacticsHelper': False, 'allowSentientEnemyBrain': True, 'forceSentientEnemyBrain': True}},
+        'flags': {
+            'combatDifficultyAI': {'allowBossTacticsHelper': False, 'allowSentientEnemyBrain': True, 'forceSentientEnemyBrain': True},
+            'allowParley': True,
+        },
     }
     calls = []
     active = {'current': 0, 'max': 0}

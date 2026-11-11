@@ -42,7 +42,7 @@ from aidm_server.combat.reactions import REACTION_SOURCE
 from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant, player_combat_participant
 from aidm_server.spell_effects import active_repeat_attack, cannot_cast_reason, resolve_targeted_spell, spell_target_legality
-from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start, story_flag_allows
+from aidm_server.game_state.campaign_pack_encounters import combat_is_active, materialize_campaign_pack_combat_start, story_flag_allows
 from aidm_server.game_state.validation.inventory_validator import resolve_inventory_item_reference
 from aidm_server.game_state.quest_engine import quest_completion_blocker, quest_failure_blocker
 from aidm_server.commerce import (
@@ -60,7 +60,7 @@ from aidm_server.game_clock import (
     rest_block_reason,
     resolve_short_rest_hit_dice,
 )
-from aidm_server.interactables import interactable_actor_context, object_rolls, resolve_interactable_action
+from aidm_server.interactables import NOT_WHILE_FIGHTING, interactable_actor_context, object_rolls, resolve_interactable_action
 from aidm_server.price_list import normalize_price
 from aidm_server.item_effects import (
     ITEM_EFFECT_AUTHORITY,
@@ -842,6 +842,8 @@ def _validate_scene_item_pickup(
     actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
     if not actor:
         return _invalid(action, 'Actor not found.')
+    if combat_is_active(state):
+        return _invalid(action, NOT_WHILE_FIGHTING)
     requested_id = _text(_action_value(action, 'itemId', 'item_id'))
     requested_name = normalize_item_name(_action_value(action, 'itemName', 'item_name'))
     scene_items = _scene_items(state)
@@ -1134,6 +1136,8 @@ def _interactable_request(
     expected_revision = _action_value(action, 'expectedRevision', 'expected_revision')
     if expected_revision is not None:
         request['expectedRevision'] = max(0, int_or_default(expected_revision, default=0))
+    if _action_value(action, 'takeTime', 'take_time') is True:
+        request['takeTime'] = True
     return request
 
 
@@ -1183,6 +1187,7 @@ def _validate_interactable_action(
             if request.get('expectedRevision') is not None
             else {}
         ),
+        **({'takeTime': True} if request.get('takeTime') else {}),
         'event': deepcopy(event) if isinstance(event, dict) else None,
         'resolutionAuthority': 'interactable_rules_engine',
         'reason': _text(resolved.get('message')),

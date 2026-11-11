@@ -29,6 +29,10 @@ PLAYER_COMBAT_PARTICIPANT_CHANGE_TYPES = {
     'combat.condition.remove',
     'combat.ability.mark_used',
 }
+# Words that start a clause about someone or something other than the hero last named.
+OTHER_SUBJECT_WORDS = frozenset({'it', 'he', 'she', 'they', 'which', 'who', 'the', 'a', 'an', 'its', 'his', 'her', 'their'})
+# Applied changes that mean the engine already resolved the turn's damage.
+ENGINE_RESOLVED_CHANGE_TYPES = frozenset({'combat.end', 'combat.participant.update', 'health.damage', 'health.heal'})
 SMALL_NUMBER_WORDS = {
     'zero': 0,
     'one': 1,
@@ -690,6 +694,85 @@ def _named_heal_target_actor_id(sentence: str, state_before_dm: dict[str, Any]) 
             if target_actor_id:
                 return target_actor_id
     return _named_player_actor_id(sentence, state_before_dm)
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r'[a-z0-9]+', re.sub(r"['’]s\b", '', text.lower()))
+
+
+def _narrated_damage_subject(subject: str, state_before_dm: dict[str, Any], actor_id: str) -> str | None:
+    """The hero a narrated "takes N damage" is about: ``you`` (or the hero's name) when it is the
+    last subject named before the verb; None when the clause is about anyone or anything else."""
+
+    words = _words(subject)
+    last_actor = max((index for index, word in enumerate(words) if word in {'you', 'your'}), default=-1)
+    last_other = max((index for index, word in enumerate(words) if word in OTHER_SUBJECT_WORDS), default=-1)
+    for actor in _player_actors(state_before_dm):
+        for label in _actor_labels(actor):
+            label_words = _words(label)
+            for index in range(len(words) - len(label_words) + 1):
+                if label_words and words[index:index + len(label_words)] == label_words:
+                    end = index + len(label_words) - 1
+                    if str(actor.get('id') or '') == actor_id:
+                        last_actor = max(last_actor, end)
+                    else:
+                        last_other = max(last_other, end)
+    return actor_id if last_actor > last_other else None
+
+
+def _engine_resolved_turn(already_applied_changes: list[dict[str, Any]]) -> bool:
+    """The rules engine already resolved this turn's results: a spell, an attack, an object's effects, a fight's end."""
+
+    for change in already_applied_changes:
+        if not isinstance(change, dict):
+            continue
+        change_type = str(change.get('type') or '')
+        event = change.get('event') if isinstance(change.get('event'), dict) else {}
+        if (
+            change_type in ENGINE_RESOLVED_CHANGE_TYPES
+            or (change_type == 'spell.cast' and change.get('spellResolution'))
+            or (change_type == 'scene.interactable.action' and event.get('effectResults'))
+        ):
+            return True
+    return False
+
+
+def _without_unsafe_narrated_damage(
+    state_before_dm: dict[str, Any],
+    changes: list[dict[str, Any]],
+    *,
+    already_applied_changes: list[dict[str, Any]],
+    turn_id: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Narration creates damage only for a player character it names, and never once the engine resolved the turn.
+
+    A damage change for anyone else is dropped (and logged), never pointed at the acting hero.
+    """
+
+    engine_resolved = _engine_resolved_turn(already_applied_changes)
+    hero_ids = set(_player_actor_ids(state_before_dm))
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for change in changes:
+        if (
+            isinstance(change, dict)
+            and change.get('type') == 'health.damage'
+            and (engine_resolved or str(change.get('actorId') or '') not in hero_ids)
+        ):
+            dropped.append(change)
+            continue
+        kept.append(change)
+    if dropped:
+        telemetry_event(
+            'state_pipeline.post_dm.narrated_damage_dropped',
+            payload={
+                'turn_id': turn_id,
+                'engine_resolved': engine_resolved,
+                'dropped': [{'actorId': change.get('actorId'), 'amount': change.get('amount')} for change in dropped],
+            },
+            severity='warning',
+        )
+    return kept, len(dropped)
 
 
 def _heuristic_heal_changes(
@@ -2447,6 +2530,9 @@ def _heuristic_extract(
         sentence = _sentence_around(text, match.start(), match.end())
         if _sentence_describes_enemy_damage(sentence, state_before_dm, amount):
             continue
+        sentence_start = max(text.rfind(mark, 0, match.start()) for mark in '.!?\n') + 1
+        if _narrated_damage_subject(text[sentence_start:match.start()], state_before_dm, actor_id) != actor_id:
+            continue
         _add_change(
             changes,
             turn_id=turn_id,
@@ -2982,9 +3068,17 @@ def extract_post_dm_outcomes(
         resolved_changes, conflict_resolved = _resolve_combat_scene_conflicts(normalized.get('proposedChanges') or [])
         if conflict_resolved:
             normalized['proposedChanges'] = resolved_changes
+        normalized['proposedChanges'], dropped_damage_count = _without_unsafe_narrated_damage(
+            state_before_dm,
+            normalized.get('proposedChanges') or [],
+            already_applied_changes=already_applied_changes,
+            turn_id=turn_id,
+        )
         notes = list(normalized.get('notes') or [])
         if 'helper_post_dm' not in notes:
             notes.append('helper_post_dm')
+        if dropped_damage_count and 'dropped_narrated_damage' not in notes:
+            notes.append('dropped_narrated_damage')
         if scene_changes and 'heuristic_scene_danger' not in notes:
             notes.append('heuristic_scene_danger')
         if active_npc_changes and 'heuristic_active_npcs' not in notes:
@@ -3034,6 +3128,14 @@ def extract_post_dm_outcomes(
         fallback['proposedChanges'] = [*fallback['proposedChanges'], *story_flag_changes]
         fallback['notes'] = [*fallback['notes'], 'heuristic_story_flags']
     normalized = normalize_post_extraction(fallback, fallback_actor_id=actor_id)
+    normalized['proposedChanges'], dropped_damage_count = _without_unsafe_narrated_damage(
+        state_before_dm,
+        normalized['proposedChanges'],
+        already_applied_changes=already_applied_changes,
+        turn_id=turn_id,
+    )
+    if dropped_damage_count:
+        normalized['notes'] = [*normalized['notes'], 'dropped_narrated_damage']
     if fallback.get('authorizedCrossActorChangeIds'):
         normalized['authorizedCrossActorChangeIds'] = fallback.get('authorizedCrossActorChangeIds')
     helper_debug['fallbackRan'] = True

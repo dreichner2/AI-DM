@@ -19,7 +19,7 @@ from aidm_server.combat.pipeline import (
     record_combat_debug_from_prepare,
     sync_combat_encounter_record,
 )
-from aidm_server.combat.defeat import enemies_phrase, party_defeat_recovery, party_is_beaten
+from aidm_server.combat.defeat import enemies_phrase, party_defeat_recovery, party_is_beaten, party_wake
 from aidm_server.combat.state import (
     combat_summary_for_dm,
     combat_turn_context,
@@ -48,7 +48,14 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     settle_engine_controlled_turns,
     without_trusted_damage_overlaps,
 )
-from aidm_server.game_state.orchestration.narration_facts import enemy_names, next_actor_line, object_facts, plain_results
+from aidm_server.game_state.orchestration.narration_facts import (
+    TAKE_TIME_LINE,
+    enemy_names,
+    fight_start,
+    next_actor_line,
+    object_facts,
+    plain_results,
+)
 from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis
 from aidm_server.game_state.models import (
     compact_state_for_extraction,
@@ -367,6 +374,61 @@ def _gate_pre_dm_combat_spells(
                         f"Casting {change.get('spellName') or 'a spell'} consumed the combat "
                         f"{'bonus action' if bonus_action else 'action'}."
                     ),
+                    'visible': False,
+                },
+            ]
+        )
+    return allowed, rejected
+
+
+def _gate_pre_dm_combat_object_actions(
+    *,
+    state: dict[str, Any],
+    changes: list[dict[str, Any]],
+    actor_id: str,
+    turn_id: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """In a fight, an object action (one of the object's ``usableInCombat``) is taken
+    on the hero's own turn and spends the action."""
+
+    working_state = deepcopy(state)
+    allowed: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for change in changes:
+        scene = working_state.get('currentScene') if isinstance(working_state.get('currentScene'), dict) else {}
+        combat = normalize_combat_state(working_state.get('combat'), scene)
+        if (
+            str(change.get('type') or '').strip() != 'scene.interactable.action'
+            or str(combat.get('status') or '').strip().lower() not in {'starting', 'active'}
+        ):
+            allowed.append(change)
+            continue
+        current_actor = combat_turn_context(combat).get('currentActor')
+        current_actor = current_actor if isinstance(current_actor, dict) else {}
+        if str(change.get('actorId') or '').strip() != actor_id or str(current_actor.get('id') or '') != actor_id:
+            rejected.append({'change': change, 'reason': f"{str(current_actor.get('name') or 'Another combatant').strip()} is acting now."})
+            continue
+        consumed, reason, economy = consume_combat_turn_economy(
+            combat,
+            actor_id=actor_id,
+            action_id=change.get('id'),
+            action_cost=1,
+        )
+        if not consumed:
+            rejected.append({'change': change, 'reason': reason or "This turn's action is already spent."})
+            continue
+        working_state['combat'] = combat
+        allowed.extend(
+            [
+                change,
+                {
+                    'id': stable_change_id(turn_id, 'combat.object.action', actor_id, change.get('id')),
+                    'turnId': turn_id,
+                    'type': 'combat.update',
+                    'round': combat.get('round') or 1,
+                    'turnIndex': combat.get('turnIndex'),
+                    'flags': {'turnEconomy': deepcopy(economy)},
+                    'reason': 'Acting on an object consumed the combat action.',
                     'visible': False,
                 },
             ]
@@ -1557,18 +1619,19 @@ def _talk_facts(*, session_obj: Session, turn: DmTurn, state: dict[str, Any], np
     }
 
 
-def _foreseen_party_defeat(
+def _foreseen_fight_end(
     *,
     state: dict[str, Any],
     dm_context: dict[str, Any],
     actor_id: str,
     turn_id: int,
     already_applied: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """The party defeat the engine-resolved enemy turns in ``dm_context`` will bring once applied."""
+) -> tuple[str | None, dict[str, Any] | None]:
+    """How the engine-resolved enemy turns in ``dm_context`` end the fight once applied (its end reason),
+    and the party defeat that brings, if it does."""
 
     if not _combat_is_running(state):
-        return None
+        return None, None
     trusted = derive_trusted_damage_changes(
         state=state,
         dm_context_packet=dm_context,
@@ -1577,13 +1640,13 @@ def _foreseen_party_defeat(
         already_applied_changes=already_applied,
     ).all_changes
     if not trusted:
-        return None
+        return None, None
     projected = apply_state_changes(
         state, validated_changes_for_application(validate_state_changes(state=state, changes=trusted))
     )['nextState']
     reason = check_combat_end(projected.get('combat') if isinstance(projected.get('combat'), dict) else {})
     if reason != 'objective_failed':
-        return None
+        return reason, None
     ended = apply_state_changes(
         projected,
         validated_changes_for_application(
@@ -1591,9 +1654,9 @@ def _foreseen_party_defeat(
         ),
     )['nextState']
     if not party_is_beaten(ended):
-        return None
+        return reason, None
     phrase, several = enemies_phrase(state)
-    return {'enemies': phrase, 'plural': several}
+    return reason, {'enemies': phrase, 'plural': several}
 
 
 def _narration_packet(
@@ -1643,6 +1706,9 @@ def _narration_packet(
         packet['freeText'] = {'kind': free_text.kind, 'more': free_text.more}
     elif free and not declared_actions and not talk_npc and not turn.requires_roll:
         packet['freeText'] = {'kind': None, 'unmatched': True, 'more': False}
+    started = fight_start(state_after, applied_changes)
+    if started:
+        packet['fightStart'] = started
     line = next_actor_line(state_after, actor_id=actor_id, turn_ends=turn_ends)
     if line:
         packet['nextActorLine'] = line
@@ -1752,6 +1818,8 @@ def pre_dm_pipeline(
     )
     recent_timeline = recent_timeline_for_session(session_obj.session_id, limit=5)
     actor_id = display_actor_id(player.player_id)
+    # Heroes left down outside a fight come to before anything else happens.
+    wake = party_wake(state, turn_id=turn.turn_id)
     # Words that clearly name one action take exactly the path of that action's button.
     free_text = (
         free_text_action(state, actor_id=actor_id, player_id=player.player_id, message=player_message)
@@ -1810,16 +1878,23 @@ def pre_dm_pipeline(
     ]
     safe_immediate_candidates = [change for change in pre_immediate_changes if _safe_pre_dm_immediate_change(change)]
     pending_immediate_changes = [change for change in pre_immediate_changes if not _safe_pre_dm_immediate_change(change)]
-    safe_immediate_changes, combat_spell_rejections = _gate_pre_dm_combat_spells(
+    safe_immediate_changes, combat_gate_rejections = _gate_pre_dm_combat_spells(
         state=state,
         changes=safe_immediate_candidates,
         actor_id=actor_id,
         turn_id=turn.turn_id,
     )
-    pre_validation = _with_rejected_pre_dm_changes(pre_validation, combat_spell_rejections)
+    safe_immediate_changes, combat_object_rejections = _gate_pre_dm_combat_object_actions(
+        state=state,
+        changes=safe_immediate_changes,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+    )
+    combat_gate_rejections = [*combat_gate_rejections, *combat_object_rejections]
+    pre_validation = _with_rejected_pre_dm_changes(pre_validation, combat_gate_rejections)
     immediate_validation = _merge_validation_results(
         validate_state_changes(state=state, changes=safe_immediate_changes, expected_actor_id=actor_id),
-        {'accepted': [], 'modified': [], 'rejected': combat_spell_rejections},
+        {'accepted': [], 'modified': [], 'rejected': combat_gate_rejections},
     )
     pending_immediate_validation = validate_state_changes(state=state, changes=pending_immediate_changes, expected_actor_id=actor_id)
     immediate_changes = validated_changes_for_application(immediate_validation)
@@ -1956,8 +2031,7 @@ def pre_dm_pipeline(
                     combat_context_for_dm = combat_summary_for_dm(state_before_dm['combat'])
                 combat_validation = _merge_validation_results(combat_validation, engine_end_validation)
     defeat_recovery = party_defeat_recovery(state_before_dm, turn_id=turn.turn_id)
-    if defeat_recovery:
-        applied_combat = [*applied_combat, defeat_recovery]
+    applied_combat = [*([wake] if wake else []), *applied_combat, *([defeat_recovery] if defeat_recovery else [])]
     finalize_combat_prepare(
         session_obj=session_obj,
         campaign=campaign,
@@ -2019,18 +2093,31 @@ def pre_dm_pipeline(
         dm_context['invalidActions'].append(
             {'status': 'invalid', 'summary': player_message, 'type': 'scene.item.pickup', 'reason': free_text.refusal}
         )
+    started = dm_context['narration'].get('fightStart') or {}
+    if started.get('setup'):
+        dm_context['dmInstructions'].append(
+            f'The fight begins. Before the first blows, convey this read-aloud text: "{started["setup"]}"'
+        )
+    for line in started.get('adjustments') or []:
+        dm_context['dmInstructions'].append(f'This line must appear in the narration before the first blows: "{line}"')
+    if any(fact.get('takeTime') is True for fact in dm_context['narration'].get('objects') or []):
+        dm_context['dmInstructions'].append(f'Before telling the result of the check, say exactly: "{TAKE_TIME_LINE}"')
     if free_text is not None and free_text.more:
         dm_context['dmInstructions'].append(
             'The player named more than one action and only the first was taken: end the reply with '
             '"One thing at a time — the rest is still yours to do."'
         )
-    foreseen_defeat = None if defeat_recovery else _foreseen_party_defeat(
+    foreseen_end, foreseen_defeat = (None, None) if defeat_recovery else _foreseen_fight_end(
         state=state_before_dm,
         dm_context=dm_context,
         actor_id=actor_id,
         turn_id=turn.turn_id,
         already_applied=[*applied_immediate, *applied_combat],
     )
+    if foreseen_end:
+        # A fight that ends this turn hands no turn on.
+        dm_context['narration']['fightEnds'] = foreseen_end
+        dm_context['narration'].pop('nextActorLine', None)
     if foreseen_defeat:
         dm_context['narration']['partyDefeat'] = foreseen_defeat
         dm_context['narration'].pop('nextActorLine', None)
@@ -2095,6 +2182,29 @@ def pre_dm_pipeline(
         'stateLog': state_log,
         'clarificationRequests': pre_validation.get('clarificationRequests') or [],
     }
+
+
+def _without_authored_text(dm_response_text: str, dm_context_packet: dict[str, Any]) -> str:
+    """The narration without the pack's authored passages it was given to tell (an object's action
+    text and description, a fight's setup and adjustment lines), so wording such as "You strike the
+    bell" is never read as a new fight."""
+
+    narration = dm_context_packet.get('narration') if isinstance(dm_context_packet.get('narration'), dict) else {}
+    started = narration.get('fightStart') if isinstance(narration.get('fightStart'), dict) else {}
+    passages = [
+        *(
+            str(fact.get(key) or '').strip()
+            for fact in narration.get('objects') or []
+            if isinstance(fact, dict)
+            for key in ('actionText', 'description')
+        ),
+        str(started.get('setup') or '').strip(),
+        *(str(line or '').strip() for line in started.get('adjustments') or []),
+    ]
+    text = str(dm_response_text or '')
+    for passage in sorted({passage for passage in passages if passage}, key=len, reverse=True):
+        text = text.replace(passage, '')
+    return text
 
 
 def _reload_post_dm_orm(token: dict[str, Any]) -> tuple[DmTurn, Session, Campaign, Player]:
@@ -2261,9 +2371,15 @@ def post_dm_pipeline(
             post_validation=post_validation,
             post_extraction=post_extraction,
         )
-        defeat_recovery = party_defeat_recovery(final_state, turn_id=turn.turn_id)
-        if defeat_recovery:
-            applied_post = [*applied_post, defeat_recovery]
+        recovered = [
+            change
+            for change in (
+                party_defeat_recovery(final_state, turn_id=turn.turn_id),
+                party_wake(final_state, turn_id=turn.turn_id),
+            )
+            if change
+        ]
+        applied_post = [*applied_post, *recovered]
         if applied_post:
             persist_state_to_database(session_obj=session_obj, state=final_state, players_by_id=players_by_id)
             sync_combat_encounter_record(
@@ -2282,12 +2398,17 @@ def post_dm_pipeline(
                 before_helper_call()
                 helper_session_released = True
 
+        # Authored read-aloud text the narration carries is content, not a claim of new state.
+        narrated_claims = _without_authored_text(
+            dm_response_text,
+            pipeline.get('dmContextPacket') if isinstance(pipeline.get('dmContextPacket'), dict) else {},
+        )
         post_extraction = extract_post_dm_outcomes(
             state_before_dm=compact_state_for_extraction(state_before_dm),
             player_message=turn.player_input,
             validated_actions=pipeline.get('preDmValidation') if isinstance(pipeline.get('preDmValidation'), dict) else {},
             already_applied_changes=already_applied,
-            dm_response=dm_response_text,
+            dm_response=narrated_claims,
             recent_timeline=recent_timeline,
             actor_id=actor_id,
             turn_id=turn.turn_id,
@@ -2309,7 +2430,7 @@ def post_dm_pipeline(
             campaign=campaign,
             turn=turn,
             player_message=turn.player_input or '',
-            dm_response=dm_response_text,
+            dm_response=narrated_claims,
             workspace_id=campaign.workspace_id,
             before_intent_provider_call=(
                 _before_combat_provider_call if before_helper_call else None
@@ -2564,9 +2685,15 @@ def post_dm_pipeline(
             post_validation=post_validation,
             post_extraction=post_extraction,
         )
-        defeat_recovery = party_defeat_recovery(final_state, turn_id=turn.turn_id)
-        if defeat_recovery:
-            applied_post = [*applied_post, defeat_recovery]
+        recovered = [
+            change
+            for change in (
+                party_defeat_recovery(final_state, turn_id=turn.turn_id),
+                party_wake(final_state, turn_id=turn.turn_id),
+            )
+            if change
+        ]
+        applied_post = [*applied_post, *recovered]
         finalized_encounter = finalize_combat_prepare(
             session_obj=session_obj,
             campaign=campaign,

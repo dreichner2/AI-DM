@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from fractions import Fraction
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +19,10 @@ import requests
 
 from aidm_server.combat.legal_actions import legal_combat_actions_for_player
 from aidm_server.database import db
-from aidm_server.game_state.campaign_pack_encounters import materialize_campaign_pack_combat_start
+from aidm_server.combat.state import instantiate_creature
+from aidm_server.game_state.campaign_pack_encounters import PARTY_SCALING, materialize_campaign_pack_combat_start
 from aidm_server.interactables import available_actions_for_target, interactable_actor_context
-from aidm_server.models import DmTurn, Player, Session, safe_json_loads
+from aidm_server.models import DmTurn, Player, Session, SessionLogEntry, safe_json_loads
 from aidm_server.services.campaign_pack_linter import lint_campaign_pack_file
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 from aidm_server.services.pregen_characters import PREGENERATED_CHARACTER_PRESETS
@@ -43,6 +46,10 @@ ENDING = {
     'title': FINAL_CHECKPOINT['playerTitle'],
     'summary': FINAL_CHECKPOINT['playerSummary'],
 }
+FINAL_BINDING = next(encounter for encounter in PACK['encounters'] if encounter['id'] == 'enc_final_binding')
+SCENE_OBJECTS = {record['id']: record for location in PACK['locations'] for record in location.get('interactables', [])}
+ROAD_STONE = SCENE_OBJECTS['valley_last_road_stone']
+BANNER_STONE_OATH = SCENE_OBJECTS['cairn_banner_stone']['actionText']['use']
 
 
 @dataclass
@@ -145,6 +152,24 @@ class Table:
         assert any(event['name'] == 'dm_response_end' for event in received), message
         return self._changed()
 
+    def refused(self, target: str, action: str, name: str) -> list[str]:
+        """The refusals a typed object action draws (it changes nothing)."""
+
+        self.turn += 1
+        message = f'Arden Vale attempts to {action} {name}.'
+        self.socket.emit(
+            'send_message',
+            {
+                'session_id': self.ids['session_id'],
+                'campaign_id': self.ids['campaign_id'],
+                'player_id': self.ids['player_id'],
+                'message': message,
+                'client_message_id': f'flagship-{self.turn}',
+                'action_intent': {'kind': 'object', 'source': 'scene_panel', 'object': {'id': target, 'action': action}, 'text': message},
+            },
+        )
+        return [event['args'][0]['error'] for event in self.socket.get_received() if event['name'] == 'error' and event['args']]
+
     def act(self, target: str, action: str, name: str) -> Change:
         # The client's own wording; the object rolls its own check on the server.
         intent = {'kind': 'object', 'source': 'scene_panel', 'object': {'id': target, 'action': action}}
@@ -183,19 +208,16 @@ class Table:
         return self._changed()
 
     def fight(self) -> Change:
-        """Close in and swing with the HUD's own actions until the fight ends."""
+        """Swing at the first enemy the HUD's attack can reach (closing in first when it must) until the fight ends."""
 
         before = self.last
-        for _round in range(6):
-            snapshot = self.snapshot()
-            if snapshot['combat']['status'] != 'active':
+        for _round in range(12):
+            if self.snapshot()['combat']['status'] != 'active':
                 break
-            enemy = next(participant for participant in snapshot['combat']['participants'] if participant['team'] == 'enemy')
-            if not self._hud_action('combat.attack.'):
-                self._hud('Arden Vale closes in.', 'combat.advance', enemy['id'])
             attack = self._hud_action('combat.attack.')
-            if attack:
-                self._hud('Arden Vale attacks.', attack['id'], enemy['id'])
+            target = next((target for target in (attack or {}).get('targets') or [] if target['available']), None)
+            if target:
+                self._hud('Arden Vale attacks.', attack['id'], target['id'])
             if self.snapshot()['combat']['status'] == 'active':
                 self._hud('Arden Vale ends the turn.', 'combat.end_turn')
         return self._changed(since=before)
@@ -208,6 +230,33 @@ class Table:
     def _hud(self, message: str, action_id: str, target_id: str | None = None) -> None:
         combat = {'action_id': action_id, **({'target_id': target_id} if target_id else {})}
         self.send(message, {'kind': 'combat', 'source': 'combat_hud', 'combat': combat})
+
+    def narration(self) -> str:
+        """The last Dungeon Master reply, as the log keeps it."""
+
+        with self.app.app_context():
+            entry = (
+                SessionLogEntry.query.filter_by(session_id=self.ids['session_id'], entry_type='dm')
+                .filter(SessionLogEntry.message.startswith('DM: '))
+                .order_by(SessionLogEntry.id.desc())
+                .first()
+            )
+            return entry.message
+
+    def pipeline(self) -> dict:
+        """The last turn's state pipeline record."""
+
+        with self.app.app_context():
+            turn = DmTurn.query.filter_by(session_id=self.ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
+            return safe_json_loads(turn.metadata_json, {})['state_pipeline']
+
+    def operator(self, changes: list[dict]) -> Change:
+        """Set the table up through the operator state API."""
+
+        response = self.client.post(f"/api/sessions/{self.ids['session_id']}/combat/apply-state-changes", json={'changes': changes})
+        assert response.status_code == 200, response.get_json()
+        assert response.get_json()['validation']['rejected'] == []
+        return self._changed()
 
     def offers(self, target_id: str) -> dict[str, bool]:
         snapshot = self.snapshot()
@@ -400,13 +449,15 @@ def test_the_careful_route_renews_the_ward(table):
 
     road = table.travel('loc_old_north_road', 'The Old North Road')
     assert road.encounter == 'enc_pale_lantern_detour'
-    assert _enemies(road.snapshot) == ['enemy_pale_lanterns', 'enemy_wardbound_beasts']
+    # A lone hero faces one enemy: the first group's.
+    assert _enemies(road.snapshot) == ['enemy_pale_lanterns']
     assert road.places == {
         'loc_old_north_road': 'visited',
         'loc_waystation_scratched_names': 'discovered',
         'loc_ridge_and_culvert_paths': 'discovered',
     }
     assert road.snapshot['currentScene']['restPolicy'] == 'risky'
+    # The lantern's lure charms the hero for good under these seeded rolls, so the operator ends this fight.
     lanterns = table.end_combat('all_enemies_defeated')
     assert (lanterns.gp, lanterns.xp) == (20, 150)
     assert table.end_combat('all_enemies_defeated').gp == 0
@@ -430,7 +481,8 @@ def test_the_careful_route_renews_the_ward(table):
     assert wall.objectives == {'obj_recover_erased_names': 'completed'}
     assert wall.encounter == 'enc_waystation_ambush'
     assert _active_checkpoint(wall.snapshot) == 'cp_04_roadwarden_cairns'
-    ambush = table.end_combat('all_enemies_defeated')
+    ambush = table.fight()
+    assert ambush.snapshot['combat']['status'] == 'ended'
     assert ambush.flags == {'valley_route_known': True}
     assert ambush.places == {'loc_valley_last_road_stone': 'discovered'}
     assert ambush.clues == {'clue_final_valley_map'}
@@ -461,14 +513,22 @@ def test_the_careful_route_renews_the_ward(table):
     assert (hammer.gp, hammer.items["Mason's Hammer"]) == (-8, 1)
     assert 'masons_hammer' in {item['id'] for item in _hero(hammer.snapshot)['inventory']['items']}
 
+    # The party learned the oath at the cold hearth, so the nameless dead do not rise against it.
     cairns = table.travel('loc_cairns_roadwardens', 'Cairns of the Roadwardens')
     assert cairns.snapshot['flags']['roadwardens_appeased'] is False
-    assert cairns.encounter == 'enc_roadwarden_judgment'
-    assert _enemies(cairns.snapshot) == ['enemy_name_eaten_roadwardens']
-    judgment = table.end_combat('negotiated_resolution')
+    assert (cairns.encounter, cairns.snapshot['combat']['status'] in {'none', 'ended'}) == (None, True)
+    assert _offered(_story_view(cairns.snapshot), 'cairn_banner_stone') == [
+        ('use', 'Speak the names at the banner-stone', True, False)
+    ]
+    judgment = table.act('cairn_banner_stone', 'use', 'Banner-Stone')
     assert judgment.flags == {'roadwardens_appeased': True}
     assert judgment.objectives == {'obj_confront_roadwardens': 'completed'}
     assert (judgment.gp, judgment.xp) == (60, 450)
+    assert BANNER_STONE_OATH in table.narration()
+    assert _rewards(judgment.snapshot).count(('enc_roadwarden_judgment', 'negotiation')) == 1
+    again = table.act('cairn_banner_stone', 'use', 'Banner-Stone')
+    assert (again.gp, again.xp, again.flags, again.encounter) == (0, 0, {}, None)
+    assert _rewards(again.snapshot).count(('enc_roadwarden_judgment', 'negotiation')) == 1
 
     valley = table.travel('loc_valley_last_road_stone', 'Valley of the Last Road-Stone')
     assert valley.objectives == {'obj_reach_final_valley': 'completed'}
@@ -480,13 +540,25 @@ def test_the_careful_route_renews_the_ward(table):
 
     binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
     assert binding.encounter == 'enc_final_binding'
-    # A lone hero faces at most two: the last groups (the roadwarden and the Marshal) stay away.
-    assert _enemies(binding.snapshot) == ['enemy_ashmarked_cutthroats', 'enemy_cinder_scribe']
-    assert [group['enemyId'] for group in binding.snapshot['combat']['flags']['partyScaling']['droppedGroups']] == [
-        'enemy_name_eaten_roadwardens',
-        'enemy_hollow_marshal',
+    # What the party knows: the appeased Roadwardens stay away and the Scribe's true name weakens him.
+    scaling = binding.snapshot['combat']['flags']['partyScaling']
+    assert [adjustment['text'] for adjustment in scaling['adjustments']] == [
+        adjustment['text'] for adjustment in FINAL_BINDING['adjustments']
     ]
-    victory = table.end_combat('all_enemies_defeated')
+    assert 'enemy_name_eaten_roadwardens' not in [group['enemyId'] for group in [*scaling['groups'], *scaling['droppedGroups']]]
+    assert 'enemy_name_eaten_roadwardens' not in _enemies(binding.snapshot)
+    scribe = next(participant for participant in binding.snapshot['combat']['participants'] if participant.get('campaignPackEnemyId') == 'enemy_cinder_scribe')
+    authored_hp = instantiate_creature(next(enemy for enemy in PACK['enemies'] if enemy['id'] == 'enemy_cinder_scribe'), instance_id='scribe', team='enemy')['hp']['max']
+    assert scribe['hp']['max'] == math.ceil(Fraction(authored_hp) * PARTY_SCALING[1][0] * Fraction(3, 4))
+    narration = table.narration()
+    assert all(adjustment['text'] in narration for adjustment in FINAL_BINDING['adjustments'])
+    assert narration.index(FINAL_BINDING['setup']) < narration.index(FINAL_BINDING['adjustments'][0]['text'])
+    # A narrating model is told the same lines as ones it must convey.
+    instructions = '\n'.join(table.pipeline()['dmContextPacket']['dmInstructions'])
+    assert FINAL_BINDING['setup'] in instructions
+    assert all(adjustment['text'] in instructions for adjustment in FINAL_BINDING['adjustments'])
+    victory = table.fight()
+    assert victory.snapshot['combat']['status'] == 'ended'
     assert victory.flags == {'cinder_scribe_resolved': True}
     assert victory.clues == {'clue_binding_quill'}
     assert (victory.gp, victory.xp, victory.items['Ash-Ink Binding Quill']) == (150, 1100, 1)
@@ -495,6 +567,7 @@ def test_the_careful_route_renews_the_ward(table):
     }
 
     renewal = table.act('valley_last_road_stone', 'use', 'The Last Road-Stone')
+    assert ROAD_STONE['actionText']['use'] in table.narration()
     assert renewal.flags == {'ward_renewed': True, 'travelers_freed': True, 'quest_road_complete': True}
     assert renewal.objectives == {'obj_decide_ward_fate': 'completed'}
     assert _quest_status(renewal.snapshot) == 'completed'
@@ -520,6 +593,64 @@ def test_the_careful_route_renews_the_ward(table):
         'Ash-Ink Binding Quill',
         "Roadwarden's Token",
     }
+
+
+def test_without_the_oath_the_dead_rise_and_the_banner_stone_stays_silent(table):
+    table.travel('loc_old_north_road', 'The Old North Road')
+    table.end_combat('all_enemies_defeated')
+    table.travel('loc_waystation_scratched_names', 'Waystation of Scratched Names')
+    assert table.act('ws_memorial_wall', 'search', 'Memorial Wall').encounter == 'enc_waystation_ambush'
+    table.end_combat('all_enemies_defeated')
+
+    cairns = table.travel('loc_cairns_roadwardens', 'Cairns of the Roadwardens')
+
+    assert cairns.snapshot['flags']['oath_learned'] is False
+    assert (cairns.encounter, cairns.snapshot['combat']['status']) == ('enc_roadwarden_judgment', 'active')
+    stone = next(entry for entry in _story_view(cairns.snapshot)['currentScene']['interactables'] if entry['id'] == 'cairn_banner_stone')
+    assert stone['offeredActions'] == [
+        {
+            'action': 'use',
+            'label': 'Speak the names at the banner-stone',
+            'authored': True,
+            'legal': False,
+            'done': False,
+            'reason': "You don't know enough to do that yet.",
+        }
+    ]
+    assert table.refused('cairn_banner_stone', 'use', 'Banner-Stone') == ["You don't know enough to do that yet."]
+    after = table.snapshot()
+    assert (after['flags']['roadwardens_appeased'], after['combat']['status']) == (False, 'active')
+    assert ('enc_roadwarden_judgment', 'negotiation') not in _rewards(after)
+
+
+@pytest.mark.parametrize('action', ['use', 'break', 'lock', 'trigger'])
+def test_each_ending_is_told_in_the_road_stones_own_words(table, action):
+    hero_id = _hero(table.last)['id']
+    table.operator(
+        [
+            *({'type': 'flag.set', 'flagKey': key, 'flagValue': True} for key in ('cinder_scribe_resolved', 'oath_learned', 'memorial_names_copied')),
+            {
+                'type': 'inventory.add',
+                'actorId': hero_id,
+                'itemName': 'Pale Road-Stone Fragment',
+                'item': {'id': 'road_stone_fragment', 'name': 'Pale Road-Stone Fragment', 'quantity': 1},
+                'quantity': 1,
+            },
+            {
+                'type': 'inventory.add',
+                'actorId': hero_id,
+                'itemName': "Mason's Hammer",
+                'item': {'id': 'masons_hammer', 'name': "Mason's Hammer", 'quantity': 1, 'type': 'tool', 'tags': ['tool']},
+                'quantity': 1,
+            },
+            {'type': 'location.discover', 'locationId': 'loc_valley_last_road_stone'},
+            {'type': 'scene.move_location', 'locationId': 'loc_valley_last_road_stone', 'name': 'Valley of the Last Road-Stone'},
+        ]
+    )
+
+    table.act('valley_last_road_stone', action, 'The Last Road-Stone')
+
+    assert ROAD_STONE['actionText'][action] in table.narration()
 
 
 def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
@@ -553,7 +684,8 @@ def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
 
     binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
     assert binding.encounter == 'enc_final_binding'
-    victory = table.end_combat('all_enemies_defeated')
+    victory = table.fight()
+    assert victory.snapshot['combat']['status'] == 'ended'
     assert victory.flags == {'cinder_scribe_resolved': True}
     assert victory.clues == {'clue_binding_quill'}
     assert table.offers('valley_last_road_stone') == {
@@ -648,6 +780,7 @@ def test_one_search_opens_the_locked_strongbox_when_the_hero_holds_its_key(table
     table.act('inn_drivers_bench', 'search', "Driver's Bench")
     table.take('caravan_strongbox_key', 'Caravan Strongbox Key')
     revealed = _story_view(table.act('inn_lead_wagon', 'search', 'Lead Wagon').snapshot)
+    assert 'You uncover the Wagon Strongbox.' in table.narration()
 
     assert _offered(revealed, 'inn_wagon_strongbox') == [
         ('search', 'Search the strongbox', True, False),

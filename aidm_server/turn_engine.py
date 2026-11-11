@@ -38,6 +38,9 @@ from aidm_server.game_state.change_types import (
     SNAPSHOT_REFRESH_CHANGE_TYPES,
     WORLD_STATE_CHANGE_TYPES,
 )
+from aidm_server.game_state.models import display_actor_id
+from aidm_server.interactables import NOT_WHILE_FIGHTING
+from aidm_server.game_state.orchestration.combat_resolution import player_attack_target
 from aidm_server.game_state.orchestration.story_beats import record_turn_story_beats
 from aidm_server.game_state.orchestration.turn_pipeline import (
     augment_rules_hint_with_state_packet,
@@ -53,6 +56,7 @@ from aidm_server.player_rolls import (
     pending_roll_spec,
     requested_ability_key,
     resolve_authoritative_player_roll,
+    roll_against_armor_class,
 )
 from aidm_server.player_roll_claims import find_legacy_roll_claim
 from aidm_server.roll_visibility import public_segment_triggered_payload
@@ -825,11 +829,14 @@ class TurnEngine:
         combat_active = str(combat.get('status') or '').strip().lower() in {'starting', 'active'}
         action_kind = str(action_intent.get('kind') or '').strip().lower() if isinstance(action_intent, dict) else ''
         if combat_active and action_kind in COMBAT_BLOCKED_ACTION_KINDS:
+            picking_up = action_kind == 'item' and str(action_intent.get('inventory_action') or '').strip().lower() == 'pick_up'
             self.emit(
                 'error',
                 socket_error(
                     'combat_action_required',
-                    'Use an available combat action for this turn. That gameplay action is not legal during active combat.',
+                    NOT_WHILE_FIGHTING
+                    if picking_up
+                    else 'Use an available combat action for this turn. That gameplay action is not legal during active combat.',
                     {
                         'session_id': command.session_id,
                         'player_id': command.player_id,
@@ -2246,6 +2253,17 @@ class TurnEngine:
                 pending_turn=pending_turn_before,
                 attack_context=attack_context,
             )
+            attack_target = (
+                player_attack_target(
+                    combat_snapshot_from_session(session_obj.state_snapshot),
+                    actor_id=display_actor_id(player.player_id),
+                    combat_action=command.action_intent.get('combat'),
+                )
+                if combat_roll_requested
+                else None
+            )
+            if attack_target is not None:
+                authoritative_roll = roll_against_armor_class(authoritative_roll, attack_target)
             roll_spec_payload = {
                 **(roll_spec_payload or {}),
                 'die': authoritative_roll['die'],

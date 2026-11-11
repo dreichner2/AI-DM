@@ -1,4 +1,5 @@
-"""A hero who is down cannot act: the turn is refused before narration and changes nothing."""
+"""A hero who is down cannot act while a companion stands: the turn is refused before narration and changes
+nothing. Outside a fight, a party whose every present hero is down comes to at once."""
 
 from __future__ import annotations
 
@@ -32,6 +33,23 @@ def downed(app, client, socketio, monkeypatch):
             player.stats = safe_json_dumps(stats, {})
             db.session.commit()
 
+    # A standing companion at the table, so the downed hero is not the whole party.
+    with app.app_context():
+        companion = Player(
+            workspace_id=ids['workspace_id'],
+            campaign_id=ids['campaign_id'],
+            name='Companion',
+            character_name='Mara Fen',
+            class_='Rogue',
+            level=1,
+            stats=safe_json_dumps({'current_hp': 9, 'hp_current': 9, 'max_hp': 9, 'hp_max': 9}, {}),
+            inventory=safe_json_dumps([], {}),
+        )
+        db.session.add(companion)
+        db.session.commit()
+        companion_id = companion.player_id
+    companion_client = socketio.test_client(app, flask_test_client=app.test_client())
+    companion_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': companion_id, 'workspace_id': ids['workspace_id']})
     socket_client = socketio.test_client(app, flask_test_client=app.test_client())
     socket_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id'], 'workspace_id': ids['workspace_id']})
     socket_client.get_received()
@@ -59,8 +77,10 @@ def downed(app, client, socketio, monkeypatch):
             db.session.expunge(turn)
             return turn
 
-    yield knock_down, send, snapshot, last_turn
+    yield knock_down, send, snapshot, last_turn, companion_client
     socket_client.disconnect()
+    if companion_client.is_connected():
+        companion_client.disconnect()
 
 
 def _refusals(received: list[dict]) -> list[str]:
@@ -82,7 +102,7 @@ def _game_state(snapshot: dict) -> dict:
     ids=['free-words', 'mapped-words', 'object', 'travel'],
 )
 def test_a_downed_hero_is_refused_before_narration_and_nothing_changes(downed, message, intent):
-    knock_down, send, snapshot, last_turn = downed
+    knock_down, send, snapshot, last_turn, _companion = downed
     knock_down('unconscious', 'dying')
     before = snapshot()
 
@@ -96,7 +116,7 @@ def test_a_downed_hero_is_refused_before_narration_and_nothing_changes(downed, m
 
 
 def test_an_out_of_character_message_still_goes_through(downed):
-    knock_down, send, _snapshot, _last_turn = downed
+    knock_down, send, _snapshot, _last_turn, _companion = downed
     knock_down('unconscious', 'stable')
 
     received = send('brb, getting tea', {'kind': 'ooc', 'source': 'composer'})
@@ -106,7 +126,7 @@ def test_an_out_of_character_message_still_goes_through(downed):
 
 
 def test_a_stable_hero_may_rest_outside_a_fight_and_wakes(downed):
-    knock_down, send, snapshot, _last_turn = downed
+    knock_down, send, snapshot, _last_turn, _companion = downed
     knock_down('unconscious', 'stable')
 
     received = send('I take a short rest.')
@@ -117,7 +137,26 @@ def test_a_stable_hero_may_rest_outside_a_fight_and_wakes(downed):
 
 
 def test_a_dying_hero_cannot_rest(downed):
-    knock_down, send, _snapshot, _last_turn = downed
+    knock_down, send, _snapshot, _last_turn, _companion = downed
     knock_down('unconscious', 'dying')
 
     assert _refusals(send('I take a short rest.')) == [REFUSAL]
+
+
+@pytest.mark.parametrize('conditions', [('unconscious', 'stable'), ('unconscious', 'dying')], ids=['stable', 'dying'])
+def test_a_lone_hero_down_outside_a_fight_comes_to_at_once_and_acts(downed, conditions):
+    knock_down, send, snapshot, last_turn, companion = downed
+    companion.disconnect()
+    knock_down(*conditions)
+    before = snapshot()
+
+    received = send('Read the caravan ledger.', {'kind': 'object', 'source': 'scene_panel', 'object': {'id': 'inn_caravan_ledger', 'action': 'inspect'}})
+    after = snapshot()
+    beats = safe_json_loads(last_turn().metadata_json, {})['storyBeats']
+
+    assert _refusals(received) == []
+    assert after['playerCharacters'][0]['health']['currentHp'] == 1
+    assert after['playerCharacters'][0]['health']['conditions'] == []
+    assert after['clock']['phase'] != before['clock']['phase']
+    assert after['flags']['caravan_ledger_read'] is True
+    assert {'kind': 'defeat', 'text': 'You come to — 1 HP'} in beats

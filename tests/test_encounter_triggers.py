@@ -298,7 +298,7 @@ def test_travel_into_a_triggered_location_hands_narration_the_started_combat(cli
 @pytest.mark.parametrize(
     ('players', 'counts', 'hp', 'numbers', 'dropped'),
     [
-        (1, (1, 1), 8, (0.4, 0.4, -2, 2), []),
+        (1, (1, 0), 6, (0.3, 0.4, -3, 1), ['archer']),
         (2, (2, 1), 12, (0.6, 0.7, -1, 3), []),
         (3, (3, 0), 16, (0.8, 0.85, 0, 4), ['archer']),
         (4, (4, 2), 20, (1.0, 1.0, 0, None), []),
@@ -332,7 +332,7 @@ def test_encounters_scale_to_the_present_party(players, counts, hp, numbers, dro
     assert [group['count'] for group in scaling['groups']] == [count for count in counts if count]
 
 
-def test_a_lone_hero_faces_at_most_two_enemies_and_the_first_group_is_never_dropped():
+def test_a_lone_hero_faces_one_enemy_and_the_first_group_is_never_dropped():
     encounter = _encounter('enc_horde', {'type': 'on_enter', 'locationId': 'bridge'})
     encounter['enemyGroups'] = [{'enemyId': 'bandit', 'count': 12}, {'enemyId': 'archer', 'count': 2}]
     state = _state([encounter], players=1)
@@ -340,9 +340,9 @@ def test_a_lone_hero_faces_at_most_two_enemies_and_the_first_group_is_never_drop
     scaling = party_scaling(encounter, party_size=1)
     change = materialize_campaign_pack_combat_start(state, {'type': 'combat.start', 'campaignPackEncounterId': 'enc_horde', 'combat': {}})
 
-    assert scaling['groups'] == [{'enemyId': 'bandit', 'authoredCount': 12, 'count': 2}]
+    assert scaling['groups'] == [{'enemyId': 'bandit', 'authoredCount': 12, 'count': 1}]
     assert scaling['droppedGroups'] == [{'enemyId': 'archer', 'authoredCount': 2, 'count': 1}]
-    assert [enemy['name'] for enemy in change['combat']['participants'] if enemy['team'] == 'enemy'] == ['Bandit 1', 'Bandit 2']
+    assert [enemy['name'] for enemy in change['combat']['participants'] if enemy['team'] == 'enemy'] == ['Bandit']
 
 
 def test_party_scaling_lowers_enemy_attack_bonus_save_dc_and_every_damage_roll():
@@ -366,7 +366,7 @@ def test_party_scaling_lowers_enemy_attack_bonus_save_dc_and_every_damage_roll()
     hero = next(participant for participant in combat['participants'] if participant['team'] == 'player')
     cut, hex_ability = enemy['abilities']
 
-    assert (enemy['name'], cut['attackBonus'], hex_ability['save']['dc']) == ('Bandit', 4, 12)
+    assert (enemy['name'], cut['attackBonus'], hex_ability['save']['dc']) == ('Bandit', 3, 11)
     hit = resolve_enemy_ability(
         enemy={**enemy, 'abilities': [cut]},
         target={**hero, 'armorClass': 1},
@@ -763,7 +763,8 @@ def test_the_engine_plays_every_non_player_turn_ahead_of_the_hero(monkeypatch):
 
     combat = settled.state['combat']
     assert [action['enemyId'] for action in settled.resolved_actions] == ['enemy_wolf_1']
-    assert [change['flags']['lastResolvedActorId'] for change in settled.applied_changes if change['type'] == 'combat.update'] == [
+    advances = [change for change in settled.applied_changes if change['type'] == 'combat.update' and 'lastResolvedActorId' in change['flags']]
+    assert [change['flags']['lastResolvedActorId'] for change in advances] == [
         'enemy_wolf_1',
         'ally_hound',
     ]

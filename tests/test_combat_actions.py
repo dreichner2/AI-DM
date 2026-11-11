@@ -355,7 +355,8 @@ def test_melee_weapons_need_engagement_or_both_in_melee_and_reach_weapons_reach_
     _engage(actor, engaged)
     targets = {target['id']: target for target in _action(_bundle(_state(actor, engaged, scrum, near)), 'combat.attack.blade')['targets']}
     assert targets['enemy_1']['available'] and targets['enemy_2']['available']
-    assert targets['enemy_3']['reason'] == 'Target is at near range.'
+    # Out of reach, but one move closes on it: offered as an attack that moves first.
+    assert (targets['enemy_3']['available'], targets['enemy_3'].get('requiresMove')) == (True, True)
 
     far_actor = _p(ACTOR, 'player')
     spear = [{'id': 'pike', 'name': 'Pike', 'type': 'weapon', 'equipped': True, 'slot': 'main_hand', 'tags': ['reach']}]

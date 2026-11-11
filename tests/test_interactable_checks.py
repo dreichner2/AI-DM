@@ -325,18 +325,44 @@ def _object_action(bundle: dict, action_id: str) -> dict:
     return next(action for action in bundle['actions'] if action['id'] == action_id)
 
 
-def test_object_actions_are_offered_in_combat_and_all_but_inspect_cost_the_action():
+def _usable_in_combat(snapshot: dict, object_id: str, actions: list[str]) -> None:
+    for entry in snapshot['currentScene']['interactables']:
+        if entry['id'] == object_id:
+            entry['usableInCombat'] = actions
+    for location in snapshot['locations']:
+        for entry in location.get('sceneState', {}).get('interactables', []):
+            if entry['id'] == object_id:
+                entry['usableInCombat'] = actions
+
+
+def _offers(snapshot: dict, object_id: str) -> dict[str, tuple[bool, str | None]]:
+    view = filter_session_snapshot_for_player(snapshot, private_player_ids={1}, acting_player_id=1)
+    entry = next(entry for entry in view['currentScene']['interactables'] if entry['id'] == object_id)
+    return {offer['action']: (offer['legal'], offer.get('reason')) for offer in entry['offeredActions']}
+
+
+def test_in_a_fight_only_usable_in_combat_object_actions_are_offered_and_each_costs_the_action():
     snapshot = _combat_snapshot()
+    _usable_in_combat(snapshot, 'strongbox', ['open'])
+    _usable_in_combat(snapshot, 'vault_door', ['unlock'])
     player = Player(player_id=1, character_name='Mara', class_='Rogue', level=1)
 
     bundle = legal_combat_actions_for_player(snapshot, player)
-    inspect = _object_action(bundle, 'object.strongbox.inspect')
     open_box = _object_action(bundle, 'object.strongbox.open')
     unlock = _object_action(bundle, 'object.vault_door.unlock')
-    assert inspect['economy']['action'] == 0 and inspect['available'] is True
+    assert [action['id'] for action in bundle['actions'] if action['id'].startswith('object.')] == [
+        'object.vault_door.unlock',
+        'object.strongbox.open',
+    ]
     assert open_box['economy']['action'] == 1 and open_box['available'] is True
     assert unlock['description'] == 'Uses your action. Needs a check.'
     assert open_box['object'] == {'id': 'strongbox', 'action': 'open', 'revision': 0}
+    assert _offers(snapshot, 'strongbox') == {
+        'open': (True, None),
+        'inspect': (False, 'Not while the fight is on.'),
+        'close': (False, 'Not while the fight is on.'),
+        'search': (False, 'Not while the fight is on.'),
+    }
 
     resolved, code, _message = resolve_combat_legal_action(snapshot, player, action_id='object.strongbox.open')
     assert code is None
@@ -359,7 +385,65 @@ def test_object_actions_are_offered_in_combat_and_all_but_inspect_cost_the_actio
     spent = legal_combat_actions_for_player(snapshot, player)
     assert _object_action(spent, 'object.strongbox.open')['available'] is False
     assert _object_action(spent, 'object.strongbox.open')['reason'] == "This turn's action is already spent."
-    assert _object_action(spent, 'object.strongbox.inspect')['available'] is True
+    assert _offers(snapshot, 'strongbox')['open'] == (False, "This turn's action is already spent.")
+
+
+def test_on_another_combatants_turn_a_usable_object_action_waits():
+    snapshot = _combat_snapshot()
+    _usable_in_combat(snapshot, 'strongbox', ['open'])
+    snapshot['combat']['turnIndex'] = 1
+
+    assert _offers(snapshot, 'strongbox')['open'] == (False, 'Thug is acting now.')
+
+
+def test_a_typed_object_action_in_a_fight_spends_the_action_or_is_refused():
+    from aidm_server.game_state.orchestration.turn_pipeline import _gate_pre_dm_combat_object_actions
+
+    snapshot = _combat_snapshot()
+    _usable_in_combat(snapshot, 'strongbox', ['open'])
+    change = {'id': 'chg_open', 'type': 'scene.interactable.action', 'actorId': 'player_1', 'targetId': 'strongbox'}
+
+    allowed, rejected = _gate_pre_dm_combat_object_actions(state=snapshot, changes=[change], actor_id='player_1', turn_id=3)
+    assert rejected == []
+    assert allowed[0] == change
+    assert allowed[1]['flags']['turnEconomy']['actionRemaining'] == 0
+    spent = apply_state_changes(snapshot, validated_changes_for_application(validate_state_changes(state=snapshot, changes=allowed[1:])))['nextState']
+    _allowed, rejected = _gate_pre_dm_combat_object_actions(state=spent, changes=[{**change, 'id': 'chg_again'}], actor_id='player_1', turn_id=4)
+    assert [rejection['reason'] for rejection in rejected] == ["This turn's action is already spent."]
+
+
+def test_an_object_action_not_usable_in_combat_is_refused_in_a_fight():
+    snapshot = _combat_snapshot()
+    _usable_in_combat(snapshot, 'strongbox', ['open'])
+
+    result = validate_declared_actions(
+        state=snapshot,
+        declared_actions=[
+            {'id': 'act_001', 'type': 'scene.interactable.action', 'actorId': 'player_1', 'targetId': 'strongbox', 'objectAction': 'search'}
+        ],
+        current_turn=5,
+        expected_actor_id='player_1',
+    )
+
+    assert result['validatedActions'][0]['status'] == 'invalid'
+    assert result['validatedActions'][0]['reason'] == 'Not while the fight is on.'
+
+
+def test_loose_items_cannot_be_taken_in_a_fight():
+    snapshot = _combat_snapshot()
+    snapshot['currentScene']['items'] = [{'id': 'silver_ring', 'name': 'Silver Ring', 'quantity': 1}]
+
+    result = validate_declared_actions(
+        state=snapshot,
+        declared_actions=[
+            {'id': 'act_001', 'type': 'scene.item.pickup', 'actorId': 'player_1', 'itemId': 'silver_ring', 'itemName': 'Silver Ring', 'quantity': 1}
+        ],
+        current_turn=5,
+        expected_actor_id='player_1',
+    )
+
+    assert result['validatedActions'][0]['status'] == 'invalid'
+    assert result['validatedActions'][0]['reason'] == 'Not while the fight is on.'
 
 
 def _arrival_pack() -> dict:

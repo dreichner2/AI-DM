@@ -311,13 +311,17 @@ def resolve_combat_action(
     actor_id: str,
     turn_id: Any,
 ) -> dict[str, Any] | None:
-    """Re-resolve one server-issued non-attack action; ``None`` for attacks and end turn.
+    """Re-resolve one server-issued non-attack action (or the advance of an attack that moves first);
+    ``None`` for other attacks and end turn.
 
     Returns ``{"ok", "reason", "changes", "result"}`` where ``result`` is the
     narration block.  Nothing in ``state`` is mutated.
     """
 
     action_type = _text(combat_action.get('action_type'))
+    if action_type == 'attack' and combat_action.get('move_first') is True:
+        # An attack that needs the move first advances on its target here; the attack itself is resolved elsewhere.
+        action_type = 'advance'
     resolver = ACTION_RESOLVERS.get(action_type)
     if resolver is None:
         return None

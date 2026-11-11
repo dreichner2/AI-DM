@@ -18,7 +18,11 @@ from aidm_server.combat import vitality
 from aidm_server.combat.modifiers import consume_modifiers
 from aidm_server.combat.pipeline import apply_turn_boundaries
 from aidm_server.combat.positioning import move_participant
-from aidm_server.combat.rewards import SOURCE as COMBAT_REWARD_SOURCE, derive_combat_outcome_rewards
+from aidm_server.combat.rewards import (
+    SOURCE as COMBAT_REWARD_SOURCE,
+    derive_combat_outcome_rewards,
+    derive_encounter_resolution_rewards,
+)
 from aidm_server.combat.working_state import add_active_effect, spend_reaction
 from aidm_server.combat.state import (
     consume_combat_turn_economy,
@@ -31,6 +35,8 @@ from aidm_server.combat.state import (
 from aidm_server.commerce import payment_deltas, restock_merchants, take_stock
 from aidm_server.game_clock import actor_hit_dice, advance_state_clock, record_rest
 from aidm_server.game_state.campaign_pack_encounters import (
+    COMPLETED_ENCOUNTERS_FLAG,
+    ENCOUNTER_RESOLVE_CHANGE,
     REST_POLICIES,
     campaign_pack_followup_changes,
     catalog_record,
@@ -2468,7 +2474,7 @@ def _apply_interactable_action_state(
                 'turnId': change.get('turnId'),
             }
         )
-    return {
+    applied = {
         'objectAction': change.get('objectAction'),
         'targetId': change.get('targetId'),
         'locationId': change.get('locationId'),
@@ -2476,6 +2482,10 @@ def _apply_interactable_action_state(
         'eventType': event.get('type') if event else None,
         'targetName': event.get('targetName') if event else None,
     }
+    if event and event.get('takeTime') is True:
+        # Taking time over a failed check costs a phase of the day.
+        applied['clock'] = deepcopy(advance_state_clock(state, 1))
+    return applied
 
 
 def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2891,6 +2901,14 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['combatStatus'] = combat.get('status')
             if stabilized:
                 applied_change['stabilizedParticipantIds'] = stabilized
+        elif change_type == ENCOUNTER_RESOLVE_CHANGE:
+            # An object action settled the encounter without a fight.
+            encounter_id = _text(change.get('encounterId'))
+            state_flags = _ensure_dict(next_state, 'flags')
+            if not encounter_id or encounter_id in _string_list(state_flags.get(COMPLETED_ENCOUNTERS_FLAG)):
+                skipped.append({'change': change, 'reason': 'The encounter is already complete.'})
+                continue
+            state_flags[COMPLETED_ENCOUNTERS_FLAG] = _merge_unique(state_flags.get(COMPLETED_ENCOUNTERS_FLAG), [encounter_id])
         elif change_type == 'combat.reward.finalize' and str(change.get('source') or '') == COMBAT_REWARD_SOURCE:
             required_ids = {
                 str(value).strip()
@@ -3189,8 +3207,12 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 ),
             )
         )
-        if change_type == 'combat.end':
-            reward_result = derive_combat_outcome_rewards(next_state, applied_change)
+        if change_type in {'combat.end', ENCOUNTER_RESOLVE_CHANGE}:
+            reward_result = (
+                derive_combat_outcome_rewards(next_state, applied_change)
+                if change_type == 'combat.end'
+                else derive_encounter_resolution_rewards(next_state, applied_change)
+            )
             if reward_result.get('valid') and not reward_result.get('alreadyApplied'):
                 pending_changes.extend(
                     _combat_reward_transaction_changes(reward_result, applied_change)

@@ -8,7 +8,12 @@ from pathlib import Path
 import re
 from typing import Any
 
-from aidm_server.game_state.campaign_pack_encounters import CATALOG_CONSEQUENCES, ENCOUNTER_TRIGGER_TYPES
+from aidm_server.game_state.campaign_pack_encounters import (
+    ADJUSTMENT_HP_MULTIPLIER_RANGE,
+    CATALOG_CONSEQUENCES,
+    ENCOUNTER_TRIGGER_TYPES,
+    RESOLUTION_END_REASONS,
+)
 from aidm_server.game_state.models import stable_slug
 from aidm_server.game_state.quest_engine import CONSEQUENCE_CHANGE_TYPES, objective_is_mechanical
 from aidm_server.interactables import INTERACTABLE_ACTIONS, supported_actions, validate_interactable_catalog
@@ -375,6 +380,8 @@ def _engine_contract_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]
     issues.extend(_branch_flag_issues(pack))
     issues.extend(_director_rule_issues(pack))
     issues.extend(_encounter_trigger_issues(pack, ids))
+    issues.extend(_encounter_resolution_issues(pack, ids))
+    issues.extend(_encounter_adjustment_issues(pack))
     issues.extend(_world_consequence_issues(pack, ids))
     issues.extend(_merchant_issues(pack, ids))
     issues.extend(_story_flag_issues(pack))
@@ -806,6 +813,75 @@ def _encounter_trigger_issues(pack: dict[str, Any], ids: dict[str, set[str]]) ->
                 issues.append(_error('invalid_encounter_trigger', f'{path}.{field}', f'An {trigger_type} trigger needs {field}.'))
             else:
                 issues.extend(_missing_reference_issues(trigger.get(field), path=f'{path}.{field}', target=target, ids=ids))
+    return issues
+
+
+def _encounter_allows(encounter: dict[str, Any], outcome: str) -> bool:
+    """Whether a settled ``outcome`` counts as completing the encounter, read as its combat ending would be."""
+
+    allowed = set(_string_list(_dict(encounter.get('completion')).get('anyOf')))
+    end_reason = RESOLUTION_END_REASONS.get(outcome)
+    return bool(end_reason) and (not allowed or bool(allowed & COMBAT_COMPLETE_REASONS.get(end_reason, set())))
+
+
+def _encounter_resolution_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    """``resolvesEncounter`` names an existing encounter and an outcome that encounter allows."""
+
+    encounters = {_record_id(encounter): encounter for encounter in _records(pack.get('encounters'))}
+    issues: list[CampaignPackLintIssue] = []
+    for path, record in _pack_interactables(pack):
+        for action, spec in _dict(record.get('resolvesEncounter')).items():
+            spec_path = f'{path}.resolvesEncounter.{action}'
+            if action not in INTERACTABLE_ACTIONS:
+                issues.append(_error('invalid_encounter_resolution', spec_path, f'"{action}" is not an object action.'))
+                continue
+            encounter_id = _text(_dict(spec).get('encounterId'))
+            outcome = _text(_dict(spec).get('outcome'))
+            if encounter_id not in ids['encounters']:
+                issues.append(
+                    _error('unknown_resolved_encounter', f'{spec_path}.encounterId', f'No encounter has the id "{encounter_id}".')
+                )
+            elif not _encounter_allows(encounters[encounter_id], outcome):
+                issues.append(
+                    _error(
+                        'encounter_outcome_not_allowed',
+                        f'{spec_path}.outcome',
+                        f'Encounter "{encounter_id}" does not allow the outcome "{outcome}".',
+                    )
+                )
+    return issues
+
+
+def _encounter_adjustment_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """``adjustments`` read flags the pack sets, name enemies of their own encounter and keep HP multipliers in range."""
+
+    set_flags = _flag_keys_set_by_pack(pack)
+    low, high = ADJUSTMENT_HP_MULTIPLIER_RANGE
+    issues: list[CampaignPackLintIssue] = []
+    for index, encounter in enumerate(_records(pack.get('encounters'))):
+        enemy_ids = set(_string_list(encounter.get('enemyIds'))) | {
+            _text(group.get('enemyId')) for group in _records(encounter.get('enemyGroups'))
+        }
+        for adjustment_index, adjustment in enumerate(_records(encounter.get('adjustments'))):
+            path = f'encounters[{index}].adjustments[{adjustment_index}]'
+            flag_key = _text(_dict(adjustment.get('when')).get('flagKey'))
+            if flag_key not in set_flags:
+                issues.append(_error('unknown_adjustment_flag', f'{path}.when.flagKey', f'Nothing in the pack sets flag "{flag_key}".'))
+            named = [('enemyId', [adjustment['enemyId']])] if 'enemyId' in adjustment else []
+            named.append(('removeEnemyIds', _string_list(adjustment.get('removeEnemyIds'))))
+            for field, values in named:
+                for enemy_id in values:
+                    if _text(enemy_id) not in enemy_ids:
+                        issues.append(
+                            _error('unknown_adjustment_enemy', f'{path}.{field}', f'Enemy "{enemy_id}" is not in this encounter.')
+                        )
+            multiplier = adjustment.get('hpMultiplier')
+            if multiplier is not None and (
+                isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or not low <= multiplier <= high
+            ):
+                issues.append(
+                    _error('adjustment_multiplier_out_of_range', f'{path}.hpMultiplier', f'hpMultiplier must be from {low} to {high}.')
+                )
     return issues
 
 

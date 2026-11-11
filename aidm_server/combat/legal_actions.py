@@ -7,6 +7,10 @@ Weapon attacks (and the off-hand attack of two-weapon fighting) come from the
 player's inventory; the universal actions every character has — advance, fall
 back, dash, disengage, dodge, help, hide, stabilize — come from the built-in
 action provider; class features add more providers.  End turn is always last.
+
+A melee attack on a target out of reach is still offered (``requiresMove``)
+while the hero's move is unspent and closing on that target would bring it into
+reach: taking it spends the move and the action, advancing first.
 """
 
 from __future__ import annotations
@@ -180,17 +184,24 @@ def _attack_target_option(
     allowed_bands: Iterable[str],
     reach: bool,
     ability: str | None,
+    can_move: bool,
 ) -> dict[str, Any]:
     ranged = classification == 'ranged'
-    reason = targeting_block_reason(actor, participant, combat) or reach_block_reason(
+    targeting = targeting_block_reason(actor, participant, combat)
+    out_of_reach = '' if targeting else reach_block_reason(
         actor,
         participant,
         melee=not ranged,
         allowed_bands=allowed_bands,
         reach=reach,
     )
+    requires_move = bool(out_of_reach) and not ranged and can_move and not close_block_reason(actor, participant, combat)
+    reason = targeting or ('' if requires_move else out_of_reach)
     roll = attack_context(actor, participant, kind='weapon_attack', ranged=ranged, combat=combat, ability=ability)
-    return {**_target(participant, reason), 'rollMode': roll['mode'], 'rollReasons': roll['reasons']}
+    option = {**_target(participant, reason), 'rollMode': roll['mode'], 'rollReasons': roll['reasons']}
+    if requires_move:
+        option['requiresMove'] = True
+    return option
 
 
 def _availability(
@@ -358,6 +369,7 @@ def _weapon_attack_action(
     damage = weapon_damage_profile(weapon, classification)
     reach = classification != 'ranged' and _has_tag(weapon, 'reach')
     allowed_bands = RANGE_BANDS if classification == 'ranged' else (tuple(sorted(REACH_WEAPON_BANDS, key=RANGE_BANDS.index)) if reach else ('melee',))
+    can_move = int(turn_economy.get('movementRemaining') or 0) > 0 and not speed_zero_reasons(actor)
     targets = [
         _attack_target_option(
             target,
@@ -367,6 +379,7 @@ def _weapon_attack_action(
             allowed_bands=allowed_bands,
             reach=reach,
             ability=attack_roll_context.get('ability_key'),
+            can_move=can_move,
         )
         for target in enemies
     ]
@@ -387,6 +400,9 @@ def _weapon_attack_action(
         reason=resource_reason if not resource_available else ('' if has_target else 'No target is currently in range.'),
         economy=economy_cost,
     )
+    if has_target and all(target.get('requiresMove') for target in targets if target['available']):
+        # Every target it can reach needs the move first.
+        action['requiresMove'] = True
     action.update(
         {
             'requiresTarget': True,
@@ -907,9 +923,15 @@ def resolve_combat_legal_action(
                 'range_band': _text(selected_target.get('rangeBand')),
             }
         )
+        if selected_target.get('requiresMove'):
+            # Recorded as the advance followed by the attack: the move and the action are both spent.
+            canonical['move_first'] = True
+            canonical['economy'] = {**canonical['economy'], 'movement': 'used', 'movementCost': 1}
         if action.get('offhand'):
             canonical['offhand'] = True
             message = f'{player.character_name} attacks {target_name} with their off-hand {weapon_name}.'
+        elif selected_target.get('requiresMove'):
+            message = f'{player.character_name} closes in and attacks {target_name} with {weapon_name}.'
         else:
             message = f'{player.character_name} attacks {target_name} with {weapon_name}.'
     elif selected_target is not None:

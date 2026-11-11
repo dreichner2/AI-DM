@@ -120,6 +120,8 @@ def _check_beat(check: dict[str, Any], *, show_dc: bool) -> dict[str, Any] | Non
     label = _humanize(check.get('skill') or check.get('ability') or 'ability').title()
     dc = check.get('dc')
     suffix = f' (DC {dc})' if show_dc and isinstance(dc, int) else ''
+    if check.get('takeTime') is True:
+        suffix += ' (taking your time)'
     return {'kind': 'check', 'text': f'{label} check: {total} — {outcome}{suffix}'}
 
 
@@ -257,6 +259,8 @@ def story_beats(
             beats.append({'kind': 'level', 'text': f"Level {new_hero['level']} reached"})
     if any(change.get('type') == 'combat.defeat_recovery' for change in applied_changes):
         beats.append({'kind': 'defeat', 'text': 'Defeated — you wake later with 1 HP'})
+    elif any(change.get('type') == 'party.wake' for change in applied_changes):
+        beats.append({'kind': 'defeat', 'text': 'You come to — 1 HP'})
     if after.get('ending') and after.get('ending') != before.get('ending'):
         beats.append({'kind': 'ending', 'text': f"The story ends — {after['ending']}"})
     return beats

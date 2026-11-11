@@ -178,6 +178,12 @@ def target_armor_class(target: Mapping[str, Any] | None) -> int:
     return bounded_int(target.get('armorClass', stats.get('armorClass')), default=10, minimum=1, maximum=40)
 
 
+def attack_armor_class(target: Mapping[str, Any] | None, modifiers: Mapping[str, Any]) -> int:
+    """The armour class an attack is compared against: the target's, with effects and cover."""
+
+    return armor_class_with_context(target_armor_class(target), modifiers)
+
+
 def ability_modifier(score: Any) -> int:
     return (int_or_default(score, default=10) - 10) // 2
 
@@ -364,6 +370,7 @@ def resolve_attack(
     ability: Any = None,
     rider: Mapping[str, Any] | None = None,
     once_per_turn_used: Iterable[Any] = (),
+    armor_class: int | None = None,
 ) -> dict[str, Any]:
     """One attack roll with its damage and reactions.
 
@@ -383,7 +390,8 @@ def resolve_attack(
     natural_roll, attack_rolls = d20_with_mode(first_d20, modifiers['mode'], attack_roller)
     bonus_dice = rolled_bonus_dice(modifiers['attackBonusDice'], attack_roller)
     attack_total = natural_roll + attack_bonus + sum(int(item['total']) for item in bonus_dice) + int(modifiers['attackFlatBonus'])
-    target_ac = armor_class_with_context(target_armor_class(target), modifiers)
+    # ``armor_class``: the number a player's roll was already shown against (see attack_armor_class).
+    target_ac = armor_class if armor_class is not None else attack_armor_class(target, modifiers)
     critical_threshold = 20 - max(0, int(modifiers['criticalRangeBonus']))
     hit = natural_roll != 1 and (natural_roll >= critical_threshold or attack_total >= target_ac)
     inspiration = None

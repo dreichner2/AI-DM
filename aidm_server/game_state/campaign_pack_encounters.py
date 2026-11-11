@@ -2,9 +2,14 @@
 
 Besides building pack combat, this module derives the trusted follow-up
 changes the applier queues after an applied change: an encounter whose
-authored trigger is due starts, a location's ``onEnter`` consequences run on
-first arrival, and authored consequences that name catalog records are
+authored trigger is due starts, an object action that settles an encounter
+(``resolvesEncounter``) completes it, a location's ``onEnter`` consequences
+run on first arrival, and authored consequences that name catalog records are
 materialised from the pack catalog.
+
+An encounter's ``adjustments`` apply when its combat is created, before party
+scaling: what the party knows (a flag) can weaken one enemy group's hit points
+or keep whole groups away.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from typing import Any
 
 from aidm_server.combat.attacks import ability_attack_bonus, ability_damage, ability_save
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
+from aidm_server.combat.end_conditions import combat_end_change
 from aidm_server.combat.state import (
     combat_ability_resolution_mode,
     default_battlefield,
@@ -29,9 +35,9 @@ MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP = 12
 MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS = 24
 AUTHORED_PARTY_SIZE = 4
 # Present heroes -> (enemy HP x, enemy damage x, enemy attack bonus and save DC, most enemies).
-# A lone hero's damage multiplier is 0.40, tuned by scripts/solo_balance.py.
+# The lone-hero row is tuned by scripts/solo_balance.py now that enemies fight back every turn.
 PARTY_SCALING = {
-    1: (Fraction(2, 5), Fraction(2, 5), -2, 2),
+    1: (Fraction(3, 10), Fraction(2, 5), -3, 1),
     2: (Fraction(3, 5), Fraction(7, 10), -1, 3),
     3: (Fraction(4, 5), Fraction(17, 20), 0, 4),
 }
@@ -39,6 +45,18 @@ ENCOUNTER_TRIGGER_TYPES = ('on_enter', 'on_checkpoint', 'on_flag', 'on_interacta
 # Applied change types that can make an event trigger due.
 TRIGGER_EVENT_CHANGE_TYPES = frozenset({'scene.move_location', 'scene.interactable.action', 'flag.set'})
 TRIGGERED_ENCOUNTERS_FLAG = 'campaignPackTriggeredEncounterIds'
+# Encounters an object action settled: their triggers never fire again.
+RESOLVED_ENCOUNTERS_FLAG = 'campaignPackResolvedEncounterIds'
+COMPLETED_ENCOUNTERS_FLAG = 'campaignPackCompletedEncounterIds'
+ENCOUNTER_RESOLVE_CHANGE = 'encounter.resolve'
+# The outcomes an object action can settle an encounter with, and the combat end reason each stands for.
+RESOLUTION_END_REASONS = {
+    'victory': 'all_enemies_defeated',
+    'surrender': 'enemies_surrendered',
+    'negotiation': 'negotiated_resolution',
+    'objective_completion': 'objective_completed',
+}
+ADJUSTMENT_HP_MULTIPLIER_RANGE = (0.25, 1.5)
 LOCATION_ENTERED_FLAG = 'locationEnteredIds'
 TRIGGER_STARTED_BY = 'campaign_pack_trigger'
 WORLD_CHANGE_SOURCE = 'campaign_pack_world'
@@ -72,7 +90,11 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
         return change
 
     players = _player_participants(state, combat)
-    scaling = party_scaling(encounter, party_size=sum(1 for player in players if _present_player(player)))
+    scaling = party_scaling(
+        encounter,
+        party_size=sum(1 for player in players if _present_player(player)),
+        adjustments=applied_adjustments(state, encounter),
+    )
     enemies = _instantiate_pack_enemies(
         pack,
         encounter,
@@ -107,6 +129,9 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
     )
     if allowed_outcomes:
         flags['campaignPackAllowedOutcomes'] = allowed_outcomes
+    if encounter.get('allowParley') is True:
+        # Its enemies may parley or give ground from the first blow.
+        flags['allowParley'] = True
 
     combat.update(
         {
@@ -132,7 +157,12 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
     return updated
 
 
-def party_scaling(encounter: dict[str, Any], *, party_size: int) -> dict[str, Any]:
+def party_scaling(
+    encounter: dict[str, Any],
+    *,
+    party_size: int,
+    adjustments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """How an encounter authored for four PCs scales to the present party.
 
     ``PARTY_SCALING`` gives, by present heroes, the enemy HP multiplier (HP
@@ -143,8 +173,15 @@ def party_scaling(encounter: dict[str, Any], *, party_size: int) -> dict[str, An
     are dropped from the end (never the first), then the last remaining group
     loses enemies. A party of four or more, an empty one, or
     ``scaling: false`` changes nothing.
+
+    The encounter's applied ``adjustments`` (:func:`applied_adjustments`) come
+    first: their removed groups are gone before the most enemies is applied,
+    and an ``hpMultiplier`` multiplies with the party's HP multiplier. They are
+    recorded here as ``adjustments``.
     """
 
+    adjustments = adjustments or []
+    removed = {enemy_id for adjustment in adjustments for enemy_id in adjustment.get('removeEnemyIds') or []}
     applied = encounter.get('scaling') is not False and 1 <= party_size < AUTHORED_PARTY_SIZE
     hp_multiplier, damage_multiplier, attack_and_dc, max_enemies = (
         PARTY_SCALING[party_size] if applied else (Fraction(1), Fraction(1), 0, None)
@@ -156,6 +193,7 @@ def party_scaling(encounter: dict[str, Any], *, party_size: int) -> dict[str, An
             'count': _scaled_count(count, party_size) if applied else count,
         }
         for enemy_id, count in _encounter_enemy_specs(encounter)
+        if enemy_id not in removed
     ]
     dropped: list[dict[str, Any]] = []
     if max_enemies is not None:
@@ -163,7 +201,12 @@ def party_scaling(encounter: dict[str, Any], *, party_size: int) -> dict[str, An
             dropped.insert(0, groups.pop())
         if groups:
             groups[-1]['count'] = max(1, groups[-1]['count'] - max(0, sum(group['count'] for group in groups) - max_enemies))
-    return {
+    hp_adjustments: dict[str, float] = {}
+    for adjustment in adjustments:
+        if adjustment.get('enemyId') and adjustment.get('hpMultiplier') is not None:
+            enemy_id = adjustment['enemyId']
+            hp_adjustments[enemy_id] = float(Fraction(str(hp_adjustments.get(enemy_id, 1))) * Fraction(str(adjustment['hpMultiplier'])))
+    scaling = {
         'partySize': party_size,
         'applied': applied,
         'hpMultiplier': float(hp_multiplier),
@@ -173,17 +216,42 @@ def party_scaling(encounter: dict[str, Any], *, party_size: int) -> dict[str, An
         'groups': groups,
         'droppedGroups': dropped,
     }
+    if adjustments:
+        scaling['adjustments'] = deepcopy(adjustments)
+        scaling['hpAdjustments'] = hp_adjustments
+    return scaling
+
+
+def applied_adjustments(state: dict[str, Any], encounter: dict[str, Any]) -> list[dict[str, Any]]:
+    """The encounter's ``adjustments`` whose ``when`` holds against the state's flags, in authored order."""
+
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    applied = []
+    for adjustment in encounter.get('adjustments') if isinstance(encounter.get('adjustments'), list) else []:
+        if not isinstance(adjustment, dict) or not flag_condition_holds(flags, adjustment.get('when')):
+            continue
+        record: dict[str, Any] = {'when': deepcopy(adjustment.get('when')), 'text': _text(adjustment.get('text'))}
+        multiplier = adjustment.get('hpMultiplier')
+        if _text(adjustment.get('enemyId')) and isinstance(multiplier, (int, float)) and not isinstance(multiplier, bool):
+            record.update(enemyId=_text(adjustment['enemyId']), hpMultiplier=multiplier)
+        removed = _string_list(adjustment.get('removeEnemyIds'))
+        if removed:
+            record['removeEnemyIds'] = removed
+        applied.append(record)
+    return applied
 
 
 def _scaled_count(count: int, party_size: int) -> int:
     return max(1, math.floor(Fraction(count * party_size, AUTHORED_PARTY_SIZE) + Fraction(1, 2)))
 
 
-def _scaled_hp(max_hp: Any, scaling: dict[str, Any]) -> int:
+def _scaled_hp(max_hp: Any, scaling: dict[str, Any], enemy_id: str) -> int:
     hp = max(0, _positive_int(max_hp) or 0)
-    if not scaling.get('applied'):
-        return hp
-    return math.ceil(Fraction(hp) * PARTY_SCALING[int(scaling['partySize'])][0])
+    multiplier = PARTY_SCALING[int(scaling['partySize'])][0] if scaling.get('applied') else Fraction(1)
+    adjustment = (scaling.get('hpAdjustments') or {}).get(enemy_id)
+    if adjustment is not None:
+        multiplier *= Fraction(str(adjustment))
+    return hp if multiplier == 1 else math.ceil(Fraction(hp) * multiplier)
 
 
 def _scaled_abilities(abilities: Any, scaling: dict[str, Any], participant: dict[str, Any]) -> list[Any]:
@@ -324,7 +392,7 @@ def _instantiate_pack_enemies(
                 participant['name'] = singular if count == 1 else f'{singular} {index + 1}'
             if enemy.get('proper') is True:
                 participant['proper'] = True
-            max_hp = _scaled_hp(participant['hp']['max'], scaling)
+            max_hp = _scaled_hp(participant['hp']['max'], scaling, group['enemyId'])
             participant['hp'] = {**participant['hp'], 'current': max_hp, 'max': max_hp}
             participant['stats'] = {**participant['stats'], 'maxHp': max_hp}
             participant['abilities'] = _scaled_abilities(participant.get('abilities'), scaling, participant)
@@ -420,12 +488,14 @@ def _same_id(first: Any, second: Any) -> bool:
     )
 
 
-def _flag_condition_holds(flags: dict[str, Any], condition: Any) -> bool:
-    return isinstance(condition, dict) and flag_matches(
-        flags,
-        condition.get('flagKey'),
-        condition.get('equals', True),
-    )
+def flag_condition_holds(flags: dict[str, Any], condition: Any) -> bool:
+    """A ``{"flagKey", "equals"}`` predicate, or ``{"anyOf": [predicate, ...]}`` holding when any one does."""
+
+    if not isinstance(condition, dict):
+        return False
+    if isinstance(condition.get('anyOf'), list):
+        return any(flag_condition_holds(flags, child) for child in condition['anyOf'])
+    return flag_matches(flags, condition.get('flagKey'), condition.get('equals', True))
 
 
 def _trigger_matches(state: dict[str, Any], trigger: dict[str, Any], changes: list[dict[str, Any]]) -> bool:
@@ -463,7 +533,7 @@ def due_encounter(state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[
     ``on_checkpoint`` holds while its checkpoint is active; the other trigger
     types match one of the given applied changes. ``once`` (default true)
     skips encounters already triggered, ``when`` must hold and ``unless`` must
-    not.
+    not; an encounter an object action settled never fires again.
     """
 
     pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
@@ -472,15 +542,18 @@ def due_encounter(state: dict[str, Any], changes: list[dict[str, Any]]) -> dict[
     catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
     flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
     triggered = set(_string_list(flags.get(TRIGGERED_ENCOUNTERS_FLAG)))
+    resolved = set(_string_list(flags.get(RESOLVED_ENCOUNTERS_FLAG)))
     applied_changes = [change for change in changes if isinstance(change, dict)]
     for encounter in catalog.get('encounters') or []:
         if not isinstance(encounter, dict) or not isinstance(encounter.get('trigger'), dict):
             continue
         if encounter.get('once', True) is not False and _record_id(encounter) in triggered:
             continue
-        if 'when' in encounter and not _flag_condition_holds(flags, encounter.get('when')):
+        if _record_id(encounter) in resolved:
             continue
-        if _flag_condition_holds(flags, encounter.get('unless')):
+        if 'when' in encounter and not flag_condition_holds(flags, encounter.get('when')):
+            continue
+        if flag_condition_holds(flags, encounter.get('unless')):
             continue
         if _trigger_matches(state, encounter['trigger'], applied_changes):
             return encounter
@@ -601,7 +674,7 @@ def campaign_pack_followup_changes(
     record_triggered_encounter(state, applied_change)
     change_type = _text(applied_change.get('type'))
     turn_id = applied_change.get('turnId') or applied_change.get('turn_id')
-    followups: list[dict[str, Any]] = []
+    followups: list[dict[str, Any]] = encounter_resolution_changes(state, applied_change)
     if change_type == 'scene.move_location':
         followups.extend(location_entry_changes(state, applied_change.get('locationId'), turn_id=turn_id))
     if change_type in TRIGGER_EVENT_CHANGE_TYPES and not combat_start_pending and not combat_is_active(state):
@@ -614,6 +687,67 @@ def campaign_pack_followup_changes(
         if start:
             followups.append(start)
     return followups
+
+
+def _scene_object(state: dict[str, Any], target_id: Any) -> dict[str, Any]:
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    for collection in ('interactables', 'hazards'):
+        for entry in scene.get(collection) or []:
+            if isinstance(entry, dict) and _text(entry.get('id')) == _text(target_id):
+                return entry
+    return {}
+
+
+def encounter_resolution_changes(state: dict[str, Any], applied_change: dict[str, Any]) -> list[dict[str, Any]]:
+    """The change that settles an encounter when an object action authored to do so succeeds.
+
+    ``resolvesEncounter: {<action>: {"encounterId", "outcome"}}`` on the object.
+    While that encounter's combat is active it ends at once with the outcome;
+    otherwise an ``encounter.resolve`` completes it without a fight. Either way
+    the ordinary outcome transaction pays its rewards once, and the encounter
+    is marked resolved here so its trigger never fires afterwards. An
+    encounter already completed is not settled again.
+    """
+
+    if _text(applied_change.get('type')) != 'scene.interactable.action':
+        return []
+    event = applied_change.get('event') if isinstance(applied_change.get('event'), dict) else {}
+    if _text(event.get('type')).endswith('.check_failed'):
+        return []
+    action = _text(applied_change.get('objectAction') or event.get('action')).lower()
+    target = _scene_object(state, applied_change.get('targetId') or event.get('targetId'))
+    spec = (target.get('resolvesEncounter') or {}).get(action) if isinstance(target.get('resolvesEncounter'), dict) else None
+    if not isinstance(spec, dict):
+        return []
+    encounter = catalog_record(state, 'encounters', spec.get('encounterId'))
+    end_reason = RESOLUTION_END_REASONS.get(_text(spec.get('outcome')).lower())
+    if not encounter or not end_reason:
+        return []
+    encounter_id = _record_id(encounter)
+    flags = state.setdefault('flags', {})
+    if encounter_id in _string_list(flags.get(COMPLETED_ENCOUNTERS_FLAG)) or encounter_id in _string_list(flags.get(RESOLVED_ENCOUNTERS_FLAG)):
+        return []
+    flags[RESOLVED_ENCOUNTERS_FLAG] = [*_string_list(flags.get(RESOLVED_ENCOUNTERS_FLAG)), encounter_id]
+    turn_id = applied_change.get('turnId') or applied_change.get('turn_id')
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    combat_flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
+    if combat_is_active(state) and _same_id(combat_flags.get('campaignPackEncounterId'), encounter_id):
+        return [{**combat_end_change(turn_id, end_reason), 'visible': True, 'resolvedByTargetId': _text(target.get('id'))}]
+    return [
+        {
+            'id': stable_change_id(event.get('id') or applied_change.get('id'), ENCOUNTER_RESOLVE_CHANGE, encounter_id),
+            'turnId': turn_id,
+            'type': ENCOUNTER_RESOLVE_CHANGE,
+            'source': WORLD_CHANGE_SOURCE,
+            'encounterId': encounter_id,
+            'outcome': _text(spec.get('outcome')).lower(),
+            'endReason': end_reason,
+            'status': 'resolved',
+            'resolvedByTargetId': _text(target.get('id')),
+            'reason': f"{_text(encounter.get('title')) or encounter_id} is settled without a fight.",
+            'visible': True,
+        }
+    ]
 
 
 def materialize_catalog_consequence(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:

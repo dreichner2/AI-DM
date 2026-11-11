@@ -59,6 +59,7 @@ from flask import has_app_context
 from aidm_server.character_state import SKILL_ABILITY, ability_modifier, character_roll_spec
 from aidm_server.combat.legal_actions import register_action_provider, register_action_resolver
 from aidm_server.combat.modifiers import ability_key, check_context, condition_key, save_context
+from aidm_server.combat.state import combat_turn_context, combat_turn_economy, default_turn_economy, normalize_combat_state
 from aidm_server.damage_dice import deterministic_roller, normalize_damage_dice_expression, roll_signed_dice
 from aidm_server.database import db
 from aidm_server.game_state.models import actor_items, stable_change_id
@@ -70,6 +71,7 @@ __all__ = [
     "ACTION_LEDGER_KEY",
     "INTERACTABLE_ACTIONS",
     "INTERACTABLE_KINDS",
+    "NOT_WHILE_FIGHTING",
     "OFFERED_ACTION_ORDER",
     "available_actions_for_target",
     "interactable_actor_context",
@@ -109,7 +111,8 @@ REPEAT_CHECK_MESSAGE = "You have already tried that; something has to change fir
 DEFAULT_CHECK_DC = 10
 EFFECT_SOURCE = "interactable_effect"
 COMBAT_ACTION_PREFIX = "object."
-FREE_COMBAT_ACTIONS = frozenset({"inspect"})
+ACTIVE_COMBAT_STATUSES = frozenset({"starting", "active"})
+NOT_WHILE_FIGHTING = "Not while the fight is on."
 # Default action labels: "{verb} {name}" unless the pack authors actionLabels.
 ACTION_LABELS = {
     "inspect": "Examine",
@@ -181,6 +184,7 @@ REFUSALS = {
     "check_mismatch": "That roll doesn't match what {the} needs.",
     "check_failed": "The attempt fails.",
     "repeat_check": REPEAT_CHECK_MESSAGE,
+    "in_combat": NOT_WHILE_FIGHTING,
     "malformed": "That can't be done with {the} right now.",
     "stale": "{The} changed after the player selected it.",
 }
@@ -278,6 +282,8 @@ _NEVER_PUBLIC_FIELDS = frozenset(
         "setsFlags",
         "actionLabels",
         "actionText",
+        "usableInCombat",
+        "resolvesEncounter",
         FAILED_CHECK_ACTORS_KEY,
     }
 )
@@ -526,10 +532,15 @@ def _state_actor(state: Mapping[str, Any], actor_id: Any) -> dict[str, Any]:
     )
 
 
-def _combat_participant(state: Mapping[str, Any], actor_id: Any) -> dict[str, Any] | None:
+def _combat_active(state: Mapping[str, Any]) -> bool:
     combat = state.get("combat") if isinstance(state.get("combat"), Mapping) else {}
-    if _text(combat.get("status")).lower() not in {"starting", "active"}:
+    return _text(combat.get("status")).lower() in ACTIVE_COMBAT_STATUSES
+
+
+def _combat_participant(state: Mapping[str, Any], actor_id: Any) -> dict[str, Any] | None:
+    if not _combat_active(state):
         return None
+    combat = state["combat"]
     return next(
         (
             participant
@@ -617,19 +628,33 @@ def object_rolls(state: Mapping[str, Any]) -> dict[str, Callable[..., dict[str, 
 
     combat = state.get("combat") if isinstance(state.get("combat"), Mapping) else None
 
-    def check(actor_id: Any, check_spec: Mapping[str, Any], seed: str) -> dict[str, Any]:
+    def check(actor_id: Any, check_spec: Mapping[str, Any], seed: str, *, take_time: bool = False) -> dict[str, Any]:
         actor = _state_actor(state, actor_id)
         ability = ability_key(check_spec.get("ability"))
         skill = condition_key(check_spec.get("skill"))
         dc = check_spec.get("dc") if isinstance(check_spec.get("dc"), int) else DEFAULT_CHECK_DC
-        rolled = _roll(
-            state,
-            actor,
-            roll_type=skill or "check",
-            ability=ability,
-            context=check_context(_roll_subject(state, actor), ability=ability, skill=skill, combat=combat),
-            seed=seed,
-        )
+        if take_time:
+            # Taking time over it: the check is resolved as if the die showed 20.
+            modifier, ability = _modifier(actor, roll_type=skill or "check", ability=ability)
+            rolled = {
+                "ability": ability,
+                "roll": 20,
+                "rolls": [20],
+                "mode": "normal",
+                "modifier": modifier,
+                "bonus": 0,
+                "total": 20 + modifier,
+                "takeTime": True,
+            }
+        else:
+            rolled = _roll(
+                state,
+                actor,
+                roll_type=skill or "check",
+                ability=ability,
+                context=check_context(_roll_subject(state, actor), ability=ability, skill=skill, combat=combat),
+                seed=seed,
+            )
         passed = rolled["total"] >= dc
         return {
             "id": _text(check_spec.get("id")),
@@ -744,11 +769,18 @@ def _evaluate_requirement(
     *,
     actor: dict[str, Any],
     objects: dict[str, tuple[dict[str, Any], str]],
-    roll_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    roll_check: Callable[..., dict[str, Any]] | None = None,
     check_blocked: bool = False,
+    take_time: bool = False,
     rolled_checks: list[dict[str, Any]] | None = None,
     depth: int = 0,
 ) -> dict[str, Any]:
+    """Whether ``requirement`` holds for the actor.
+
+    A check the actor already failed on this object is refused, unless they take
+    their time over it (``take_time``): then it is rolled as if the die showed 20.
+    """
+
     if requirement in (None, {}, []):
         return {"ok": True}
     if not isinstance(requirement, Mapping) or depth > 8:
@@ -765,6 +797,7 @@ def _evaluate_requirement(
                 objects=objects,
                 roll_check=roll_check,
                 check_blocked=check_blocked,
+                take_time=take_time,
                 rolled_checks=rolled_checks,
                 depth=depth + 1,
             )
@@ -783,6 +816,7 @@ def _evaluate_requirement(
                 objects=objects,
                 roll_check=roll_check,
                 check_blocked=check_blocked,
+                take_time=take_time,
                 rolled_checks=rolled_checks,
                 depth=depth + 1,
             )
@@ -845,12 +879,12 @@ def _evaluate_requirement(
             for field in ("dc", "ability", "skill"):
                 if field in check and resolved.get(field) != check.get(field):
                     return _unmet("authoritative_check_mismatch", checkId=check_id, field=field)
-        elif check_blocked:
+        elif check_blocked and not take_time:
             return _unmet("check_already_attempted", checkId=check_id)
         elif roll_check is None:
             return _unmet("check_required", check=dict(check))
         else:
-            resolved = roll_check(dict(check))
+            resolved = roll_check(dict(check), take_time=check_blocked)
             if rolled_checks is not None:
                 rolled_checks.append(dict(resolved))
         if resolved.get("passed") is not True:
@@ -1096,13 +1130,23 @@ def _action_legality(
     *,
     actor: dict[str, Any],
     objects: dict[str, tuple[dict[str, Any], str]],
-    roll_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    roll_check: Callable[..., dict[str, Any]] | None = None,
     rolled_checks: list[dict[str, Any]] | None = None,
+    in_combat: bool = False,
+    take_time: bool = False,
 ) -> dict[str, Any]:
+    """Whether the actor can take ``action`` on the object now.
+
+    During a fight only the object's ``usableInCombat`` actions can be taken;
+    taking time over a failed check (``take_time``) is never possible in one.
+    """
+
     if _invariant_error(target, collection):
         return _refusal("malformed_interactable", "malformed", target)
     if action not in _candidate_actions(target, collection):
         return _refusal("unsupported_action", "unsupported", target)
+    if in_combat and action not in _string_set(target.get("usableInCombat")):
+        return _refusal("not_while_fighting", "in_combat", target)
     refusal = _state_refusal(target, collection, action)
     if refusal:
         code = "resource_exhausted" if refusal == "used_up" else "invalid_transition"
@@ -1115,6 +1159,7 @@ def _action_legality(
         objects=objects,
         roll_check=roll_check,
         check_blocked=actor["id"] in _string_set(target.get(FAILED_CHECK_ACTORS_KEY)),
+        take_time=take_time and not in_combat,
         rolled_checks=rolled_checks,
     )
     if result["ok"]:
@@ -1129,6 +1174,7 @@ def _prerequisite_steps(
     *,
     actor: dict[str, Any],
     objects: dict[str, tuple[dict[str, Any], str]],
+    in_combat: bool = False,
 ) -> tuple[list[str], dict[str, Any] | None]:
     """The unlock and open steps that clear an action's only blockers, with the
     action's legality once they are taken; ``([], None)`` when it cannot be chained.
@@ -1151,10 +1197,10 @@ def _prerequisite_steps(
     for step in steps:
         if step in effects or f"failure:{step}" in effects:
             return [], None
-        if not _action_legality(probe, collection, step, actor=actor, objects=objects)["ok"]:
+        if not _action_legality(probe, collection, step, actor=actor, objects=objects, in_combat=in_combat)["ok"]:
             return [], None
         probe.update(_primary_patch(probe, collection, step))
-    legality = _action_legality(probe, collection, action, actor=actor, objects=objects)
+    legality = _action_legality(probe, collection, action, actor=actor, objects=objects, in_combat=in_combat)
     if legality["ok"] or legality["code"] == "check_required":
         return steps, legality
     return [], None
@@ -1343,7 +1389,8 @@ def resolve_interactable_action(
     """Validate and atomically apply one exact-ID scene-object action.
 
     ``request`` requires ``actionId``, ``action``, ``targetId``, and
-    ``locationId``.  ``turnId`` and ``expectedRevision`` are optional.  ``actor``
+    ``locationId``.  ``turnId``, ``expectedRevision`` and ``takeTime`` (retry a
+    failed check slowly, outside a fight) are optional.  ``actor``
     requires an exact ``id`` and may provide item/tool/capability IDs, flags, and
     authoritative resolved checks.  The input objects are never mutated.
     """
@@ -1540,10 +1587,15 @@ def resolve_interactable_action(
     rolls = actor_ctx["rolls"]
     rolled_checks: list[dict[str, Any]] = []
     roll_check = (
-        (lambda check: rolls["check"](actor_id, check, f"{action_id}:check:{_text(check.get('id'))}"))
+        (
+            lambda check, take_time=False: rolls["check"](
+                actor_id, check, f"{action_id}:check:{_text(check.get('id'))}", **({"take_time": True} if take_time else {})
+            )
+        )
         if rolls
         else None
     )
+    rules = {"in_combat": _combat_active(state), "take_time": request.get("takeTime") is True}
     attempt = {
         "location": location,
         "scene": scene,
@@ -1562,12 +1614,15 @@ def resolve_interactable_action(
         objects=objects,
         roll_check=roll_check,
         rolled_checks=rolled_checks,
+        **rules,
     )
     steps: list[str] = []
     if not legality["ok"] and legality["code"] == "check_failed":
         return _failed_attempt(state, next_state, check=_failed_check(legality), **attempt)
     if not legality["ok"]:
-        steps, _ = _prerequisite_steps(target, collection, action, actor=actor_ctx, objects=objects)
+        steps, _ = _prerequisite_steps(
+            target, collection, action, actor=actor_ctx, objects=objects, in_combat=rules["in_combat"]
+        )
         if not steps:
             return _result(
                 state,
@@ -1601,6 +1656,7 @@ def resolve_interactable_action(
                 objects=objects,
                 roll_check=roll_check,
                 rolled_checks=rolled_checks,
+                **rules,
             )
             if not legality["ok"] and legality["code"] == "check_failed":
                 return _failed_attempt(
@@ -1653,6 +1709,8 @@ def resolve_interactable_action(
         event["steps"] = list(steps)
     if rolled_checks:
         event["check"] = rolled_checks[-1]
+        if rolled_checks[-1].get("takeTime") is True:
+            event["takeTime"] = True
         sentences.append(_check_message(rolled_checks[-1]))
     sentences.append(_object_sentence(DONE_SENTENCES[action], target))
     if revealed_items:
@@ -2055,6 +2113,8 @@ def _failed_attempt(
         reveal_ids=list(revealed_target_ids or []),
     )
     event["check"] = check
+    if check.get("takeTime") is True:
+        event["takeTime"] = True
     if steps:
         event["steps"] = list(steps)
     if revealed_items:
@@ -2152,22 +2212,31 @@ def _target_options(
     *,
     actor: dict[str, Any],
     objects: dict[str, tuple[dict[str, Any], str]],
+    in_combat: bool = False,
 ) -> list[dict[str, Any]]:
+    """Each candidate action's legality; outside a fight a check the actor already failed is
+    offered again as a ``retry`` (taking their time over it)."""
+
     options = []
     for action in sorted(_candidate_actions(target, collection)):
-        legality = _action_legality(target, collection, action, actor=actor, objects=objects)
+        legality = _action_legality(target, collection, action, actor=actor, objects=objects, in_combat=in_combat)
         steps: list[str] = []
         if not legality["ok"]:
-            steps, chained = _prerequisite_steps(target, collection, action, actor=actor, objects=objects)
+            steps, chained = _prerequisite_steps(
+                target, collection, action, actor=actor, objects=objects, in_combat=in_combat
+            )
             legality = chained or legality
+        retry = legality.get("code") == "check_already_attempted" and not in_combat
         entry: dict[str, Any] = {
             "action": action,
-            "legal": legality["ok"],
-            "code": "legal" if legality["ok"] else legality["code"],
+            "legal": legality["ok"] or retry,
+            "code": "legal" if legality["ok"] else "retry" if retry else legality["code"],
         }
         if steps:
             entry["steps"] = steps
-        if legality.get("code") == "check_required":
+        if retry:
+            entry["retry"] = True
+        elif legality.get("code") == "check_required":
             entry["requiresCheck"] = True
             entry["check"] = deepcopy((legality.get("details") or {}).get("check"))
         elif not legality["ok"]:
@@ -2186,7 +2255,8 @@ def available_actions_for_target(
     """Return action legality for a visible exact-ID target without mutation.
 
     An action that becomes legal once its unlock/open steps are taken is legal
-    and lists those ``steps``; a refused one carries its ``reason`` sentence.
+    and lists those ``steps``; a failed check that may be taken again slowly is
+    legal with ``retry``; a refused one carries its ``reason`` sentence.
     """
 
     if not isinstance(state, Mapping) or not isinstance(actor, Mapping):
@@ -2202,7 +2272,9 @@ def available_actions_for_target(
         "ok": True,
         "code": "resolved",
         "targetId": _text(target_id),
-        "actions": _target_options(target, collection, actor=actor_ctx, objects=rules["objects"]),
+        "actions": _target_options(
+            target, collection, actor=actor_ctx, objects=rules["objects"], in_combat=_combat_active(state)
+        ),
         "take": [
             {"itemId": _text(item.get("id")), "name": _text(item.get("name"))}
             for item in (scene.get("items") if isinstance(scene.get("items"), list) else [])
@@ -2273,27 +2345,58 @@ def _offered_check(spec: Mapping[str, Any]) -> dict[str, Any]:
     return check
 
 
-def _offered_action(target: Mapping[str, Any], collection: str, option: Mapping[str, Any]) -> dict[str, Any]:
+def _offered_action(
+    target: Mapping[str, Any],
+    collection: str,
+    option: Mapping[str, Any],
+    *,
+    turn_refusal: str = "",
+) -> dict[str, Any]:
     action = option["action"]
     label, authored = _action_label(target, action)
-    legal = option["legal"] is True or option.get("requiresCheck") is True
+    allowed = option["legal"] is True or option.get("requiresCheck") is True
+    legal = allowed and not turn_refusal
     entry: dict[str, Any] = {"action": action, "label": label}
     if authored:
         entry["authored"] = True
     entry["legal"] = legal
     entry["done"] = _action_done(target, collection, action)
+    if legal and option.get("retry"):
+        entry["retry"] = True
     if option.get("requiresCheck"):
         entry["check"] = _offered_check(option.get("check") or {})
-    if not legal:
+    if not allowed:
         entry["reason"] = option.get("reason") or _object_sentence(REFUSALS["unsupported"], target)
+    elif not legal:
+        entry["reason"] = turn_refusal
     return entry
 
 
-def offered_scene_actions(state: Mapping[str, Any] | Any, hero: Mapping[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+def _combat_turn_refusal(state: Mapping[str, Any], hero_id: str) -> str:
+    """Why the hero cannot take an object action in the fight now: another's turn, or their action is spent."""
+
+    combat = normalize_combat_state(state.get("combat"), state.get("currentScene"))
+    current = combat_turn_context(combat).get("currentActor")
+    if not isinstance(current, dict) or _text(current.get("id")) != hero_id:
+        name = _text(current.get("name")) if isinstance(current, dict) else ""
+        return f"{name} is acting now." if name else "It is not your turn."
+    economy = combat_turn_economy(combat, actor_id=hero_id) or default_turn_economy(hero_id, combat.get("round"))
+    return "" if int(economy.get("actionRemaining") or 0) > 0 else "This turn's action is already spent."
+
+
+def offered_scene_actions(
+    state: Mapping[str, Any] | Any,
+    hero: Mapping[str, Any] | None,
+    *,
+    turn_economy: bool = True,
+) -> dict[str, list[dict[str, Any]]]:
     """What each scene object the hero can see offers them, by object id.
 
     Entries follow ``OFFERED_ACTION_ORDER``; ``legal`` counts an action that
-    asks for a roll (``check``) or first takes its unlock/open steps.
+    asks for a roll (``check``), first takes its unlock/open steps, or retries a
+    failed check slowly (``retry``). During a fight only ``usableInCombat``
+    actions are legal, and (with ``turn_economy``) only on the hero's turn while
+    their action is unspent.
     """
 
     if not isinstance(state, Mapping) or not isinstance(state.get("currentScene"), Mapping):
@@ -2303,20 +2406,23 @@ def offered_scene_actions(state: Mapping[str, Any] | Any, hero: Mapping[str, Any
         "currentScene": scene,
         "locations": state.get("locations") if isinstance(state.get("locations"), list) else [],
         "flags": state.get("flags") if isinstance(state.get("flags"), Mapping) else {},
+        "combat": state.get("combat") if isinstance(state.get("combat"), Mapping) else {},
     }
     rules, _ = _rules_scene(rules_state, _text(scene.get("locationId")))
     if rules is None:
         return {}
     actor = _actor_context(interactable_actor_context(rules_state, hero) if hero else {})
+    in_combat = _combat_active(rules_state)
+    turn_refusal = _combat_turn_refusal(rules_state, actor["id"]) if in_combat and turn_economy else ""
     offered: dict[str, list[dict[str, Any]]] = {}
     for target_id in rules["objects"]:
         target_entry = _available_target(rules, target_id, actor)
         if target_entry is None:
             continue
         target, collection = target_entry
-        options = _target_options(target, collection, actor=actor, objects=rules["objects"])
+        options = _target_options(target, collection, actor=actor, objects=rules["objects"], in_combat=in_combat)
         offered[target_id] = sorted(
-            (_offered_action(target, collection, option) for option in options),
+            (_offered_action(target, collection, option, turn_refusal=turn_refusal) for option in options),
             key=lambda entry: OFFERED_ACTION_ORDER.index(entry["action"]),
         )
     return offered
@@ -2888,9 +2994,9 @@ def _verb_phrase(action: str) -> str:
     return f"{action}es" if action.endswith(("ch", "sh", "s")) else f"{action}s"
 
 
-def _combat_object_economy(action: str) -> dict[str, Any]:
+def _combat_object_economy() -> dict[str, Any]:
     return {
-        "action": 0 if action in FREE_COMBAT_ACTIONS else 1,
+        "action": 1,
         "bonusAction": 0,
         "reaction": 0,
         "movement": "unused",
@@ -2905,8 +3011,7 @@ def _combat_object_economy(action: str) -> dict[str, Any]:
 def combat_object_actions(
     snapshot: dict[str, Any], participant: dict[str, Any], combat: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Scene-object actions for the combat HUD: inspect is free, the rest
-    cost the actor's action."""
+    """The scene-object actions usable in the fight (``usableInCombat``) for the combat HUD; each costs the actor's action."""
 
     actor = _state_actor(snapshot, participant.get("id"))
     scene = snapshot.get("currentScene") if isinstance(snapshot.get("currentScene"), dict) else {}
@@ -2916,9 +3021,11 @@ def combat_object_actions(
         "currentScene": scene,
         "locations": snapshot.get("locations") if isinstance(snapshot.get("locations"), list) else [],
         "flags": snapshot.get("flags") if isinstance(snapshot.get("flags"), dict) else {},
+        "combat": combat,
     }
     actor_name = _text(participant.get("name")) or _text(actor.get("name")) or "I"
-    offered = offered_scene_actions(rules_state, actor)
+    # The HUD bundle judges the turn and the action economy itself.
+    offered = offered_scene_actions(rules_state, actor, turn_economy=False)
     projected = project_scene_interactables(rules_state, {"id": actor.get("id")})
     actions: list[dict[str, Any]] = []
     for collection in COLLECTIONS:
@@ -2929,17 +3036,16 @@ def combat_object_actions(
                 if not option["legal"]:
                     continue
                 action = option["action"]
-                cost = "Free." if action in FREE_COMBAT_ACTIONS else "Uses your action."
                 actions.append(
                     {
                         "id": f"{COMBAT_ACTION_PREFIX}{target_id}.{action}",
                         "type": "object",
                         "label": option["label"],
-                        "description": f"{cost} Needs a check." if "check" in option else cost,
+                        "description": "Uses your action. Needs a check." if "check" in option else "Uses your action.",
                         "message": f"{actor_name} {_verb_phrase(action)} the {name}.",
                         "available": True,
                         "reason": "",
-                        "economy": _combat_object_economy(action),
+                        "economy": _combat_object_economy(),
                         "object": {"id": target_id, "action": action, "revision": entry.get("revision")},
                     }
                 )

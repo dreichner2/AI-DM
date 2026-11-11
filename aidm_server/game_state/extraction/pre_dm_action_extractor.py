@@ -381,6 +381,7 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
                     'targetId': target_id,
                     'objectAction': object_action,
                     'expectedRevision': object_payload.get('revision'),
+                    **({'takeTime': True} if action_intent.get('take_time') is True else {}),
                 }
             ],
             'notes': ['action_intent_pre_dm'],

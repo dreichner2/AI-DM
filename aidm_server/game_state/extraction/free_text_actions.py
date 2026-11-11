@@ -172,7 +172,7 @@ def _offered(
     hero: dict[str, Any],
     entry: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """The object's offered actions for this hero: ``action``, ``label``, ``legal``, ``check``."""
+    """The object's offered actions for this hero: ``action``, ``label``, ``legal``, ``needsRoll``, ``retry``."""
 
     location_id = _text((state.get('currentScene') or {}).get('locationId'))
     options = available_actions_for_target(
@@ -196,17 +196,21 @@ def _offered(
                 'label': label,
                 'legal': option.get('legal') is True or option.get('requiresCheck') is True,
                 'needsRoll': option.get('requiresCheck') is True or bool(option.get('check')),
+                'retry': option.get('retry') is True,
             }
         )
     return offered
 
 
-def _object_intent(entry: dict[str, Any], action: str, message: str) -> dict[str, Any]:
+def _object_intent(entry: dict[str, Any], offer: dict[str, Any], message: str) -> dict[str, Any]:
+    """The typed object intent; words naming a failed check again take time over it."""
+
     return {
         'kind': 'object',
         'source': 'free_text',
         'text': message,
-        'object': {'id': _text(entry.get('id')), 'action': action, 'revision': entry.get('revision')},
+        'object': {'id': _text(entry.get('id')), 'action': offer['action'], 'revision': entry.get('revision')},
+        **({'take_time': True} if offer.get('retry') else {}),
     }
 
 
@@ -241,7 +245,9 @@ def _by_label(message: str, objects: list[tuple[dict[str, Any], list[dict[str, A
     return best[0] if len(best) == 1 else None
 
 
-def _object_by_verb(clause: str, objects: list[tuple[dict[str, Any], list[dict[str, Any]]]]) -> tuple[dict[str, Any], str] | None:
+def _object_by_verb(
+    clause: str, objects: list[tuple[dict[str, Any], list[dict[str, Any]]]]
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
     for verb, action in OBJECT_VERBS:
         if not re.match(rf'^{re.escape(verb)}\b', clause):
             continue
@@ -254,8 +260,9 @@ def _object_by_verb(clause: str, objects: list[tuple[dict[str, Any], list[dict[s
         entry, offers = entry_offers
         by_action = {offer['action']: offer for offer in offers}
         if action == 'force':
-            action = 'unlock' if by_action.get('unlock', {}).get('needsRoll') else 'break'
-        return (entry, action) if action in by_action else None
+            unlock = by_action.get('unlock', {})
+            action = 'unlock' if unlock.get('needsRoll') or unlock.get('retry') else 'break'
+        return (entry, by_action[action]) if action in by_action else None
     return None
 
 
@@ -319,7 +326,7 @@ def free_text_action(
     labelled = _by_label(message, objects)
     if labelled:
         entry, offer = labelled
-        return FreeTextAction(kind='object', intents=(_object_intent(entry, offer['action'], message),), more=more)
+        return FreeTextAction(kind='object', intents=(_object_intent(entry, offer, message),), more=more)
 
     items = [item for item in scene.get('items') or [] if isinstance(item, dict) and _text(item.get('id'))]
     if TAKE_ALL.match(first):
@@ -345,8 +352,8 @@ def free_text_action(
 
     object_action = _object_by_verb(first, objects)
     if object_action:
-        entry, action = object_action
-        return FreeTextAction(kind='object', intents=(_object_intent(entry, action, message),), more=more)
+        entry, offer = object_action
+        return FreeTextAction(kind='object', intents=(_object_intent(entry, offer, message),), more=more)
 
     travel = TRAVEL.match(first)
     if travel:

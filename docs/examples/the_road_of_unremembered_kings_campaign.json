@@ -270,6 +270,9 @@
             "use": [
               "clue_pale_lantern_bell"
             ]
+          },
+          "actionText": {
+            "use": "You strike the bell. It gives one low note that hangs over the yard longer than it should. Far out on the dark hills a pale light kindles, then another, as if something on the old road had been waiting to answer."
           }
         }
       ]
@@ -590,6 +593,18 @@
             "use": [
               "loc_valley_last_road_stone"
             ]
+          },
+          "usableInCombat": [
+            "use"
+          ],
+          "resolvesEncounter": {
+            "use": {
+              "encounterId": "enc_roadwarden_judgment",
+              "outcome": "negotiation"
+            }
+          },
+          "actionText": {
+            "use": "You stand at the banner-stone and speak the oath as the hearth-stone gave it: to keep the road for the lost, the hunted, the wounded, and the small folk fleeing shadow, asking no name as price for passage. The wind drops. Among the cairns the nameless dead lower their spears, and behind them a way opens between the stones, running down toward the valley."
           }
         }
       ]
@@ -731,6 +746,9 @@
             "open": [
               "loc_valley_last_road_stone"
             ]
+          },
+          "actionText": {
+            "unlock": "You set your shoulder to the grate and heave. Rust shrieks, the rotten pins give, and the iron swings wide. Cold air breathes out of the dark, smelling of wet stone and pale bark."
           }
         }
       ]
@@ -799,7 +817,7 @@
           "locked": false,
           "repeatableInspect": true,
           "description": "A white road-stone taller than a rider, standing where the forgotten roads meet beneath pale trees. Names surface across its face, blur into ash, and return as whispers in the fog. While the Cinder Scribe's binding holds, nothing can be done with it. Once the binding is broken, the stone can be renewed with the fragment and the recovered names, broken with a stonewright's hammer, hidden again by someone who knows the oath, or claimed by whoever lays a hand on it and takes the ward for their own.",
-          "playerDescription": "A white road-stone taller than a rider; names surface on its face and fade into ash. Once the Scribe's binding is broken it can be renewed (Use: the road-stone fragment and the recovered names), broken (Break: a mason's hammer), hidden again (Lock: the road oath) or claimed (Trigger).",
+          "playerDescription": "A white road-stone taller than a rider. Names surface on its face and fade into ash.",
           "requirements": {
             "use": {
               "flags": {
@@ -857,7 +875,13 @@
               "ward_claimed": true
             }
           },
-          "triggerable": true
+          "triggerable": true,
+          "actionText": {
+            "use": "You press the fragment into the wound in the stone and speak the names you carried here, one by one. The stone takes them. Light runs out along the old roads like water finding its bed, the fog at the valley's edge thins, and the people inside it begin, slowly, to remember which way is home.",
+            "break": "You bring the mason's hammer down where the names run thickest. The stone splits with a sound like a held breath let go. The fog tears, the missing stumble out blinking into the cold — and far away, on every road the ward once kept, the lanterns go dark for good.",
+            "lock": "You speak the oath, not as a promise but as a door closing. The pale trees lean in, the roads fold away one by one, and the valley settles back into a place no map will hold. Whatever waits in the fog waits there still.",
+            "trigger": "You lay your hand flat on the stone and do not ask. Every road in the west turns its face toward you. The names in the stone go quiet, waiting to hear which of them you will keep."
+          }
         },
         {
           "id": "valley_false_refuge",
@@ -2961,8 +2985,16 @@
         "locationId": "loc_cairns_roadwardens"
       },
       "unless": {
-        "flagKey": "roadwardens_appeased",
-        "equals": true
+        "anyOf": [
+          {
+            "flagKey": "roadwardens_appeased",
+            "equals": true
+          },
+          {
+            "flagKey": "oath_learned",
+            "equals": true
+          }
+        ]
       },
       "rewards": {
         "xp": 450,
@@ -3220,7 +3252,28 @@
             }
           ]
         }
-      }
+      },
+      "adjustments": [
+        {
+          "when": {
+            "flagKey": "true_name_known",
+            "equals": true
+          },
+          "enemyId": "enemy_cinder_scribe",
+          "hpMultiplier": 0.75,
+          "text": "You speak his name — Maedran Voss — and the ash-ink on his hands runs like water."
+        },
+        {
+          "when": {
+            "flagKey": "roadwardens_appeased",
+            "equals": true
+          },
+          "removeEnemyIds": [
+            "enemy_name_eaten_roadwardens"
+          ],
+          "text": "The nameless dead stand aside. They will not fight for him."
+        }
+      ]
     }
   ],
   "segments": [
