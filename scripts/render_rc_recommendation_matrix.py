@@ -443,7 +443,7 @@ def build_matrix(*, repo_root: pathlib.Path, packet: dict[str, Any], checklist: 
                     (
                         'closes the character delete confirmation with Escape without deleting',
                         'traps modal focus and returns focus to the opener when closed',
-                        "findByRole('dialog', { name: 'Create New Campaign' })",
+                        "findByRole('dialog', { name: 'New adventure' })",
                         "key: 'Escape'",
                         "key: 'Tab'",
                         'toHaveFocus()',

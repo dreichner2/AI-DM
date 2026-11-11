@@ -14,6 +14,7 @@ report.
 - [ ] `.venv/bin/python -m pytest` passes.
 - [ ] `.venv/bin/python scripts/smoke_beta_flow.py` passes in isolated fallback mode.
 - [ ] `.venv/bin/python scripts/scenario_regression.py` passes and records provider/model for each scenario.
+- [ ] `make play-now-smoke` plays the Play Now adventure's careful route to the renewed ending through the socket pipeline with seeded dice, and no narration or story beat contains a raw id (`loc_`, `enemy_`, `clue_`, `obj_`, `cp_`), a dotted change type, `update applied` or `not legal`.
 - [ ] If live/local validation is needed, `.venv/bin/python scripts/smoke_beta_flow.py --use-local-env` is run intentionally against the target database/provider.
 - [ ] `GET /api/health` confirms the expected environment/auth flags and reports the selected provider/model as configured; deterministic fallback is accepted only for an explicitly documented safe-mode drill.
 - [ ] `make db-upgrade` applies cleanly.
@@ -53,6 +54,7 @@ report.
 - [ ] `cd aidm_frontend && npm run bundle:budget` passes after build.
 - [ ] RC browser smoke runs the built single-origin frontend and verifies required security headers and CSP on the UI response.
 - [ ] RC visual smoke captures desktop, short-height, and mobile screenshots without console errors, horizontal overflow, or clipped core panels.
+- [ ] Both smokes also pass against an already running single-origin Safe Mode server when `AIDM_SMOKE_BASE_URL` names it (for example `AIDM_SMOKE_BASE_URL=http://127.0.0.1:5059 npm run smoke:browser`); they then start no server of their own.
 - [ ] `make visual-smoke-review` writes `tmp/release/visual-smoke-review.md` and `.json` confirming expected screenshot dimensions, nonblank pixel variation, and no missing screenshots.
 - [ ] `make rc-issue-evidence` records the latest visual-smoke screenshot directory and review report in `tmp/release/issue-evidence/issue-04-frontend.md`.
 - [ ] `cd aidm_frontend && npm audit --omit=dev` has no unresolved production issues.

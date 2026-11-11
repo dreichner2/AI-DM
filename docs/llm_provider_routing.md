@@ -49,11 +49,53 @@ are serialized process-wide.
 
 With `AIDM_LLM_PROVIDER=fallback` nothing calls a network or CLI model. The
 scripted narrator narrates engine results (combat, spells, class capabilities,
-travel, scene objects, items, rests, quests, rewards and resolved rolls) and
-authored scene content deterministically, and asks for a roll only when the
-turn's rules hint requires one that has not been made yet. Every helper and task
-profile resolves to the deterministic/heuristic path, and canon extraction
-applies the heuristic patch without a provider call.
+travel, scene objects, items, rests, shops, rewards and resolved rolls) and
+authored content (the opening scene, object `actionText`, an encounter's
+read-aloud `setup` and adjustment lines, ending text) deterministically, in the
+second person and without quoting the player's words back. It asks for a roll
+only when the turn's rules hint requires one that has not been made yet, and
+leaves objective progress, quest completion and XP to the turn's story beats. Every helper and task profile resolves to the deterministic/heuristic
+path (`helper_provider_name` returns `fallback` whenever the main provider is),
+and canon extraction applies the heuristic patch without a provider call.
+
+The Story view's Settings → Narrator lists the scripted narrator and every
+provider the server has a key for (`GET /api/llm/config`); switching narrator is
+a workspace-administrator change (`PATCH /api/llm/config`), which on a local
+no-auth run is the person at the keyboard. Keys are only ever read from the
+server environment.
+
+### Narration context
+
+`aidm_server/llm_context.py` builds the narrator's CONTEXT JSON within a
+30,000-character budget (`MAX_CONTEXT_CHARS`). When it is over, sections are
+dropped in this order until it fits: `dormant_threads`, `emergent_memory.facts`
+beyond 10, `live_world_state.recentKnownNpcs`, `live_world_state.recentLocations`
+beyond 4, `campaign_pack_director.relevantRecords.enemies`, `recent_turns`
+beyond the latest 5, and `campaign_pack_director.nextCheckpoints` beyond 2. Each
+drop is recorded in the `llm.context.trimmed` telemetry event. The rolling
+summary appears once (`session_memory.session_recap`), the RULES_HINT copy in the
+prompt omits the state summary already in CONTEXT, and NPC `personality`,
+`motivation`, `knows` and `secret` are marked `dmOnly`.
+
+An opening turn (`message_kind: "opening"`) adds an `OPENING BRIEF` block built
+from the opening scene, the present NPCs, the pack's GM-only starting brief and
+the active checkpoint, and never asks for a roll.
+
+### Helper calls during a turn
+
+- The turn-conductor helper (table flow between several players) runs only when
+  `AIDM_TURN_CONDUCTOR_HELPER_ENABLED` is true (the default), at least two
+  players are connected to the session, and the main provider is not
+  `fallback`; otherwise only the deterministic decision applies.
+- The state-pipeline helpers (pre-narration action extraction and
+  post-narration outcome extraction) run when
+  `AIDM_STATE_PIPELINE_HELPER_ENABLED` is true (the default); the opening turn
+  makes no conductor or pre-narration extraction call, and free-text words that
+  clearly name one action are mapped by the server first. In Safe Mode both take
+  their deterministic path.
+- Both stay off inside the test suite (`AIDM_ENV=test`) unless a test opts in
+  with `AIDM_TURN_CONDUCTOR_HELPER_IN_TESTS` or
+  `AIDM_STATE_PIPELINE_HELPER_IN_TESTS`.
 
 ## Codex CLI Isolation
 

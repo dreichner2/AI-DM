@@ -36,7 +36,7 @@ status codes, and less common subroutes.
 | Campaigns | Collection and item CRUD, archive/restore, workspace, chronicle, and canon under `/api/campaigns` | `campaigns.py` |
 | Campaign packs | Lint/forge, examples, installed packs, and imports under `/api/campaigns/pack-tools`, `/api/campaigns/example-packs`, `/api/campaigns/installed-packs`, and `/api/campaigns/import-pack` | `campaigns.py` |
 | Players | Campaign player collection plus player get/patch/delete, loadout repair, and equipment update under `/api/players` | `players.py` |
-| Races and onboarding | Core/custom races under `/api/races` and `/api/custom-races`; pregenerated characters and play-now under `/api/onboarding` | `races.py`, `onboarding.py` |
+| Races and onboarding | Core/custom races under `/api/races` and `/api/custom-races`; the ready-made heroes (`GET /api/onboarding/pregenerated-characters`, signed-in readers only) and Play Now (`POST /api/onboarding/play-now`) under `/api/onboarding`; guided-creation options at `GET /api/rules/creation-options` | `races.py`, `onboarding.py`, `rules.py` |
 | Sessions | Start/end, list, import/export, recap/chronicle, update, archive/restore/delete, logs, events, state, content settings, and campaign-pack progress under `/api/sessions` | `sessions.py` |
 | Maps and segments | Map create/list/get/update under `/api/maps`; player reads include only `visibility=player` maps while DM authoring sees `player` and `dm`; segment CRUD and activation under `/api/segments` | `maps.py`, `segments.py` |
 | Bestiary and creatures | Core, campaign, and region bestiaries plus resolve/generate/variant/evolve/balance operations under `/api/bestiary`, `/api/campaigns/*/bestiary`, and `/api/creatures` | `creatures.py` |
@@ -120,12 +120,65 @@ exports preserve it for the selected or owned character.
 When combat is active, `GET /api/sessions/<session_id>/state` adds viewer-scoped
 `state_snapshot.combat.legalActions` bundles. Each bundle contains stable
 server-issued action IDs, the current actor, range-band-checked target options,
-and a coarse action/movement cost derived from persisted combat state. A HUD
+and each action's `cost` (`action`, `bonusAction`, `movement`, `reaction`) from
+the persisted turn economy (`tracking: "persisted_turn_economy"`). A melee attack
+on a target out of reach is still offered while the hero's move is unspent: the
+target carries `requiresMove: true` (and the action too when every reachable
+target needs it), and taking it spends the move and the action. A HUD
 submission sends only `kind: combat`, `combat.action_id`, and optional
 `combat.target_id`; the turn engine resolves those IDs again against the current
 snapshot, replaces client prose with the canonical action, and rolls attacks on
-the server. The contract is explicitly `turn_order_derived`: per-action,
-movement, and reaction counters are not yet persisted or claimed as enforced.
+the server.
+
+## Story View Contract
+
+The Story view runs on these server fields; Table tools ignores most of them.
+
+- **Player's-eyes view.** `GET /api/sessions/<id>/state`, `/log`, `/events`,
+  `/export`, `/campaign-pack/progress` and `GET /api/campaigns/<id>/workspace`
+  accept `view=player` and optional `player_id=<int>`. `view=player` forces the
+  player-safe projection even for an operator; `player_id` names the hero whose
+  private data is included and for whom legality is computed. An operator may
+  name any player of the campaign; anyone else only a player their account
+  controls (403 `forbidden` otherwise); any other `view` value is a 400
+  `validation_error`. Without `view` the response is as before.
+- **Offered actions.** In `state_snapshot.currentScene`, every visible entry of
+  `interactables[]` and `hazards[]` carries `offeredActions`: `{action, label,
+  legal, done}` in the order search, use, trigger, open, unlock, inspect, close,
+  lock, break, disarm, reset, plus `authored: true` for a pack label, `check`
+  (`{skill, ability}`, with `dc` only when the pack sets `showDc`), `choice: true`
+  for alternative fates, `retry: true` after a failed check, and `reason` (one
+  plain sentence) when not legal.
+- **Take labels.** Every loose item in `currentScene.items[]` carries
+  `takeLabel` (`Take the Caravan Strongbox Key`, `Take 15 gp`). The client's
+  pickup intent is `{"kind": "item", "source": ..., "inventory_action":
+  "pick_up", "item": {"id", "name", "quantity"}}`.
+- **Journal.** The player view carries `state_snapshot.journal`: `quest` (`id`,
+  `title`, `summary`, `status`, `stageTitle`, `stageSummary`), `objectives`
+  (completed ones, then the active checkpoint's open ones, each `{id, title,
+  optional, status}`), `clues` (`{id, title, text}`), `people` (`{id, name, role,
+  summary, met}`) and `places` (`{id, name, state}`), only for what the party
+  knows. A terminal checkpoint adds `campaignPack.ending` (`{checkpointId,
+  title, summary, text}`).
+- **Story beats.** Every Dungeon Master turn's `storyBeats` (`[{kind, text,
+  refId?}]`; kinds and wording in [gameplay systems](gameplay_systems.md#story-beats))
+  are sent on the turn's final `turn_status` (`status: "saved"`, `details.storyBeats`)
+  and stored in the persisted log entry's metadata and the turn's metadata. A
+  client that does not know a kind renders its `text` as a plain line.
+- **Taking time.** An object intent may carry `take_time: true` to retry a
+  failed check by taking time: the clock advances one phase and the check
+  resolves as if the die showed 20.
+- **Rolls.** A HUD weapon attack's `roll_resolved` payload carries `target_ac`,
+  the armour class the engine compares the attack against.
+- **Title screen.** `SessionSummary.continue_line` is `{current location} —
+  {first sentence of the latest narration}`, at most 160 characters (null before
+  anything is narrated); the rolling summary is never used there.
+  `POST /api/onboarding/play-now` accepts `fresh: true` to always start a new
+  adventure (a new campaign); without it the workspace's existing Play Now
+  campaign is reused and its current chapter opened.
+- **Refusals.** A refused object action is answered with one plain sentence (the
+  same text as the offered entry's `reason`), never a rule code. A hero who is
+  down receives `You are down and cannot act.`
 
 ## Authorization Model
 
@@ -243,6 +296,21 @@ Common server events include `error`, `player_joined`, `player_left`,
 `scene_state`, `segment_triggered`, `clarification_required`, `music_state`, and
 `turn_control_updated`. A consumer should tolerate additive fields and unrelated
 events but validate the payload for the events it handles.
+
+`dm_chunk` carries only `session_id`, `turn_id`, `chunk` and a 0-based `index`;
+`rules_hint` and `requires_roll` arrive once, in `dm_response_start` (and
+`dm_response_end`). The final `turn_status` of a turn (`status: "saved"`,
+`details.stage: "post_turn"`) carries its `storyBeats`. `send_message` accepts
+an optional `message_kind`; the only allowed value is `"opening"`, which marks
+the adventure's opening turn (no roll, no helper-model calls).
+
+A submission while another player holds the structured turn is rejected with
+`turn_out_of_order` and a plain message (`{name} has the turn. Your action was
+not sent; your draft is kept.`). When that player has disconnected, the message
+says when their turn will be skipped and `details` carries
+`active_player_absent: true` and `skip_in_seconds`; after
+`AIDM_ABSENT_TURN_GRACE_SECONDS` the turn is skipped and the action is judged
+against the new holder.
 
 `roll_required` identifies `session_id`, `pending_turn_id`, `rule_type`,
 `dc_hint`, and a user-facing `prompt`; it can also include

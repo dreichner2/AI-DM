@@ -16,6 +16,8 @@ const SMOKE_TIMEOUT_MS = Number(process.env.AIDM_BROWSER_SMOKE_TIMEOUT_MS || 90_
 const SMOKE_TOTAL_TIMEOUT_MS = Number(process.env.AIDM_BROWSER_SMOKE_TOTAL_TIMEOUT_MS || 480_000)
 const SHUTDOWN_GRACE_MS = Number(process.env.AIDM_BROWSER_SMOKE_SHUTDOWN_GRACE_MS || 2_000)
 const SINGLE_ORIGIN_BUILD = process.env.AIDM_BROWSER_SMOKE_SINGLE_ORIGIN === 'true'
+// A running single-origin server (built frontend served by the backend) to test instead of starting one.
+const SMOKE_BASE_URL = (process.env.AIDM_SMOKE_BASE_URL || '').trim().replace(/\/+$/, '')
 const BACKEND_SERVER = (
   process.env.AIDM_BROWSER_SMOKE_BACKEND_SERVER
   || (process.platform === 'win32' ? 'werkzeug' : 'gunicorn')
@@ -210,6 +212,22 @@ function assertSecurityHeaders(response, label, options = {}) {
   }
 }
 
+async function postJson(baseUrl, pathName, payload) {
+  const response = await fetch(`${baseUrl}${pathName}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const text = await response.text()
+  if (!response.ok) throw new Error(`${pathName} failed with ${response.status}: ${text}`)
+  return text ? JSON.parse(text) : null
+}
+
+async function createBlankCampaign(baseUrl, title, description) {
+  const world = await postJson(baseUrl, '/api/worlds', { name: `${title} World`, description })
+  return postJson(baseUrl, '/api/campaigns', { title, description, world_id: world.world_id })
+}
+
 async function waitForSessionLog(baseUrl, sessionId, predicate) {
   const startedAt = Date.now()
   let lastPayload = null
@@ -392,15 +410,18 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
 
     await runStoryFlow(browser, frontendUrl, backendUrl, consoleErrors)
 
+    // The smoke's server narrates with the scripted narrator, which can tell a ready-made adventure but not a
+    // blank page: the sheet says so and keeps the blank page closed, so the blank adventure is made through the API.
     await page.getByRole('button', { name: /^(Create your own adventure|New adventure)$/ }).click()
     const newAdventureSheet = page.getByRole('dialog', { name: 'New adventure' })
     await expect(newAdventureSheet).toBeVisible({ timeout: 15_000 })
-    await newAdventureSheet.getByRole('button', { name: 'Begin with a blank page' }).click()
-    await newAdventureSheet.getByRole('textbox', { name: 'Name', exact: true }).fill('Browser Smoke Campaign')
-    await newAdventureSheet.getByRole('textbox', { name: 'What is it about?' }).fill('Created through the browser smoke UI.')
-    await newAdventureSheet.getByRole('button', { name: 'Begin the adventure' }).click()
-    await expect(newAdventureSheet).toBeHidden({ timeout: 15_000 })
-    await expect(page.locator('.session-header').getByText('Browser Smoke Campaign')).toBeVisible()
+    await expect(newAdventureSheet.getByText('Needs an AI narrator — choose one in Settings')).toBeVisible()
+    await expect(newAdventureSheet.getByRole('button', { name: 'Begin with a blank page' })).toBeDisabled()
+    await newAdventureSheet.getByRole('button', { name: 'Close create campaign' }).click()
+    await expect(newAdventureSheet).toBeHidden()
+    const campaign = await createBlankCampaign(backendUrl, 'Browser Smoke Campaign', 'Created through the browser smoke API.')
+    await page.goto(`${frontendUrl}/?campaign=${campaign.campaign_id}`, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('.session-header').getByText('Browser Smoke Campaign')).toBeVisible({ timeout: 15_000 })
 
   // A new adventure without characters asks who you are playing; Create Character opens the hero creator.
   const characterChooser = page.getByRole('dialog', { name: 'Choose your character' })
@@ -412,7 +433,7 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await page.locator('.empty-action-card').getByRole('button', { name: 'Start next chapter' }).click()
   const startChapterDialog = page.getByRole('dialog', { name: 'Start the next chapter' })
   await expect(startChapterDialog).toBeVisible()
-  await startChapterDialog.getByRole('button', { name: 'Start chapter' }).click()
+  await startChapterDialog.getByRole('button', { name: 'Start chapter', exact: true }).click()
   await expect(startChapterDialog).toBeHidden({ timeout: 15_000 })
   await expect(page.getByRole('heading', { name: /(Session|Chapter) \d+/i })).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.session-list .session-card.active')).toContainText('Chapter')
@@ -614,7 +635,26 @@ function withTimeout(promise, timeoutMs, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
+const PASSED_MESSAGE = 'passed: Story Play Now -> opening narration -> one action -> Settings -> Your adventures -> New adventure (blank page closed to the scripted narrator) -> blank adventure via API -> Choose your character -> guided hero creation -> start chapter -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session'
+
+async function checkSingleOriginServer(baseUrl) {
+  const healthResponse = await waitForHttp(`${baseUrl}/api/health`, 'backend health')
+  assertSecurityHeaders(healthResponse, 'backend health')
+  const frontendResponse = await waitForHttp(`${baseUrl}/`, 'single-origin frontend')
+  assertSecurityHeaders(frontendResponse, 'single-origin frontend', { requireUiCsp: true })
+}
+
 async function main() {
+  if (SMOKE_BASE_URL) {
+    log(`using the running single-origin server at ${SMOKE_BASE_URL}`)
+    await checkSingleOriginServer(SMOKE_BASE_URL)
+    smokeTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-browser-smoke-'))
+    log('running browser flow')
+    await runBrowserFlow(SMOKE_BASE_URL, SMOKE_BASE_URL)
+    cleanupTempDir()
+    log(PASSED_MESSAGE)
+    return
+  }
   if (isPathLikeExecutable(PYTHON) && !fs.existsSync(PYTHON)) {
     throw new Error(`Missing Python executable: ${PYTHON}`)
   }
@@ -708,8 +748,7 @@ async function main() {
   assertSecurityHeaders(healthResponse, 'backend health')
 
   if (SINGLE_ORIGIN_BUILD) {
-    const frontendResponse = await waitForHttp(`${backendUrl}/`, 'single-origin frontend')
-    assertSecurityHeaders(frontendResponse, 'single-origin frontend', { requireUiCsp: true })
+    await checkSingleOriginServer(backendUrl)
     log(`using built single-origin frontend from ${FRONTEND_DIST_DIR}`)
   } else {
     log(`starting frontend on ${frontendUrl}`)
@@ -732,7 +771,7 @@ async function main() {
 
   await stopAllManaged()
   cleanupTempDir()
-  log('passed: Story Play Now -> opening narration -> one action -> Settings -> Your adventures -> New adventure -> Choose your character -> guided hero creation -> start chapter -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session')
+  log(PASSED_MESSAGE)
 }
 
 if (require.main === module) {

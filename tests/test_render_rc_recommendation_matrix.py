@@ -43,7 +43,7 @@ def _seed_recommendation_files(root):
             [
                 "it('closes the character delete confirmation with Escape without deleting', () => {})",
                 "it('traps modal focus and returns focus to the opener when closed', () => {})",
-                "findByRole('dialog', { name: 'Create New Campaign' })",
+                "findByRole('dialog', { name: 'New adventure' })",
                 "fireEvent.keyDown(document, { key: 'Escape' })",
                 "fireEvent.keyDown(document, { key: 'Tab' })",
                 'expect(closeButton).toHaveFocus()',

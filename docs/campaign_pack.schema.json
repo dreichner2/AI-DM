@@ -432,6 +432,12 @@
           "additionalProperties": {
             "$ref": "#/$defs/encounterResolution"
           }
+        },
+        "triggerable": {
+          "description": "true offers the trigger action on an object that is not a hazard. Read only when it is exactly true."
+        },
+        "repeatable": {
+          "description": "true lets the object be triggered again after it has been triggered; otherwise the trigger action is refused until the object is reset (hazards can be reset). Read only when it is exactly true."
         }
       }
     },
@@ -1009,7 +1015,7 @@
           "additionalProperties": true
         },
         "setup": {
-          "description": "Stored in the operator catalog only; never shown to players."
+          "description": "Read-aloud text told when the encounter's fight starts, before the first blows and before any adjustment line. It is not part of the player snapshot."
         },
         "stakes": {
           "description": "Stored in the operator catalog only; never shown to players."
@@ -1122,6 +1128,9 @@
         "allowParley": {
           "description": "Its enemies may negotiate, surrender, yield or retreat from the first round; otherwise only at half HP or less, once their side has lost a member, or from round 4 once hurt.",
           "type": "boolean"
+        },
+        "lethalDefeat": {
+          "description": "true skips the beaten-party recovery when every hero is down at the end of this encounter's fight and lets that defeat fail a checkpoint naming the encounter in failWhen. Without it the heroes wake later with 1 HP, the encounter re-arms and no checkpoint fails. A failure never advances onto a terminal checkpoint either way. Read only when it is exactly true."
         }
       }
     },

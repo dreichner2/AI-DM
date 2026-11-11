@@ -206,6 +206,7 @@ consumer.
 | pack | `map`, `routes` | mechanical, player (`worldMap`) |
 | startingState | `locationId`, `questId`, `checkpointId`, `known*Ids`, `active*Ids`, `partyNpcs`, `combat` | mechanical |
 | startingState | `flags` (alias `campaignFlags`) | mechanical |
+| startingState | `clock` (`{"day", "phase"}`; see Clock Start) | mechanical, player |
 | startingState | `partyStatus`, `partyNotes` | stored (`campaignPack.startingBrief`) |
 | currentScene | `name`/`title`, `sceneType`, `dangerLevel`, `mood`, `combatState`, `musicTag`, positions, `items`, `interactables`, `hazards` | mechanical, player |
 | currentScene | `description` | mechanical, prompt, player |
@@ -217,6 +218,10 @@ consumer.
 | location | `mapPosition`, `mapIcon` | player (`worldMap`) |
 | location | `region`, `playerSummary`, `playerDescription`, `tags` | player |
 | location | `gmNotes` | stored |
+| scene object | `kind`, state fields, `requirements`, `contents`, `discoversClueIds`, `setsFlags`, `discoversLocationIds`, `reveals`, `mechanicalEffects`, `triggerable`, `repeatable` | mechanical |
+| scene object | `allowedActions`, `usableInCombat`, `resolvesEncounter`, `choiceActions` (see Scene Object Fields) | mechanical, player |
+| scene object | `actionLabels`, `proper` | player |
+| scene object | `actionText` | mechanical, prompt (told when the action succeeds; never in the player snapshot) |
 | npc | `id`, `name`, `locationId`, `status`, `disposition`, visibility flags | mechanical |
 | npc | `role`, `race`, `questIds` | prompt, player |
 | npc | `playerSummary`, `description`/`playerDescription`, `aliases`, `tags` | player |
@@ -226,11 +231,13 @@ consumer.
 | quest | `playerSummary`, `description` | player |
 | objective | `id`, `status`, `optional`, `prerequisiteObjectiveIds`, `completeWhen`, `failWhen` | mechanical |
 | objective | `description` | prompt, player |
-| encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds`, `trigger`, `once`, `when`, `unless`, `scaling` | mechanical |
+| encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds`, `trigger`, `once`, `when`, `unless`, `scaling`, `adjustments`, `allowParley`, `lethalDefeat` | mechanical |
 | encounter | `title`, `summary`/`description`, `locationIds`, `checkpointIds` | prompt |
-| encounter | `setup`, `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
+| encounter | `setup` (read aloud when its fight starts, by either narrator) | mechanical, prompt |
+| encounter | `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
 | enemy | creature fields (`stats`, `abilities`, `behavior`, ...), `xpReward` | mechanical |
 | enemy | `challengeTier: "boss"` (never yields or retreats above a quarter of its HP) | mechanical |
+| enemy | `singularName`, `proper` (how one of them is named in narration) | mechanical |
 | enemy ability | `durationRounds` (1–10 of the target's turns its `conditionsApplied` last; default 1, the end of its next turn; a save is repeated at the end of each; the linter errors outside 1–10) | mechanical |
 | enemy | `descriptionShort`, `challengeTier`, `creatureType`, `tags` | prompt |
 | checkpoint | `id`, graph fields, `completeWhen`, `failWhen`, `branchWhen`, `prerequisite*`, `optional`, `terminal`, `canCompleteOutOfOrder`, `rejoinTargetCheckpointId`, `directorRules` | mechanical |
@@ -404,8 +411,17 @@ the Play Now adventure, uses every mechanism on this page and passes
   completed by objectives, places, flags, and an encounter, ending on a
   terminal checkpoint; `storyFlags` so talk can achieve what objects can; and
   two merchants, one selling a hammer whose `itemId` a requirement names.
+- The Story view fields: `actionLabels` and `allowedActions` on every object,
+  `actionText` for the bell, the oath, the grate and the road-stone's fates, the banner
+  stone's `usableInCombat` and `resolvesEncounter` oath, the road-stone's
+  `choiceActions` and the terminal checkpoint's `endingVariants` (four fates,
+  four endings), `adjustments` and `setup` on the finale, `singularName` and
+  `proper` enemies, an ability with `durationRounds`, and
+  `startingState.clock`.
 
-`tests/test_flagship_adventure.py` plays it through in Safe Mode by two routes.
+`tests/test_flagship_adventure.py` plays it through in Safe Mode by two routes,
+and `tests/test_play_now_release_smoke.py` (`make play-now-smoke`) replays the
+careful route and a lost-then-won finale while checking what the player reads.
 
 ## Stable Import Errors
 
@@ -539,7 +555,13 @@ Checkpoint graph fields:
 - `prerequisiteCheckpointIds`: beats that must be resolved before this checkpoint can become active.
 - `prerequisitePolicy`: `completed`, `completed_or_skipped`, `completed_or_skipped_or_failed`, or `terminal`.
 - `optional`: marks a beat as non-blocking when the tracker is choosing the next linear checkpoint.
-- `failureCheckpointIds`: fallback beats used when a checkpoint fails.
+- `failureCheckpointIds`: fallback beats used when a checkpoint fails. A
+  failure never advances onto a terminal checkpoint: when the only way on is the
+  ending, the checkpoint stays active so the party can try again. A party defeat
+  (every hero down) fails a checkpoint through its `failWhen.encounterIds` only
+  when the encounter or its combat sets `lethalDefeat: true`; otherwise the party
+  wakes and the encounter can be fought again. Fleeing (`players_fled`) fails it
+  either way.
 - `terminal`: marks an end/finale checkpoint. Once reached it stays the active
   checkpoint with status `reached` (it never completes itself away), and the
   player projection carries `ending: {checkpointId, title, summary, text}` from
@@ -551,7 +573,17 @@ Checkpoint graph fields:
   beat) and tells it (`ending.text`, the journal's `stageSummary`); with no
   match the checkpoint's own player title and summary do. The linter errors on
   a variant without a flag predicate, title and text, and warns about a flag
-  the pack never sets or variants on a checkpoint that is not terminal.
+  the pack never sets or variants on a checkpoint that is not terminal. From the
+  Play Now pack's last checkpoint:
+
+  ```json
+  {"id": "cp_07_road_remembers", "terminal": true,
+   "endingVariants": [
+     {"when": {"flagKey": "ward_renewed", "equals": true}, "title": "The Road Remembers",
+      "text": "The lanterns burn steady along the western roads, and the names on the last stone no longer fade. ..."},
+     {"when": {"flagKey": "ward_broken", "equals": true}, "title": "Only a Road",
+      "text": "No ward keeps the western roads now. ..."}]}
+  ```
 - `chapter` and `act`: group checkpoints for authored graph views.
 - `priority`: authoring metadata for director and graph views. Runtime branch
   selection currently uses the authored `nextCheckpointIds` order.
@@ -600,13 +632,79 @@ active.
 
 ### Encounters fit the party
 
-Enemy counts are authored for four player characters. With fewer present PCs
-each group keeps `max(1, round(count × party / 4))` enemies (halves round up)
-and every enemy's maximum and starting HP is multiplied by
-`0.55 + 0.1125 × party` (one PC 0.66, two 0.775, three 0.89), rounded up.
-`scaling: false` on the encounter keeps the authored numbers. The result is
-recorded in `combat.flags.partyScaling`
-(`{"partySize", "applied", "hpMultiplier", "groups"}`).
+Enemy counts and numbers are authored for four player characters. With fewer
+heroes present the encounter is scaled when its combat is created:
+
+| Heroes present | Enemy HP (rounded up) | Enemy damage rolls (rounded down, at least 1) | Enemy attack bonus and save DCs | At most |
+| --- | --- | --- | --- | --- |
+| 1 | × 0.30 | × 0.40 | −3 | 1 enemy |
+| 2 | × 0.60 | × 0.70 | −1 | 3 enemies |
+| 3 | × 0.80 | × 0.85 | ±0 | 4 enemies |
+
+Each group keeps `max(1, round(count × heroes / 4))` enemies (halves round up);
+while the total exceeds the most, whole groups drop from the end (never the
+first), then the last group loses enemies. Four or more heroes, or
+`scaling: false` on the encounter, keep the authored numbers. The result is
+recorded in `combat.flags.partyScaling`. A set-piece duel whose enemy keeps its
+authored hit points and damage whatever the party size:
+
+```json
+{"id": "enc_champion_duel", "enemyGroups": [{"enemyId": "enemy_champion", "count": 1}], "scaling": false}
+```
+
+### What the party knows adjusts the fight
+
+`adjustments` apply when the encounter's combat is created, before party
+scaling. Each one whose `when` flag holds either multiplies one enemy group's
+HP (`enemyId` with `hpMultiplier`, 0.25–1.5, multiplied with the scaling
+multiplier) or keeps groups away (`removeEnemyIds`, removed before the most
+enemies is applied). Its `text` must be told before the first blows: the
+scripted narrator prints it after the encounter's `setup`, and a narrating model
+is given it as a line it must convey. From the Play Now finale:
+
+```json
+"adjustments": [
+  {"when": {"flagKey": "true_name_known", "equals": true}, "enemyId": "enemy_cinder_scribe",
+   "hpMultiplier": 0.75,
+   "text": "You speak his name — Maedran Voss — and the ash-ink on his hands runs like water."},
+  {"when": {"flagKey": "roadwardens_appeased", "equals": true},
+   "removeEnemyIds": ["enemy_name_eaten_roadwardens"],
+   "text": "The nameless dead stand aside. They will not fight for him."}
+]
+```
+
+### Read-aloud setup, parley and lethal fights
+
+- `setup` is the encounter's read-aloud line, told when its fight starts and
+  before any adjustment line (`"setup": "\"A bell sounds from somewhere ahead.
+  One by one, pale lights appear between the rain-dark stones.\""` on
+  `enc_pale_lantern_detour`). `stakes` and `gmNotes` stay with the operator.
+- Enemies do not yield, surrender, negotiate or retreat until they are at or
+  below half HP, their side has lost a member, or it is round 4 or later and
+  they have been hurt. `"allowParley": true` lifts that from the first round
+  (for an encounter meant to be talked down; the Play Now pack sets none).
+- When every hero is down the party is beaten and wakes later with 1 HP, the
+  encounter re-arms, and no checkpoint fails. `"lethalDefeat": true` skips that
+  recovery at the fight's end and lets the defeat fail the checkpoint that names
+  the encounter in `failWhen` (see [gameplay systems](gameplay_systems.md) for
+  what follows). Consequences authored under the `defeat` outcome still apply
+  when the party is beaten, so never set a story-ending flag there; the Play Now
+  finale has no `defeat` outcome, and a lost or fled fight never ends the story.
+
+### Enemy names and condition durations
+
+`singularName` names one member of a group enemy and `proper: true` marks a
+proper noun that is never pluralised or given an article. An ability's
+`durationRounds` (1–10, default 1: until the end of the target's next turn) says
+how many of the target's turns its `conditionsApplied` last; an ability with a
+save repeats it at the end of each of those turns. From the Play Now pack:
+
+```json
+{"id": "enemy_pale_lanterns", "name": "Pale Lanterns", "singularName": "Pale Lantern",
+ "abilities": [{"id": "pale_lantern_lure", "name": "Lantern-Lure", "save": {"ability": "wis", "dc": 13},
+                "conditionsApplied": ["charmed", "drawn_aside"], "durationRounds": 2}]}
+{"id": "enemy_cinder_scribe", "name": "The Cinder Scribe", "proper": true, "challengeTier": "boss"}
+```
 
 ## Arrival, Objects, and Discoveries
 
@@ -627,12 +725,15 @@ Objects resolve themselves on the server:
   action is submitted: one d20 seeded from the action id plus the character's
   modifier (proficiency and wounds from the character sheet, advantage and
   bonus dice from the modifier engine). The roll, total, DC, and outcome are
-  stored on the event (`event.check`) and returned with the action result. A
-  failed check is an applied attempt (`interactable.check_failed` or
-  `hazard.check_failed`); the character is remembered in the object's
-  `failedCheckActorIds` and cannot try a check on it again ("You have already
-  tried that; something has to change first.") until the object's revision
-  changes.
+  stored on the event (`event.check`) and returned with the action result. The
+  DC defaults to 10; `"showDc": true` on the check lets players see it in the
+  offered action and the check beat. A failed check is an applied attempt
+  (`interactable.check_failed` or `hazard.check_failed`); the character is
+  remembered in the object's `failedCheckActorIds`. Trying again as before is
+  refused ("You have already tried that; something has to change first."), but
+  outside a fight the hero may take their time: the action is offered again with
+  `retry: true`, and taking it with `take_time` advances the clock one phase and
+  resolves the check as if the die showed 20.
 - `mechanicalEffects` keyed by action, or by `failure:<action>` for a failed
   check, apply `damage` (`{"dice", "type", "save": {"ability", "dc",
   "onSuccess": "half" | "none"}}`) and `conditions` (`[{"condition",
@@ -649,16 +750,76 @@ Objects resolve themselves on the server:
   its amount (id `<container id>_coins`), and taking it adds to the taker's
   coin. Narration of a reveal never takes what was revealed.
 - `trigger` is offered on hazards and on any object marked `"triggerable": true`;
-  a non-hazard can be triggered once unless it is `repeatable`.
+  once triggered, an object refuses the trigger again unless it is
+  `"repeatable": true` or has been reset (hazards support `reset`).
 - A requirement's `flags` may expect `false`: it holds while the flag is unset
   or false (`{"quest_road_complete": false}` offers a fate only until the quest
   is done); afterwards the action is refused with `That can no longer be done.`
-- `choiceActions: [<action>, ...]` marks actions that are alternatives to one
-  another (the Last Road-Stone's four fates): each offered entry for a listed
-  action carries `choice: true` and the Story view shows them together. The
-  linter errors on a listed action the object does not support.
-- In combat, object actions are offered with the combat actions: `inspect` is
-  free, every other action costs the actor's action.
+- During a fight an object's actions are refused (`Not while the fight is
+  on.`) unless listed in its `usableInCombat`; those are offered with the
+  combat actions and cost the actor's action.
+
+### Scene Object Fields
+
+These fields shape what the Story view offers and what the narrator tells.
+Every example is from the Play Now pack.
+
+- `allowedActions` limits the actions an object supports; without it the
+  object's kind and flags decide. Offered actions follow the fixed order search,
+  use, trigger, open, unlock, inspect, close, lock, break, disarm, reset.
+
+  ```json
+  {"id": "inn_drivers_bench", "allowedActions": ["inspect", "search"]}
+  ```
+
+- `actionLabels` are the words the Story view offers for an action (at most 48
+  characters); without one an action reads `Examine {name}`, `Search {name}`,
+  `Open {name}` and so on. Typed words matching a label take that action.
+
+  ```json
+  {"id": "inn_drivers_bench",
+   "actionLabels": {"inspect": "Look over the driver's bench", "search": "Search under the driver's bench"}}
+  ```
+
+- `actionText` is what an action achieved, told by the narrator when the action
+  succeeds (at most 600 characters). It never reaches the player snapshot and is
+  never told after a failed attempt.
+
+  ```json
+  {"id": "inn_wagon_bell",
+   "actionText": {"use": "You strike the bell. It gives one low note that hangs over the yard longer than it should. ..."}}
+  ```
+
+- `usableInCombat` lists the actions a hero may take on the object during a
+  fight, on their own turn while their action is unspent; taking one spends the
+  action.
+- `resolvesEncounter` settles an encounter peacefully when the named action
+  succeeds: the encounter is completed with the outcome (`victory`, `surrender`,
+  `negotiation` or `objective_completion`) through the same path a combat ending
+  uses, its combat ends at once, and its trigger never fires again. With
+  `usableInCombat` the oath can end the fight it averts:
+
+  ```json
+  {"id": "cairn_banner_stone",
+   "usableInCombat": ["use"],
+   "resolvesEncounter": {"use": {"encounterId": "enc_roadwarden_judgment", "outcome": "negotiation"}}}
+  ```
+
+- `choiceActions` marks actions that are alternatives to one another; each
+  offered entry for a listed action carries `choice: true` and the Story view
+  shows them together. The linter errors on an action the object does not
+  support.
+
+  ```json
+  {"id": "valley_last_road_stone", "choiceActions": ["use", "break", "lock", "trigger"]}
+  ```
+
+- `proper: true` marks an object name that is a proper noun, so refusals read
+  "Excalibur is locked." rather than "The Excalibur is locked."; a name starting
+  with "The" is never given another article.
+
+The linter warns about a label or text for an action the object does not
+support.
 
 ### Encounter rewards and consequences
 
@@ -784,7 +945,22 @@ needs an `npcId` or a `locationId`, and prices must be positive whole `gp`,
 ## Rest Policy
 
 A location may carry `restPolicy` (`safe`, `risky`, or `none`); it is copied to
-`currentScene.restPolicy` at import and on every arrival.
+`currentScene.restPolicy` at import and on every arrival. Without one, a place of
+danger 3 or more is `risky` (short rests only) and 6 or more `none`.
+
+```json
+{"id": "loc_lantern_post_inn", "restPolicy": "safe"}
+```
+
+## Clock Start
+
+`startingState.clock` sets when the adventure begins (`phase` is `morning`,
+`afternoon`, `evening` or `night`); without it the party starts on day 1 in the
+morning. The Play Now adventure opens at dusk:
+
+```json
+"startingState": {"clock": {"day": 1, "phase": "evening"}}
+```
 
 ## World Map
 
@@ -797,7 +973,14 @@ The top-level `map` (`{"title", "terrain", "seed"}`, terrain one of `moor`,
 every adjacency) describe the map. Locations without a position are placed at
 import by a seeded force-directed layout over the adjacency graph (normalized
 to 8-92 on both axes, at least 14 apart while the map has room) and the
-positions are stored.
+positions are stored. From the Play Now pack:
+
+```json
+{"map": {"title": "The Western Roadlands", "terrain": "moor", "seed": 1107},
+ "routes": [{"from": "loc_old_north_road", "to": "loc_ridge_and_culvert_paths", "style": "trail"},
+            {"from": "loc_ridge_and_culvert_paths", "to": "loc_valley_last_road_stone", "style": "hidden"}],
+ "locations": [{"id": "loc_lantern_post_inn", "mapPosition": {"x": 22, "y": 82}, "mapIcon": "inn"}]}
+```
 
 The player snapshot carries `worldMap`:
 `{"title", "terrain", "seed", "nodes": [{"id", "name", "icon", "x", "y",
@@ -826,7 +1009,15 @@ post-narration extraction may propose them. Players never see `storyFlags`. A
 
 ## Hidden Information
 
-Operator/DM views can see the full catalog, `gmNotes`, `hiddenSceneNotes`, future checkpoints, and progress-event audit data. Player-facing session state and progress payloads filter hidden catalog records, future checkpoint details, alternate routes, director rules, hidden notes, the starting brief, and the raw `stateChangeLedger`. The player projection is an allowlist: it shows the opening scene's `summary` and `visibleDetails` but never `hiddenSceneNotes`, and never shows NPC `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `trueName`, encounter `setup` or `stakes`, or any `gmNotes`.
+Operator/DM views can see the full catalog, `gmNotes`, `hiddenSceneNotes`, future checkpoints, and progress-event audit data. Player-facing session state and progress payloads filter hidden catalog records, future checkpoint details, alternate routes, director rules, hidden notes, the starting brief, and the raw `stateChangeLedger`. The player projection is an allowlist: it shows the opening scene's `summary` and `visibleDetails` but never `hiddenSceneNotes`, and never shows NPC `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `trueName`, encounter `setup` (it is only read aloud when the fight starts) or `stakes`, object `actionText`, or any `gmNotes`.
+
+The player view also carries a `journal` block built from what the party knows:
+the quest's `playerSummary`, the active checkpoint's `playerTitle` and
+`playerSummary` as the current stage, completed objectives and the active
+checkpoint's open ones (never future objectives), discovered clues, people met
+(with their `playerSummary` and a readable `role`), and places known. Author
+`playerTitle`/`playerSummary` on every checkpoint and `playerSummary` on quests
+and NPCs so the journal reads well.
 
 Use `playerTitle`, `playerSummary`, `visibleToPlayers`, `knownToPlayers`, and `hiddenToPlayers` to control what filtered progress payloads may reveal.
 

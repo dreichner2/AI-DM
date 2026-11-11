@@ -4,6 +4,112 @@ All notable AIDM closed-beta changes should be recorded here.
 
 ## Unreleased
 
+### The Story overhaul (November 2026)
+
+#### Play experience
+
+- The game now opens on a title screen: continue where you left off, or play the
+  ready-made adventure as one of four heroes, or start your own.
+- The Story view is the main play screen. It shows the story, a quiet line under
+  each turn saying what changed (a clue found, a check made, damage taken, a new
+  place on the map, an item taken), suggestions that are always actions you are
+  allowed to take, and a drawer with your character, magic, journal and map.
+- The map is drawn like an old chart and shows only the places your party knows.
+- The journal lists your quest, the current stage, what you have done and what
+  you are doing now, clues, people you have met and places you know, without
+  spoiling what comes later.
+- Typing what you do works like pressing the button: "take the key", "search the
+  bench" or "go to the old north road" does exactly that. If you name two things
+  at once, the first happens and you are told to do the rest next.
+- Items lying in a scene can be picked up, and coins go straight to your purse.
+- Fights show whose turn it is, what each action costs, and why an action is
+  unavailable; spells, abilities and items have their own trays.
+- New heroes are made in a guided creator: ancestry, calling, class skills, then
+  a review.
+- Every menu and dialog was redone as a clean sheet. Settings now shows which
+  narrator is running and lets the host pick another.
+- Sessions are now chapters of one continuing adventure. Starting the next
+  chapter carries the world forward and closes the previous one, which stays
+  readable.
+- Saves are a single file you can download, and import as a read-only archive or
+  restore as the next chapter.
+- The classic console is still there as "Table tools" for hosts.
+
+#### Rules
+
+- Being reduced to 0 hit points means falling unconscious and making death
+  saves, not leaving the game. Allies can stabilise or heal you; a beaten party
+  wakes later with 1 hit point instead of dying, and a lost or fled fight never
+  ends the story.
+- Conditions such as prone, poisoned, frightened, restrained and stunned now
+  have their full effects on attacks, saves and movement, and conditions an
+  enemy puts on you wear off.
+- Fights use distance (close, near, far, distant): you can advance, fall back,
+  dash, disengage, dodge, help, hide or stabilise a friend. Leaving close combat
+  can draw an attack, and a melee attack on a distant enemy closes the gap first.
+- 61 spells now work by the rules, from cantrips to 3rd level, including casting
+  at a higher level, concentration, Shield as a reaction, and effects that last
+  until a long rest.
+- The twelve core classes have their features from level 1 to 5: Rage, Bardic
+  Inspiration, Turn Undead, Second Wind, Action Surge, ki, Lay on Hands, Divine
+  Smite, Sneak Attack, Cunning Action, sorcery points, Arcane Recovery, fighting
+  styles, Extra Attack and more.
+- Potions, antitoxin, healer's kits, holy water, alchemist's fire, acid and
+  spell scrolls have real effects.
+- Short and long rests use hit dice and a day clock; dangerous places allow only
+  a short rest or none at all.
+- Shops sell and buy at real prices, give change, and run out of stock.
+- A failed check is never a dead end: you can take your time and try again,
+  which costs part of the day.
+- A roll made while badly wounded now says how much your wounds cost you.
+- Enemies fight back: they do not stall, they only give up once they have been
+  hurt, and bosses hold their ground until they are nearly beaten.
+- Fights scale to the number of heroes at the table.
+
+#### Adventure content
+
+- *The Road of Unremembered Kings* can be played from the first scene to an
+  ending: seven places, objects to examine and search, keys and locked boxes,
+  two merchants, six encounters (one of which an oath can settle without a
+  fight), and four endings chosen by the party.
+- What you learn changes the fights: an oath can turn the dead aside, and a true
+  name weakens the final foe.
+- Adventure authors can now write the words the game offers for each action,
+  what an action reveals, fights that start themselves, read-aloud lines when a
+  fight begins, peaceful ways to end a fight, enemies that refuse to give in, a
+  starting time of day, and different endings for different choices.
+
+#### Reliability
+
+- A turn interrupted by a server restart or a dropped connection now finishes
+  exactly once when play resumes, without repeating dice, narration or rewards.
+- Two players acting at the same moment in one campaign can no longer overwrite
+  each other's changes.
+- A player who has left the table no longer blocks everyone else; their turn is
+  skipped after a short wait, and nothing is queued behind your back.
+- The Story view follows the conversation reliably, and a message the table did
+  not receive is shown plainly instead of disappearing.
+- Lists of sessions load faster and page without skipping chapters.
+
+#### Narration
+
+- Narration is shorter and leads with what happened, and the opening of an
+  adventure is told from the adventure itself.
+- Playing without an AI key now uses a scripted narrator that tells exactly what
+  the rules decided and what the adventure's author wrote, so the ready-made
+  adventure can be played fully offline. It never claims something happened
+  that did not.
+- The narrator is never shown secrets a player could not know, and a fight's
+  read-aloud opening and the effect of what you learned are always told.
+
+#### Tooling
+
+- Newer Python, Node.js and npm releases are accepted by the setup checks.
+- A release smoke plays the ready-made adventure to an ending, including a lost
+  fight, and fails if any internal name or code reaches a player.
+- A solo balance tool plays every ready-made hero alone through every fight.
+- The adventure checker reports more authoring mistakes before import.
+
 ### Added
 
 - Added server-authoritative player dice with persisted roll provenance and a

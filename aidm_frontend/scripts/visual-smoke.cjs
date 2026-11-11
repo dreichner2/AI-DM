@@ -15,6 +15,8 @@ const CHROMIUM_CHANNEL = process.env.PLAYWRIGHT_CHROMIUM_CHANNEL || ''
 const SMOKE_TIMEOUT_MS = Number(process.env.AIDM_VISUAL_SMOKE_TIMEOUT_MS || 90_000)
 const SHUTDOWN_GRACE_MS = Number(process.env.AIDM_VISUAL_SMOKE_SHUTDOWN_GRACE_MS || 2_000)
 const ARTIFACT_ROOT = path.join(REPO_ROOT, 'tmp', 'verification_artifacts', 'visual-smoke')
+// A running single-origin server (built frontend served by the backend) to test instead of starting one.
+const SMOKE_BASE_URL = (process.env.AIDM_SMOKE_BASE_URL || '').trim().replace(/\/+$/, '')
 
 const children = new Set()
 let smokeTempDir = null
@@ -670,11 +672,16 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
     if (message.type() !== 'error') return
     const text = message.text()
     const sourceUrl = message.location().url || ''
+    // The development server writes a 500 after a socket's close frame; the browser reports it like this.
+    const isWerkzeugSocketUpgradeNoise =
+      text.includes('/socket.io/') &&
+      text.includes('WebSocket connection') &&
+      (text.includes('Invalid frame header') || text.includes('Data frame received after close'))
     const isExpectedCampaignCommentaryMiss =
       text.includes('404') &&
       sourceUrl.includes('/api/sessions/') &&
       sourceUrl.includes('/campaign-pack/commentary')
-    if (!isExpectedCampaignCommentaryMiss) consoleErrors.push(text)
+    if (!isWerkzeugSocketUpgradeNoise && !isExpectedCampaignCommentaryMiss) consoleErrors.push(text)
   })
   page.on('pageerror', (error) => {
     consoleErrors.push(error.message)
@@ -741,12 +748,26 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
     name: 'Visual Smoke Combat',
   })
   await postJson(backendUrl, `/api/sessions/${combatSession.session_id}/combat/start`, {
+    // Enemies that win initiative act as the fight starts; a 1-damage strike keeps four of them from
+    // ending the fight before the hero's first turn, so the combat layout is still there to measure.
     creature: {
       id: 'visual_smoke_sentry',
       name: 'Visual Smoke Sentry',
       source: 'user_custom',
       creatureType: 'humanoid',
       stats: { maxHp: 14, armorClass: 12 },
+      abilities: [
+        {
+          id: 'visual_smoke_sentry_jab',
+          name: 'Jab',
+          type: 'attack',
+          actionCost: 'action',
+          range: 'melee',
+          targetType: 'single',
+          attackBonus: 2,
+          damage: { dice: '1', type: 'bludgeoning' },
+        },
+      ],
     },
     enemyCount: 4,
     encounterGoal: { description: 'Break through the sentry line.' },
@@ -770,7 +791,25 @@ async function runVisualFlow(frontendUrl, backendUrl, ids, artifactDir) {
   return screenshots
 }
 
+function newArtifactDir() {
+  const artifactDir = path.join(ARTIFACT_ROOT, new Date().toISOString().replace(/[:.]/g, '-'))
+  fs.mkdirSync(artifactDir, { recursive: true })
+  return artifactDir
+}
+
 async function main() {
+  if (SMOKE_BASE_URL) {
+    log(`using the running single-origin server at ${SMOKE_BASE_URL}`)
+    await waitForHttp(`${SMOKE_BASE_URL}/api/health`, 'backend health')
+    await waitForHttp(`${SMOKE_BASE_URL}/`, 'single-origin frontend')
+    const artifactDir = newArtifactDir()
+    log('seeding campaign/session/player')
+    const ids = await seedWorkspace(SMOKE_BASE_URL)
+    log('capturing visual smoke screenshots')
+    const screenshots = await runVisualFlow(SMOKE_BASE_URL, SMOKE_BASE_URL, ids, artifactDir)
+    log(`passed: ${screenshots.length} screenshots written under ${path.relative(REPO_ROOT, artifactDir)}`)
+    return
+  }
   if (isPathLikeExecutable(PYTHON) && !fs.existsSync(PYTHON)) {
     throw new Error(`Missing Python executable: ${PYTHON}`)
   }
@@ -782,11 +821,7 @@ async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-visual-smoke-'))
   smokeTempDir = tempDir
   const dbPath = path.join(tempDir, 'visual-smoke.sqlite')
-  const artifactDir = path.join(
-    ARTIFACT_ROOT,
-    new Date().toISOString().replace(/[:.]/g, '-'),
-  )
-  fs.mkdirSync(artifactDir, { recursive: true })
+  const artifactDir = newArtifactDir()
 
   log(`starting isolated backend on ${backendUrl}`)
   const backend = spawnManaged(

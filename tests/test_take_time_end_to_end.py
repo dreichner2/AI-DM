@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from aidm_server.database import db
 from aidm_server.models import DmTurn
 
 from tests.test_flagship_adventure import table  # noqa: F401 - the Play Now table fixture

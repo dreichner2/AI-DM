@@ -79,7 +79,32 @@ provider, and state contracts live in [API surface](api_surface.md),
   validation, application, and canon queueing.
 - `aidm_server/turn_engine.py` orchestrates a turn. Supporting behavior is split
   across `turn_coordinator.py`, `turn_rules.py`, `turn_roll_policy.py`,
-  `turn_narration.py`, `turn_segments.py`, and `turn_events.py`.
+  `turn_narration.py`, `turn_segments.py`, and `turn_events.py`; the pre- and
+  post-narration pipeline lives in `game_state/orchestration/turn_pipeline.py`.
+- Every turn carries a durable lifecycle marker (`metadata.lifecycle.phase`:
+  `accepted`, `rules_applied`, `narration_saved`, `effects_applied`,
+  `finished`), written in the same transaction as the step that reaches it.
+  An unfinished turn resumes from its phase without repeating a step: on a
+  retry of the same `client_message_id`, before any new submission to the
+  session (at most three abandoned turns, oldest first), or in a background task
+  started by `join_session` that takes the turn locks only when they are free.
+  After three failed resumes the turn fails behind the recovery gate. Finished
+  turns drop their pre-turn snapshot copies (`snapshotsPruned`).
+- Turns serialize per campaign. A turn or state mutation locks its session, its
+  campaign-pack siblings and every other live session of the same campaign
+  (`campaign_turn_lock_session_ids` in `services/session_state_mutation.py`), in
+  ascending session-id order, because those sessions share Player rows.
+  Post-narration effects are applied onto freshly read Player rows.
+- A player who disconnects while holding the structured turn is skipped after
+  `AIDM_ABSENT_TURN_GRACE_SECONDS` (default 60); the opening of an adventure is
+  a marked turn (`message_kind: "opening"`) that asks for no roll and makes no
+  helper-model call.
+- Free-text words that clearly name one action (a pickup, an object action,
+  travel, a rest) become the same typed intent its button sends
+  (`game_state/extraction/free_text_actions.py`). After every turn the server
+  computes story beats from the before and after player projections
+  (`game_state/orchestration/story_beats.py`) and stores them on the turn, its
+  log entry and the final `turn_status` event.
 - `aidm_server/player_rolls.py` owns player dice generation. Clients may request
   a die, mode, reason, and permitted ability selection, but faces, modifiers,
   totals, and persisted provenance are server-owned. The committed result is
@@ -99,10 +124,14 @@ provider, and state contracts live in [API surface](api_surface.md),
   from the persisted actor, turn index, weapons, target health, cover, zones,
   and range bands. The turn engine revalidates every submitted action/target ID
   and canonicalizes its text before rules handling; attack outcomes still flow
-  through `player_rolls.py`. Action-economy labels are turn-order-derived because
-  the current schema does not persist sub-turn action, movement, or reaction
-  counters. The HUD renders unavailable targets as disabled choices with the
-  server-issued legality reason so validation remains visible to the player.
+  through `player_rolls.py`. Action, bonus action, reaction and movement budgets
+  persist in `combat.flags.turnEconomy`; every action carries its cost and, when
+  unavailable, a plain reason, so validation remains visible to the player.
+  Range bands, engagement, reactions and the condition engine live in
+  `combat/positioning.py`, `combat/reactions.py` and `combat/modifiers.py`.
+- Scene objects carry server-computed `offeredActions` for the hero the view is
+  told from (`services/campaign_pack_visibility.py`), so the client offers only
+  what the server would accept.
 - Player snapshot projections expose only public enemy combat facts (identity,
   HP, AC, conditions, position, and an explicit visible telegraph). Server-side
   intent reasoning, targeting, planner provenance, abilities, and other
@@ -129,6 +158,15 @@ provider, and state contracts live in [API surface](api_surface.md),
 - `Session.state_snapshot` is live runtime truth once present. Projection,
   authored-content, campaign-pack, and long-term canon tables have distinct
   responsibilities documented in [runtime state boundaries](runtime_state_boundaries.md).
+- A campaign is one continuing adventure and each session is a chapter of it
+  (`services/session_chapters.py`). Exactly one chapter is current; starting the
+  next one carries the world forward (or starts it fresh) and closes the
+  previous chapter as `ended`, readable but no longer playable.
+- Session lists, the campaign workspace and lifecycle responses return
+  `SessionSummary` payloads without the snapshot; the full snapshot comes only
+  from the state and export endpoints. The export is one versioned save document
+  (`aidm.save` version 2) built under the turn lock; import either archives it
+  or restores it as the next chapter. See [API surface](api_surface.md).
 - `aidm_server/canon_jobs.py` owns queued, running, and terminal canon extraction
   jobs. `canon_projection.py` and related canon modules refresh durable story
   memory and projections.
@@ -167,6 +205,16 @@ provider, and state contracts live in [API surface](api_surface.md),
 - The main narration provider and task-specific helper providers are configured
   separately. Helper routing uses task defaults, named profiles, and scoped
   environment overrides; see [LLM provider routing](llm_provider_routing.md).
+- Safe Mode (`AIDM_LLM_PROVIDER=fallback`) narrates with the scripted narrator
+  (`aidm_server/scripted_narrator.py`), which tells exactly what the engine
+  resolved and the campaign pack authored. In Safe Mode every helper takes its
+  deterministic path and canon extraction uses its heuristic patch, so no
+  network or CLI model is ever called.
+- The narrator's context is built by `aidm_server/llm_context.py` within a
+  30,000-character budget; when it is over, low-value sections are dropped in a
+  fixed order and the drop is recorded in telemetry. The turn-conductor helper
+  runs only when at least two players are connected and the narrator is not the
+  scripted one.
 - Codex CLI execution uses a disposable isolated workspace, a constrained
   environment, and fail-closed structured-event handling. It does not expose the
   repository or host tools to model-generated commands.
@@ -177,6 +225,16 @@ provider, and state contracts live in [API surface](api_surface.md),
 
 - `aidm_frontend/src/App.tsx` remains the top-level shell for selected
   campaign/session/player state, socket lifecycle, layout, and some dialogs.
+- Two play screens share that state. The Story view (`aidm_frontend/src/story/`)
+  is the default: the title screen (`TitleScreen.tsx`: continue, the ready-made
+  adventure with a hero choice, new adventure), the story feed with beats, the
+  composer with server-offered suggestions and the action tray, the party dock,
+  the combat ribbon, the drawer (character, pack, magic, journal, map), and
+  sheets for settings, account, adventures, new adventure and hero creation. It
+  reads every projection with `view=player&player_id=<hero>`. Table tools (the
+  classic three-column console, "Classic view" for players) is lazy-loaded from
+  the Story menu, reads without `view=player` (the full projection for an
+  operator), and holds the operator surfaces.
 - Extracted dialogs share `aidm_frontend/src/ModalShell.tsx` and
   `aidm_frontend/src/useModalFocusTrap.ts` for dialog semantics, focus movement,
   Escape close, Tab looping, and focus return.

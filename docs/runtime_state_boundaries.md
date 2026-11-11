@@ -20,9 +20,23 @@ snapshot. Systems that need current play state should read it for:
   items, environment details, active scene references, and spatial state that
   is saved and restored during validated travel (the cache is server-only;
   players receive the filtered `currentScene` projection instead);
-- flags; and
+- flags;
+- `clock` (day and phase), `merchants`, and `chapter` (this chapter's number,
+  previous session and recap); and
 - `stateChangeLedger`, `interactableActionLedger`, `gameplayEventLedger`, and
-  `combatRewardLedger`.
+  `combatRewardLedger`. The state-change ledger is not yet compacted and grows
+  with play; per-turn snapshot copies in turn metadata are pruned once a turn
+  finishes.
+
+Each chapter of a campaign has its own snapshot. Starting the next chapter
+copies the world keys (scene, places and their saved scene states, NPCs, quests,
+flags, clues, factions, maps, handouts, lore, the campaign-pack mirror, content
+settings, Play Now metadata and the ledgers) into a new snapshot; the party
+mirror, combat, turn control, recovery gates, revision and audit bookkeeping,
+recaps and display metadata stay with the chapter that wrote them. The closed
+chapter becomes `ended` and read-only. `clock` and `merchants` are not in the
+carried list yet (a known defect): a continued chapter starts on day 1 in the
+morning and a pack campaign's merchants stop trading.
 
 Future live systems should use `Session.state_snapshot` unless they
 intentionally need authored source data, durable campaign-pack progress,
@@ -52,7 +66,21 @@ current when adding a writer.
 
 Turn metadata under `state_pipeline` is audit, debug, and per-turn pipeline
 metadata. It explains extraction, validation, application, and summary results
-for an individual turn; it is not the canonical session state.
+for an individual turn; it is not the canonical session state. Its pre-turn
+snapshot copies (`stateBeforePreDm`, `stateBeforeDm`) are removed once the turn
+finishes cleanly (`snapshotsPruned: true`); unfinished, failed and
+recovery-gated turns keep them.
+
+Every `DmTurn` also carries `metadata.lifecycle.phase` (`accepted`,
+`rules_applied`, `narration_saved`, `effects_applied`, `finished`), written in
+the same transaction as the step that reaches it; post-narration effects, the
+snapshot, pack progress and `effects_applied` commit together. An unfinished
+turn resumes from its phase exactly once (see
+[gameplay systems](gameplay_systems.md#turn-lifecycle-and-recovery)). Turns and
+state mutations hold the campaign-wide lock set: the session, its campaign-pack
+siblings and every other live session of the campaign, acquired in ascending
+session-id order at the outermost boundary, because sessions of one campaign
+share Player rows.
 
 Narration persistence does not authorize mechanics. If the primary post-DM
 pipeline fails, the compatibility immediate-state path may apply the validated
@@ -147,13 +175,19 @@ cast ID replay return the prior result instead of rolling twice. A legacy cast
 without exact target IDs remains a resource-only cast; narration is not evidence
 that a target effect applied.
 
-The current class-capability resolver is deliberately bounded to Fighter Second
-Wind and Action Surge and Paladin Lay on Hands. `class_feature.use` must originate
-from the pre-DM capability engine. Validation replays its trusted rolls/result,
-and application consumes `classFeatureState`, applies healing or action
-restoration, updates the matching turn-economy budget, and persists the owning
-player sheet. Short and long rests refresh only capabilities with the matching
-declared refresh policy.
+Class capabilities cover levels 1–5 of the twelve core classes (pools such as
+Rage, ki, sorcery points and Lay on Hands; actions; attack riders; reactions).
+`class_feature.use` must originate from the pre-DM capability engine.
+Validation replays its trusted rolls/result, and application consumes
+`classFeatureState`, applies the effect, updates the matching turn-economy
+budget, and persists the owning player sheet. Short and long rests refresh only
+pools with the matching declared refresh policy.
+
+Item use (`item.use`) and shop trades (`shop.buy`, `shop.sell`) follow the same
+rule: one server-resolved, replay-checked change applied before narration, and a
+failed trade or use rejects the turn instead of being narrated as if it
+happened. Free-text words that clearly name one action are mapped to the same
+typed intent before validation, so they take the same path.
 
 `scene.interactable.action` addresses one exact visible door, lock, container,
 object, or hazard in the current location. The interactable engine verifies
@@ -165,15 +199,17 @@ retry as already applied and rejects reuse of the action ID for a different
 request. Public gameplay events may feed quest predicates; hidden definitions,
 requirements, transitions, and GM events remain server-only.
 
-The session's Mechanical actions panel projects these same authoritative fields
-without creating client-owned state. It exposes exact legal-target selection for
-the seven complete spells, capability target/amount controls with persisted uses,
-and exact-ID/revision scene-object actions. Object-action candidates are inferred
-from public object state because hidden requirements are intentionally not
-projected; the server remains authoritative and fails closed. Scene-object actions
-are disabled during combat until they consume a defined turn-economy budget.
-Authored interactable `mechanicalEffects` are recorded as deferred event data
-until a bounded subsystem explicitly applies them.
+The Story view's action tray and Table tools' Mechanical actions panel project
+these same authoritative fields without creating client-owned state: exact
+legal-target selection for rules-backed spells, capability controls with
+persisted uses, and exact-ID/revision scene-object actions. Scene objects in the
+player view carry server-computed `offeredActions` (label, legality for the
+selected hero, `done`, `check`, `retry`, `choice`, and a plain refusal `reason`),
+so the client offers only actions the server would accept; hidden requirements
+are still enforced only on the server. During a fight only an object's
+`usableInCombat` actions can be taken, and they spend the action. A failed
+check can be retried by taking time (`take_time`), which advances the clock.
+Authored `mechanicalEffects` apply their damage and conditions with the action.
 
 ## Combat Outcome Transactions
 
@@ -221,6 +257,16 @@ list, workspace, state, and export responses are account-scoped projections:
   as "Recent Memory," not as authoritative canon facts;
 - explicit export selection of a player the requester does not own returns
   `404`; workspace administrators keep the complete operator view.
+
+Reads that choose between the full and the player-safe projection (state, log,
+events, export, pack progress, the campaign workspace) accept `view=player` and
+an optional `player_id`. `view=player` forces the player-safe projection even
+for an operator; `player_id` names the hero whose private data is included and
+for whom offered actions are judged (an operator may name any hero of the
+campaign, anyone else only their own, otherwise 403). The Story view always
+reads this way; Table tools does not. The player view also carries the `journal`
+block: the quest and current stage, completed objectives and the active stage's
+open ones, discovered clues, people met and places known.
 
 Do not persist a redacted response back over `Session.state_snapshot`. Redaction
 is a response boundary, not a mutation or alternate source of truth.

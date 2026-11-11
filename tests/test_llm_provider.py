@@ -35,6 +35,7 @@ from aidm_server.llm_providers import (
     helper_provider_name,
 )
 from aidm_server.prompt_templates import build_dm_stream_request
+from aidm_server.provider_registry import provider_capabilities, provider_default_model, provider_runtime_model
 from aidm_server.scripted_narrator import TEMPLATES
 
 NOTHING_LINES = TEMPLATES['nothing_happens']
@@ -53,7 +54,6 @@ LOOK_CONTEXT = json.dumps(
     }
 )
 LOOK_HINT = {'requires_roll': False, 'turn_number': 3, 'state_pipeline': {'narration': {'freeText': {'kind': 'look'}}}}
-from aidm_server.provider_registry import provider_capabilities, provider_default_model, provider_runtime_model
 
 
 class _CapturingStdin:

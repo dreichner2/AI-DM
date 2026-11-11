@@ -4,7 +4,7 @@ FRONTEND_DIR := aidm_frontend
 # Interpreter for scripts/check_toolchain.py: the virtualenv once it exists, the bootstrap Python before.
 TOOLCHAIN_PYTHON = $(if $(wildcard $(PYTHON)),$(PYTHON),$(PYTHON_BOOTSTRAP))
 
-.PHONY: install lock verify-python verify-frontend-toolchain backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression socket-concurrency-smoke hosted-cookie-auth-smoke hosted-cookie-release-proof security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill postgres-backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-finalize-signoff rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
+.PHONY: install lock verify-python verify-frontend-toolchain backend frontend unified test lint typecheck build bundle-budget smoke scenario-regression play-now-smoke socket-concurrency-smoke hosted-cookie-auth-smoke hosted-cookie-release-proof security-forbidden-smoke session-export-import-smoke hosted-rc-evidence hosted-rc-plan export-support-bundle beta-slo-baseline local-beta-slo-baseline backup-restore-drill postgres-backup-restore-drill migration-chain-drill browser-smoke visual-smoke visual-smoke-review frontend-npm-ci-evidence packaging-cleanup-evidence github-actions-rc-plan github-actions-evidence clean clean-deps source-archive rc-issue-evidence rc-issue-closure-evidence release-evidence-packet release-artifact-consistency release-checklist-status rc-recommendation-matrix external-proof-inputs external-proof-execution-plan operator-signoff-values-template external-proof-values-merge external-proof-values-check operator-signoff-from-inputs operator-signoff-draft operator-signoff-action-plan operator-signoff-status rc-finalize-signoff rc-handoff-artifacts post-rc-issue-evidence db-upgrade health secrets api-types request-json-parsing state-writers socketio-worker-model-decision dev-check closed-beta-rc closed-beta-rc-fast deployment-readiness observability-check reproject-session reproject-all
 
 verify-python:
 	@test -x "$(PYTHON)" || { echo "Missing $(PYTHON); run make install." >&2; exit 1; }
@@ -13,7 +13,7 @@ verify-python:
 verify-frontend-toolchain:
 	@$(TOOLCHAIN_PYTHON) scripts/check_toolchain.py node npm
 
-test dev-check closed-beta-rc closed-beta-rc-fast db-upgrade deployment-readiness: verify-python
+test dev-check closed-beta-rc closed-beta-rc-fast db-upgrade deployment-readiness play-now-smoke: verify-python
 frontend lint typecheck build bundle-budget browser-smoke visual-smoke: verify-frontend-toolchain
 backend: verify-python
 unified: verify-python verify-frontend-toolchain
@@ -63,6 +63,9 @@ smoke:
 
 scenario-regression:
 	$(PYTHON) scripts/scenario_regression.py
+
+play-now-smoke:
+	$(PYTHON) -m pytest -m release_smoke -q -p no:cacheprovider
 
 socket-concurrency-smoke:
 	$(PYTHON) scripts/socket_concurrency_smoke.py

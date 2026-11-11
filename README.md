@@ -21,31 +21,56 @@ and carries the world's canon forward from one session to the next.
 A normal chatbot can narrate a scene. AI-DM maintains the game around that
 scene.
 
-- **Persistent campaigns** — worlds, campaigns, characters, sessions,
-  inventory, equipment, maps, and history survive between play sessions.
-- **A live shared table** — Socket.IO powers streaming turns, player presence,
-  typing status, turn control, music, and clarification prompts.
-- **Durable continuity** — turn events, state snapshots, rolling summaries,
-  canon, and emergent memory keep the story coherent.
-- **Rules-aware play** — the server rolls and records authoritative dice,
-  validates actions, and tracks combat, health, and creatures without letting
-  presentation code decide mechanical outcomes.
-- **Player combat HUD** — active encounters expose server-issued actions,
-  current-turn status, persisted weapon choices, and legal range-band targets;
-  the server revalidates every selection before it becomes a turn.
-- **DM tools** — create or import adventures, manage encounters and maps,
+- **A story you read, not a dashboard** — the Story view is the game: the
+  narration, a quiet line under each turn saying what changed (a clue found, a
+  check made, damage taken, a new place on the map), suggestions that are always
+  actions the rules allow, and a drawer with your character, magic, journal and
+  an inked map of the places you know.
+- **Rules that hold** — the server rolls every die and resolves attacks, 61
+  spells, class features for levels 1–5 of the twelve core classes, conditions,
+  dying and death saves, potions, rests, the day clock and shops before the
+  narrator speaks. Narration cannot invent damage, items or success.
+- **Your words count** — typing "I take the key" or "search the bench" does
+  exactly what the matching button does; a failed search can be retried by
+  taking your time.
+- **A ready-made adventure** — *The Road of Unremembered Kings* plays start to
+  finish: four ready-made heroes, seven places, fights that scale to your party,
+  choices that change the fights, and four endings.
+- **One continuing campaign** — each session is a chapter; the world, quests and
+  characters carry forward, and saves export and restore.
+- **A live shared table** — streaming turns, presence, turn order that skips an
+  absent player, music, and clarification prompts over Socket.IO.
+- **Table tools** — create or import adventures, manage encounters and maps,
   inspect state, and export a campaign Chronicle.
-- **Flexible AI** — use Codex, Gemini, DeepSeek, NVIDIA/Kimi, or the built-in
-  deterministic Safe Mode.
+- **Flexible AI** — narrate with Codex, Gemini, DeepSeek or NVIDIA/Kimi, or play
+  fully offline with the scripted narrator (Safe Mode).
 
 ## Start playing
+
+### Your first minute
+
+1. The title screen offers *The Road of Unremembered Kings*. Pick one of the
+   four ready-made heroes and press **Play now as …** (or **Create your own
+   adventure** to start another bundled pack, or a blank page once an AI narrator
+   is connected, and make a hero with guided creation). Returning players see
+   **Continue your adventure** with where they left off.
+2. The Story view opens on the authored opening: an empty caravan at a roadside
+   inn at dusk. Tap a suggestion, open the action tray (or press `/`), or type
+   what you do.
+3. The adventure menu holds the next chapter, your other adventures, the
+   Chronicle and save export, Settings, and **Table tools** for the full
+   console.
+
+The scripted narrator plays the ready-made adventure fully offline: no key, no
+network. To narrate with an AI instead, give the server a provider key (see
+[Connect an AI provider](#connect-an-ai-provider)) and choose it in
+**Settings → Narrator**, which lists the providers the server has keys for.
 
 ### Use the hosted beta
 
 1. Open [playaidm.com](https://playaidm.com).
 2. Sign up and create or join a table.
-3. Choose **Play Now** for a ready-made opening adventure, or create your own
-   campaign.
+3. Choose **Play now** for the ready-made adventure, or create your own.
 
 ### Run it locally
 
@@ -77,8 +102,10 @@ Socket.IO, and TTS routes from one local origin. Check the running backend with:
 curl http://127.0.0.1:5050/api/health
 ```
 
-No provider key is required to start. Without one, AI-DM uses deterministic
-Safe Mode so you can explore the interface and test the game flow.
+No provider key is required. Without one, AI-DM narrates with the scripted
+narrator (Safe Mode): the ready-made adventure plays to any of its endings, and
+free-form words the scripted narrator cannot map to an action get a short note
+pointing to the suggestions.
 
 ## Connect an AI provider
 
@@ -145,6 +172,7 @@ The Vite app proxies API and Socket.IO traffic to the local backend.
 | `cd aidm_frontend && npm run test` | Type-check, lint, and test the frontend |
 | `make dev-check` | Run the fast local correctness and drift checks |
 | `make browser-smoke` | Exercise the main flow in a real browser |
+| `make play-now-smoke` | Play the ready-made adventure to an ending and check what the player reads |
 | `make closed-beta-rc` | Run the full closed-beta release-candidate gate |
 
 Release engineering, evidence generation, and hosted operations commands are

@@ -1,11 +1,22 @@
 # AIDM Roadmap
 
-AIDM is now in beta-hardening territory: the core gameplay, campaign, player,
-session, world, map, Socket.IO, state pipeline, canon memory, and metrics
-surfaces exist. The highest-return work is reducing security, runtime, and
-maintenance risk before expanding gameplay scope.
+AIDM is a closed beta in beta-hardening territory: the core gameplay, campaign,
+player, session, world, map, Socket.IO, state pipeline, canon memory, and
+metrics surfaces exist, and the Story overhaul made the ready-made adventure
+fully playable by the rules.
+The highest-return work now is the open items under "Remaining After the Story
+Overhaul" and measuring play with a live AI provider, while keeping security,
+runtime, and maintenance risk low.
 
-## Current Status - 2026-07-12
+## Current Status - 2026-11-10 (the Story overhaul)
+
+The Story overhaul reworked play end to end (see Done). The ready-made
+adventure plays from the title screen to an ending in Safe Mode, verified by the
+backend suite, the end-to-end release smoke (`make play-now-smoke`) and live
+play-throughs in a real browser. No live AI provider was exercised during the
+overhaul; the open items are listed under "Remaining After the Story Overhaul".
+
+## Platform Status - 2026-07-12
 
 - The current implementation includes the intended closed-beta gameplay
   surface, executable local release/readiness gates, hosted cookie
@@ -29,6 +40,46 @@ Archived review material lives in:
 - `docs/archive/organized_improvement_suggestions_legacy.md`
 
 ## Done
+
+### The Story overhaul
+
+- Story view as the default play screen: title screen with continue, the
+  ready-made adventure and a hero choice; story feed with per-turn story beats;
+  server-offered suggestions and an action tray (spells, abilities, items,
+  objects, rest); party dock; combat ribbon; drawer with character, pack, magic,
+  journal and an illustrated map; sheets for settings (including the narrator),
+  account, adventures and new adventures; guided hero creation. The classic
+  console remains as Table tools.
+- The player's-eyes view (`view=player&player_id`), offered actions with plain
+  refusal sentences, take labels, the journal block, story beats on the turn and
+  its log entry, the title's continue line, and a fresh Play Now.
+- Typed words that name one action run that action; a failed check can be
+  retried by taking time.
+- Turn integrity: a durable lifecycle marker with exactly-once resume, a
+  campaign-wide turn lock, post-narration effects on fresh character rows,
+  pruned per-turn snapshots, absent players skipped after a grace period, and
+  marked opening turns.
+- Sessions as chapters of one continuing campaign, summary list payloads with
+  gap-free paging, and a versioned save document that archives or restores.
+- Rules: dying, death saves, stable and dead; the condition and modifier engine;
+  conditions that wear off; range bands, engagement, the universal combat
+  actions, reactions and opportunity attacks; 61 rules-backed spells with
+  upcasting; class features for levels 1–5 of the twelve core classes;
+  consumables; hit-dice rests, the day clock and rest safety; shops; party
+  scaling; enemies that fight back and bosses that hold; defeat and waking, and a
+  lost or fled fight never ending the story.
+- Campaign packs: self-starting encounters, object checks and consequences,
+  story flags, merchants, the world map, rest policy, read-aloud setups,
+  adjustments from what the party knows, peaceful resolution by object, action
+  labels and text, ending variants, a starting clock; *The Road of Unremembered
+  Kings* rewritten to be fully mechanical and lint-clean under `--strict`.
+- Narration: shorter prompts within a fixed context budget, an opening brief, a
+  scripted narrator that plays the ready-made adventure offline, no network call
+  in Safe Mode, and helper calls only where they can matter.
+- Tooling: the toolchain check accepts current Python, Node.js and npm releases;
+  `scripts/solo_balance.py`; the Play Now release smoke.
+
+### Earlier beta hardening
 
 - Backend app factory, central config, request IDs, CORS scoping, auth context,
   rate limiting, migration/bootstrap checks, and production schema guardrails.
@@ -184,12 +235,42 @@ Archived review material lives in:
   comparison tools, preserve their JSON evidence, and review quality, latency,
   parse failures, and cost outside this roadmap.
 
+## Remaining After the Story Overhaul
+
+Known open items and decisions, in no particular order:
+
+- **Chapter carry-over bug.** Starting the next chapter does not carry the day
+  clock or the campaign pack's merchants: the new chapter starts on day 1 in the
+  morning and the pack's shops stop trading. Add `clock` and `merchants` to the
+  carried snapshot keys in `services/session_chapters.py`, with a test.
+- **State-change ledger growth.** `stateChangeLedger` grows without bound and
+  needs compaction; per-turn snapshot copies are already pruned.
+- **Multi-worker sockets.** Hosting stays single-worker until presence and
+  music state are shared (see `docs/socketio_worker_model.md`).
+- **Scene music.** One long track carries every scene tag, so the music never
+  changes with the scene.
+- **Live AI provider quality and latency** were not measured during the
+  overhaul (no provider calls were made). Play several turns with each real
+  provider and record time to first text before widening the beta.
+- **Guest hero picker.** Signed-out guests on the hosted beta do not get the
+  ready-made hero choice, because the hero list requires sign-in; making it
+  public means adding it to the public-endpoint inventory. Decision pending.
+- **Engine-controlled allies** (party NPCs in a fight) only pass their turn;
+  the engine plans turns for enemies alone.
+- **Classes beyond the twelve core classes**, subclasses other than Champion and
+  Hunter, and features above level 5 have no mechanics yet.
+- **Middle-earth example packs.** *Shadow over the Greenway* and *Shadow Under
+  Eryn Luin* describe themselves as Middle-earth campaigns and use Tolkien's
+  places and peoples; they need an IP review before a public host offers them.
+- `lethalDefeat` does not make defeat deadly in practice: a party left dying
+  wakes on its next action through the out-of-fight waking rule.
+- A new adventure from a bundled pack goes straight to hero creation; the
+  ready-made heroes are offered only by the title's Play now.
+
 ## Not Now
 
-- The combat HUD now uses viewer-scoped, server-issued action and target IDs with
-  current-turn and range-band validation. Persisted sub-turn action, movement,
-  bonus-action, and reaction counters; spell/class-feature enumeration; and
-  grid/pathfinding/line-of-sight rules remain separate gameplay projects.
+- Grid, pathfinding and line-of-sight rules remain a separate gameplay project;
+  combat uses coarse range bands.
 - A richer campaign resume dashboard remains a high-value UX follow-up.
 - Class-derived and migrated legacy weapon proficiencies are now persisted in a
   private server-owned player profile. Operator UI and rules support for custom
@@ -200,5 +281,5 @@ Archived review material lives in:
 - Do not replace the backend-owned TypeScript contract with OpenAPI yet. The
   current contract generator is low-friction; the immediate win is drift
   checking and response tests.
-- Do not add more gameplay surface before the security/runtime/docs hardening
-  items above are boring.
+- Before adding more gameplay surface, settle the open items above and measure
+  live provider play.
