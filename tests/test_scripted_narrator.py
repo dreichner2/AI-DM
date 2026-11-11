@@ -253,7 +253,8 @@ def test_c_engine_resolved_combat_is_narrated_with_exact_results_in_order():
     assert 'Wisdom save of 9 against DC 13, a failure, taking 4 necrotic damage' in text
     assert 'You are now frightened' in text or 'leaves you frightened' in text or 'you are frightened' in text
     assert 'fight is over' in text
-    assert '50 XP' in text
+    # XP is reported by the turn's story beat, not in the prose.
+    assert 'XP' not in text
     assert '12 gold' in text
     assert text.index('17 against AC 13') < text.index('11 against AC 15') < text.index('fight is over')
     assert requests_roll(text) is False
@@ -363,7 +364,8 @@ def test_f_travel_objects_items_rest_and_quests_are_narrated():
     assert 'You search the Iron Strongbox.' in text
     assert 'Tarnished Key' in text
     assert '6 hit points' in text
-    assert 'The Empty Caravan' in text
+    # Objective progress is reported by the turn's story beats, not in the prose.
+    assert 'The Empty Caravan' not in text
     assert requests_roll(text) is False
 
 

@@ -847,15 +847,10 @@ def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
                 lines.append(turn.pick('rest_hp', amount=amount))
             else:
                 lines.append(turn.pick('rest_plain'))
-        elif change_type in {'quest.objective.update', 'quest.objective.add'} and quest:
-            key = 'objective_add' if change_type == 'quest.objective.add' else 'objective_update'
-            lines.append(_sentence(turn.pick(key, quest=quest)))
-        elif change_type == 'quest.complete' and quest:
-            lines.append(_sentence(turn.pick('quest_complete', quest=quest)))
+        # Objectives, quest completion and XP are bookkeeping: the turn's story beats
+        # report them ("Objective complete — …", "+150 XP"), so the prose does not.
         elif change_type == 'quest.fail' and quest:
             lines.append(_sentence(turn.pick('quest_fail', quest=quest)))
-        elif change_type == 'xp.add' and isinstance(change.get('xp'), int) and change['xp'] > 0:
-            lines.append(turn.pick('xp', amount=change['xp']))
         elif change_type in {'currency.add', 'currency.remove'} and isinstance(amount, int) and amount > 0:
             currency = CURRENCY_NAMES.get(_key(change.get('currency')), _text(change.get('currency')) or 'coin')
             key = 'currency_gain' if change_type == 'currency.add' else 'currency_spend'
