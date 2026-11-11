@@ -14,6 +14,16 @@ OPENING_MESSAGE_KIND = 'opening'
 # Rules-hint key that carries the opening brief from narration to the prompt builder.
 OPENING_BRIEF_HINT_KEY = 'opening_brief'
 OPENING_PLAYER_INPUT = '(The adventure begins.)'
+# ``state_pipeline`` key of the turn's engine brief, rendered above PLAYER INPUT for the narrator.
+ENGINE_BRIEF_KEY = 'engineBrief'
+ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
+1. Narrate each "Did" result faithfully. Add no result that is not listed.
+2. For anything under "Not done", and for anything under "Here" that the player's words touch without a "Did" result: at most one sentence of the hero starting toward it, then stop before any outcome. Never say what is found, opened, unlocked, taken, bought, reached or seen beyond this place, never say it is empty or gone. Close with one plain sentence naming the action still open, in the words of its label.
+3. The party stays at the place named above unless "Did" says it arrived somewhere.
+4. Never ask for a roll for anything under "Here"; the engine rolls those itself.
+5. Found is not taken: revealed items stay where they are until "Did" says taken. Never write that coins, XP or items were gained unless "Did" says so, and then in one natural clause, not a list.
+6. Speak to the acting hero as "you". No closing question (the opening may end on one). No markdown.
+7. People in the scene speak from what they know; they neither reveal nor deny hidden things."""
 
 # Change this one line to switch the live DM narration prompt.
 ACTIVE_DM_SYSTEM_PROMPT_VERSION = 'v3'
@@ -301,17 +311,75 @@ def is_opening_rules_hint(rules_hint: dict | None) -> bool:
 def prompt_rules_hint(rules_hint: dict) -> dict:
     """Return the RULES_HINT copy rendered into the narration prompt.
 
-    The opening brief travels on the hint but is rendered as its own block, and
-    ``state_pipeline.currentStateSummary`` repeats CONTEXT. The stored rules
-    hint keeps both.
+    The opening brief and the engine brief travel on the hint but are rendered
+    as their own blocks, and ``state_pipeline.currentStateSummary`` repeats
+    CONTEXT. The stored rules hint keeps all three.
     """
     hint = {key: value for key, value in rules_hint.items() if key != OPENING_BRIEF_HINT_KEY}
     state_pipeline = hint.get('state_pipeline')
-    if isinstance(state_pipeline, dict) and 'currentStateSummary' in state_pipeline:
+    if isinstance(state_pipeline, dict) and {'currentStateSummary', ENGINE_BRIEF_KEY} & set(state_pipeline):
         hint['state_pipeline'] = {
-            key: value for key, value in state_pipeline.items() if key != 'currentStateSummary'
+            key: value
+            for key, value in state_pipeline.items()
+            if key not in {'currentStateSummary', ENGINE_BRIEF_KEY}
         }
     return hint
+
+
+def _roll_result_line(rules_hint: dict) -> str | None:
+    """``Stealth roll: 14 against DC 13 — success.`` for the player roll this turn resolves."""
+
+    roll = rules_hint.get('authoritative_roll')
+    if not isinstance(roll, dict) or not isinstance(roll.get('total'), int):
+        return None
+    if roll.get('free') is True:
+        return f"Rolled {roll.get('die') or 'd20'} on their own: {roll['total']}. No check was asked for; nothing depends on it."
+    rule_type = str(roll.get('rule_type') or 'check')
+    if rules_hint.get('resolved_turn_id') is None or rule_type in {'attack', 'spell_attack', 'initiative'}:
+        return None
+    dc = roll.get('dc')
+    against = f' against DC {dc}' if isinstance(dc, int) else ''
+    outcome = f" — {roll['outcome']}" if roll.get('outcome') in {'success', 'failure'} else ''
+    return f"{rule_type.replace('_', ' ').capitalize()} roll: {roll['total']}{against}{outcome}."
+
+
+def render_engine_brief(rules_hint: dict) -> str | None:
+    """The ``ENGINE THIS TURN`` block and its rules, from the turn's engine brief; None without one."""
+
+    state_pipeline = rules_hint.get('state_pipeline') if isinstance(rules_hint.get('state_pipeline'), dict) else {}
+    brief = state_pipeline.get(ENGINE_BRIEF_KEY)
+    if not isinstance(brief, dict) or is_opening_rules_hint(rules_hint):
+        return None
+    did = [str(line) for line in brief.get('did') or []]
+    roll_line = _roll_result_line(rules_hint)
+    if roll_line:
+        did.append(roll_line)
+    not_done = [str(label) for label in brief.get('notDone') or []]
+    here = brief.get('here') if isinstance(brief.get('here'), dict) else {}
+    objects = [
+        f"{entry.get('name')}: {', '.join(entry.get('labels') or []) or 'nothing offered'}"
+        for entry in here.get('objects') or []
+        if isinstance(entry, dict)
+    ]
+
+    def listed(values: list[str]) -> str:
+        return ', '.join(values) if values else 'none'
+
+    return '\n'.join(
+        [
+            'ENGINE THIS TURN',
+            f"Did: {' '.join(did) if did else 'nothing'}",
+            f"Not done: {'; '.join(not_done) if not_done else 'nothing'}",
+            'Here (only the engine decides these): '
+            f"objects {' | '.join(objects) if objects else 'none'}; "
+            f"loose items {listed(here.get('items') or [])}; "
+            f"ways onward {listed(here.get('waysOnward') or [])}; "
+            f"shops {listed(here.get('shops') or [])}",
+            f"The party is at {brief.get('place') or 'an unnamed place'}.",
+            '',
+            ENGINE_BRIEF_RULES,
+        ]
+    )
 
 
 def build_dm_stream_request(
@@ -339,6 +407,9 @@ def build_dm_stream_request(
             opening_text = f'OPENING BRIEF:\n{json.dumps(brief, separators=(",", ":"), ensure_ascii=False)}\n\n'
             player_input = OPENING_PLAYER_INPUT
         rules_hint_text = f'\nRULES_HINT:\n{json.dumps(prompt_rules_hint(rules_hint))}\n'
+        engine_brief = render_engine_brief(rules_hint)
+        if engine_brief:
+            rules_hint_text += f'\n{engine_brief}\n\n'
 
     return ProviderRequest(
         prompt=(
@@ -357,6 +428,7 @@ _DM_USER_PROMPT_RE = re.compile(
     r'CONTEXT:\n(?P<context>.*?)\n\n'
     r'(?:OPENING BRIEF:\n(?P<opening_brief>.*?)\n\n)?'
     r'(?:\nRULES_HINT:\n(?P<rules_hint>.*?)\n)?'
+    r'(?:\nENGINE THIS TURN\n.*?\n\n)?'
     r'PLAYER INPUT:\n(?P<player_input>.*)\n\Z',
     re.DOTALL,
 )

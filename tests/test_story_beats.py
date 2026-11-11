@@ -157,6 +157,42 @@ def test_nothing_changed_is_an_empty_list():
     assert story_beats(_basis(), _basis(), actor_id=ACTOR, state_before={}, applied_changes=[]) == []
 
 
+@pytest.mark.parametrize(
+    ('roll', 'text'),
+    [
+        # A check names its skill or ability once, and plain "Check" when neither is known.
+        ({'rule_type': 'check', 'total': 14, 'dc': 14, 'outcome': 'success'}, 'Check: 14 — success (DC 14)'),
+        ({'rule_type': 'stealth', 'total': 9, 'dc': 12, 'outcome': 'failure'}, 'Stealth check: 9 — failure (DC 12)'),
+        ({'rule_type': 'lore', 'total': 15, 'outcome': 'success', 'ability': {'key': 'intelligence'}}, 'Intelligence check: 15 — success'),
+        ({'rule_type': 'check', 'total': 11, 'outcome': 'failure', 'ability': {'key': 'wisdom'}}, 'Wisdom check: 11 — failure'),
+        ({'rule_type': 'dexterity_saving_throw', 'total': 12, 'dc': 13, 'outcome': 'failure'}, 'Dexterity saving throw: 12 — failure (DC 13)'),
+        # A roll made with no check pending is no check: the die, or the ability picked and its arithmetic.
+        ({'rule_type': 'check', 'free': True, 'die': 'd20', 'kept': 10, 'modifier': 0, 'total': 10}, 'd20: 10'),
+        (
+            {'rule_type': 'check', 'free': True, 'die': 'd20', 'kept': 10, 'modifier': 3, 'total': 13, 'ability': {'key': 'strength'}},
+            'Strength: 13 (d20 10 + 3)',
+        ),
+        (
+            {'rule_type': 'check', 'free': True, 'die': 'd20', 'kept': 10, 'modifier': -1, 'total': 9, 'ability': {'key': 'charisma'}},
+            'Charisma: 9 (d20 10 − 1)',
+        ),
+        ({'rule_type': 'check', 'free': True, 'die': 'd6', 'kept': 4, 'modifier': 0, 'total': 4}, 'd6: 4'),
+    ],
+)
+def test_a_roll_beat_says_what_was_rolled(roll, text):
+    beats = story_beats(_basis(), _basis(), actor_id=ACTOR, state_before={}, applied_changes=[], authoritative_roll=roll)
+
+    assert _texts(beats) == [('check', text)]
+
+
+def test_an_object_check_with_no_skill_or_ability_reads_check():
+    applied = [{'type': 'scene.interactable.action', 'targetId': 'gate', 'event': {'check': {'total': 8, 'outcome': 'failure'}}}]
+
+    assert _texts(story_beats(_basis(), _basis(), actor_id=ACTOR, state_before={}, applied_changes=applied)) == [
+        ('check', 'Check: 8 — failure')
+    ]
+
+
 # The real turn in Safe Mode: the completion event, the log entry and a reload agree ------------------------------
 
 

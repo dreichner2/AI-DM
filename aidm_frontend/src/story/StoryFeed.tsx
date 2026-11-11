@@ -475,6 +475,11 @@ function TurnFeedback({ entry, turnId, board }: { entry: TimelineEntry; turnId: 
   )
 }
 
+/** Stray markdown emphasis the server should already have removed: every `*`, and `_` at a word's edge. */
+function withoutEmphasisMarkers(text: string) {
+  return text.replace(/\*/g, '').replace(/(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])/g, '')
+}
+
 function NarrationBeatView({
   beat,
   board,
@@ -491,7 +496,12 @@ function NarrationBeatView({
   ) : null
   return (
     <>
-      <NarrativeProse text={beat.text} compactMechanicalLines={false} typographicQuotes trailing={caret} />
+      <NarrativeProse
+        text={withoutEmphasisMarkers(beat.text)}
+        compactMechanicalLines={false}
+        typographicQuotes
+        trailing={caret}
+      />
       {beat.notSaved ? <p className="story-label story-not-saved">not saved</p> : null}
       {withFeedback && beat.turnId !== null ? (
         <TurnFeedback entry={beat.entry} turnId={beat.turnId} board={board} />

@@ -49,7 +49,9 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     settle_engine_controlled_turns,
     without_trusted_damage_overlaps,
 )
+from aidm_server.game_state.orchestration.engine_brief import engine_brief
 from aidm_server.game_state.orchestration.narration_facts import (
+    PICKUP_SOURCE,
     TAKE_TIME_LINE,
     enemy_names,
     fight_start,
@@ -1541,6 +1543,29 @@ def _is_free_text(action_intent: dict[str, Any] | None, player_message: str) -> 
     return bool(str(player_message or '').strip()) and kind in {'', 'message'}
 
 
+def _previous_target(turn: DmTurn) -> tuple[str, str] | None:
+    """``("object" | "item", id)`` for the single scene object or item the session's previous turn acted on."""
+
+    previous = (
+        DmTurn.query.filter(DmTurn.session_id == turn.session_id, DmTurn.turn_id < turn.turn_id)
+        .order_by(DmTurn.turn_id.desc())
+        .first()
+    )
+    pipeline = _metadata(previous).get(STATE_PIPELINE_METADATA_KEY) if previous is not None else None
+    if not isinstance(pipeline, dict):
+        return None
+    targets = set()
+    for change in [*(pipeline.get('immediateAppliedChanges') or []), *(pipeline.get('combatAppliedChanges') or [])]:
+        if not isinstance(change, dict):
+            continue
+        if change.get('type') == 'scene.interactable.action' and str(change.get('targetId') or ''):
+            targets.add(('object', str(change['targetId'])))
+        item = change.get('item') if isinstance(change.get('item'), dict) else {}
+        if change.get('type') == 'scene.item.remove' and change.get('source') == PICKUP_SOURCE and str(item.get('id') or ''):
+            targets.add(('item', str(item['id'])))
+    return next(iter(targets)) if len(targets) == 1 else None
+
+
 def _combat_is_running(state: dict[str, Any]) -> bool:
     combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
     return str(combat.get('status') or '').strip().lower() in {'starting', 'active'}
@@ -1706,7 +1731,7 @@ def _narration_packet(
     if talk_npc:
         packet['talk'] = _talk_facts(session_obj=session_obj, turn=turn, state=state_before, npc=talk_npc)
     if free_text is not None:
-        packet['freeText'] = {'kind': free_text.kind, 'more': free_text.more}
+        packet['freeText'] = {'kind': free_text.kind, 'more': free_text.more, 'deferred': deepcopy(list(free_text.deferred))}
     elif free and not declared_actions and not talk_npc and not turn.requires_roll:
         packet['freeText'] = {'kind': None, 'unmatched': True, 'more': False}
     started = fight_start(state_after, applied_changes)
@@ -1871,7 +1896,13 @@ def pre_dm_pipeline(
     wake = party_wake(state, turn_id=turn.turn_id)
     # Words that clearly name one action take exactly the path of that action's button.
     free_text = (
-        free_text_action(state, actor_id=actor_id, player_id=player.player_id, message=player_message)
+        free_text_action(
+            state,
+            actor_id=actor_id,
+            player_id=player.player_id,
+            message=player_message,
+            previous_target=_previous_target(turn),
+        )
         if not declared_actions_override and _is_free_text(action_intent, player_message)
         else None
     )
@@ -2151,11 +2182,6 @@ def pre_dm_pipeline(
         dm_context['dmInstructions'].append(f'This line must appear in the narration before the first blows: "{line}"')
     if any(fact.get('takeTime') is True for fact in dm_context['narration'].get('objects') or []):
         dm_context['dmInstructions'].append(f'Before telling the result of the check, say exactly: "{TAKE_TIME_LINE}"')
-    if free_text is not None and free_text.more:
-        dm_context['dmInstructions'].append(
-            'The player named more than one action and only the first was taken: end the reply with '
-            '"One thing at a time — the rest is still yours to do."'
-        )
     foreseen_end, foreseen_defeat = (None, None) if defeat_recovery else _foreseen_fight_end(
         state=state_before_dm,
         dm_context=dm_context,
@@ -2175,6 +2201,16 @@ def pre_dm_pipeline(
             'The enemy turns resolved here put down every hero: after narrating them, tell that darkness '
             'takes the party and they wake later, alive but barely, with the enemies gone.'
         )
+    dm_context['engineBrief'] = engine_brief(
+        dm_context=dm_context,
+        state_before=state,
+        state_after=state_before_dm,
+        applied_changes=[*applied_immediate, *applied_combat],
+        free_text=free_text,
+        player_message=player_message,
+        actor_id=actor_id,
+        player_id=player.player_id,
+    )
     state_log = build_state_log(
         turn_id=turn.turn_id,
         pre_validation=pre_validation,
@@ -2190,6 +2226,7 @@ def pre_dm_pipeline(
             'kind': free_text.kind,
             'intents': deepcopy(list(free_text.intents)),
             'more': free_text.more,
+            'deferred': deepcopy(list(free_text.deferred)),
             **({'refusal': free_text.refusal} if free_text.refusal else {}),
         }
     metadata[STATE_PIPELINE_METADATA_KEY] = {

@@ -9,12 +9,14 @@ from aidm_server.prompt_templates import (
     DM_SYSTEM_MESSAGE_V2,
     DM_SYSTEM_MESSAGE_V3,
     DM_SYSTEM_PROMPTS,
+    ENGINE_BRIEF_RULES,
     PROMPT_TEMPLATE_VERSION,
     build_canon_extraction_request,
     build_dm_generate_request,
     build_dm_system_message,
     build_dm_stream_request,
     parse_dm_user_prompt,
+    render_engine_brief,
 )
 
 
@@ -98,6 +100,64 @@ def test_stream_request_omits_state_summary_from_rendered_rules_hint():
     assert rules_hint['state_pipeline']['currentStateSummary'] == {'hp': 10}
     assert parsed['speaker'] is None
     assert parsed['opening_brief'] is None
+
+
+BRIEF = {
+    'did': ['Took the Caravan Strongbox Key.'],
+    'notDone': ['Search the lead wagon'],
+    'here': {
+        'objects': [
+            {'name': 'Lead Wagon', 'labels': ['Search the lead wagon']},
+            {'name': 'Caravan Ledger', 'labels': []},
+        ],
+        'items': [],
+        'waysOnward': ['The Old North Road'],
+        'shops': ["Mara's Counter"],
+    },
+    'place': 'The Lantern Post Inn',
+}
+
+
+def test_stream_request_renders_the_engine_brief_directly_above_player_input():
+    rules_hint = {'requires_roll': False, 'state_pipeline': {'playerMessage': 'x', 'engineBrief': BRIEF}}
+
+    request = build_dm_stream_request(user_input='I pocket the key and search the wagon.', context='{}', rules_hint=rules_hint)
+
+    assert request.prompt.endswith(
+        '\nRULES_HINT:\n{"requires_roll": false, "state_pipeline": {"playerMessage": "x"}}\n\n'
+        'ENGINE THIS TURN\n'
+        'Did: Took the Caravan Strongbox Key.\n'
+        'Not done: Search the lead wagon\n'
+        'Here (only the engine decides these): objects Lead Wagon: Search the lead wagon | Caravan Ledger: nothing offered; '
+        "loose items none; ways onward The Old North Road; shops Mara's Counter\n"
+        'The party is at The Lantern Post Inn.\n\n'
+        f'{ENGINE_BRIEF_RULES}\n\n'
+        'PLAYER INPUT:\nI pocket the key and search the wagon.\n'
+    )
+    assert parse_dm_user_prompt(request.prompt) == {
+        'speaker': None,
+        'context': {},
+        'opening_brief': None,
+        'rules_hint': {'requires_roll': False, 'state_pipeline': {'playerMessage': 'x'}},
+        'player_input': 'I pocket the key and search the wagon.',
+    }
+    assert rules_hint['state_pipeline']['engineBrief'] == BRIEF
+
+
+def test_engine_brief_names_the_roll_this_turn_resolves_and_is_absent_from_the_opening():
+    pipeline = {'engineBrief': {**BRIEF, 'did': [], 'notDone': []}}
+    resolved = {
+        'requires_roll': True,
+        'resolved_turn_id': 4,
+        'authoritative_roll': {'rule_type': 'stealth', 'total': 14, 'dc': 13, 'outcome': 'success'},
+        'state_pipeline': pipeline,
+    }
+    free = {'requires_roll': True, 'authoritative_roll': {'die': 'd20', 'total': 10, 'free': True}, 'state_pipeline': pipeline}
+
+    assert render_engine_brief(resolved).startswith('ENGINE THIS TURN\nDid: Stealth roll: 14 against DC 13 — success.\nNot done: nothing\n')
+    assert 'Did: Rolled d20 on their own: 10. No check was asked for; nothing depends on it.\n' in render_engine_brief(free)
+    assert render_engine_brief({'message_kind': 'opening', 'state_pipeline': pipeline}) is None
+    assert render_engine_brief({'requires_roll': False}) is None
 
 
 def test_parse_dm_user_prompt_round_trips_multiline_input_and_rejects_other_layouts():

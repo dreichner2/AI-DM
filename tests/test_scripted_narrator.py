@@ -645,8 +645,11 @@ def test_no_template_reads_as_a_roll_request(template_key):
 LEDGER_TEXT = 'Every line that named a driver or guard has been struck through. The last entry says the bell sounded at the third mile.'
 
 
+BELL_DEFERRED = {'kind': 'object', 'label': 'Ring the wagon bell', 'target': 'the wagon bell', 'verb': 'ring'}
+
+
 def _object_turn(fact, *, more=False, change_target='inn_caravan_ledger', **pipeline):
-    narration = {'objects': [fact], **({'freeText': {'kind': 'object', 'more': True}} if more else {})}
+    narration = {'objects': [fact], **({'freeText': {'kind': 'object', 'more': True, 'deferred': [BELL_DEFERRED]}} if more else {})}
     return _hint(
         state_pipeline=_pipeline(
             stateChangesAlreadyApplied=[{'type': 'scene.interactable.action', 'targetId': change_target, 'objectAction': fact['action']}],
@@ -767,7 +770,7 @@ def test_naming_more_than_one_action_does_the_first_and_says_so_last():
         SPEAKER,
     )
 
-    assert text.endswith('One thing at a time — the rest is still yours to do.')
+    assert text.endswith('One thing at a time — the wagon bell is still there to ring.')
 
 
 def test_in_a_fight_the_reply_is_the_results_and_whose_turn_it_is():

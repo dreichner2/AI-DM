@@ -65,6 +65,23 @@ describe('StoryFeed', () => {
     expect(screen.getByRole('log', { name: 'Session timeline' })).toHaveAttribute('aria-live', 'off')
   })
 
+  it('drops stray markdown emphasis markers from narration and keeps the words', () => {
+    const { container } = render(
+      <StoryFeed
+        board={board({
+          turnRows: [
+            entry('log-1', 'dm', 'DM', 'Inside lie *Pale Road-Stone Fragment … 15 gp* and a **brass** key, _quietly_ waiting by the old_gate.', { turn_id: 1 }),
+          ],
+        })}
+        textSize="default"
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
+      />,
+    )
+    const narration = container.querySelector('.story-narration')
+    expect(narration).toHaveTextContent('Inside lie Pale Road-Stone Fragment … 15 gp and a brass key, quietly waiting by the old_gate.')
+    expect(narration?.querySelector('em')).toBeNull()
+  })
+
   it('sets narration as a book: curly dialogue, a drop cap on the opening and a caret while streaming', () => {
     const { container, rerender } = render(
       <StoryFeed

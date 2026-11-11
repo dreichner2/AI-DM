@@ -14,7 +14,7 @@ from aidm_server.database import db
 from aidm_server.game_clock import public_clock
 from aidm_server.emergent_memory import build_emergent_context, dormant_threads
 from aidm_server.game_state.campaign_pack_encounters import declared_story_flags
-from aidm_server.interactables import project_scene_interactables
+from aidm_server.interactables import offered_scene_actions, project_scene_interactables
 from aidm_server.models import (
     BestiaryEntry,
     Campaign,
@@ -30,6 +30,7 @@ from aidm_server.models import (
 )
 from aidm_server.race_system import build_race_context_summary
 from aidm_server.segment_triggers import parse_trigger_spec
+from aidm_server.services.campaign_pack_visibility import acting_hero
 from aidm_server.services.content_settings import session_content_settings
 from aidm_server.telemetry import telemetry_event
 from aidm_server.time_utils import utc_now
@@ -194,7 +195,13 @@ def _compact_scene_item(item: dict) -> dict:
     }
 
 
-def _compact_scene_interactable(item: dict) -> dict:
+def _compact_scene_interactable(item: dict, offers: list[dict]) -> dict:
+    """A scene object as the narrator sees it: its player description, state and available labels.
+
+    Its authored reveal text and contents reach the narrator only in the engine
+    brief of the turn that reveals them.
+    """
+
     compact: dict[str, Any] = {
         'id': _text_or_none(item.get('id'), 120),
         'name': _text_or_none(item.get('name'), 180),
@@ -220,13 +227,18 @@ def _compact_scene_interactable(item: dict) -> dict:
     ):
         if key in item and isinstance(item.get(key), (bool, int, float)):
             compact[key] = item.get(key)
-    if isinstance(item.get('contents'), list):
-        compact['contents'] = [
-            _compact_scene_item(content)
-            for content in item['contents']
-            if isinstance(content, dict)
-        ][:MAX_LIVE_SCENE_ITEMS]
+    labels = [
+        _text_or_none(offer.get('label'), 120)
+        for offer in offers
+        if isinstance(offer, dict) and offer.get('legal') is True and offer.get('done') is not True
+    ]
+    if any(labels):
+        compact['offeredActions'] = [label for label in labels if label]
     return {key: value for key, value in compact.items() if value is not None}
+
+
+def _player_visible_scene_item(item: dict) -> bool:
+    return item.get('gmOnly') is not True and not (item.get('hidden') is True and item.get('playerKnown') is not True)
 
 
 def _compact_flag_value(value):
@@ -395,12 +407,13 @@ def _unique_records(records: list[dict]) -> list[dict]:
     return unique
 
 
-def _compact_live_world_state(snapshot: dict) -> dict:
+def _compact_live_world_state(snapshot: dict, *, acting_player_id: int | None = None) -> dict:
     if not isinstance(snapshot, dict) or not snapshot:
         return {}
 
     scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
     projected_objects = project_scene_interactables(snapshot, {'isGm': False})
+    offers = offered_scene_actions(snapshot, acting_hero(snapshot, acting_player_id))
     active_quest_ids = _string_list(scene.get('activeQuestIds'), limit=20)
     active_quest_order = {quest_id: index for index, quest_id in enumerate(active_quest_ids)}
     quests = [quest for quest in (snapshot.get('quests') or []) if isinstance(quest, dict)]
@@ -501,15 +514,15 @@ def _compact_live_world_state(snapshot: dict) -> dict:
             'items': [
                 _compact_scene_item(item)
                 for item in (scene.get('items') or [])
-                if isinstance(item, dict)
+                if isinstance(item, dict) and _player_visible_scene_item(item)
             ][:MAX_LIVE_SCENE_ITEMS],
             'interactables': [
-                _compact_scene_interactable(item)
+                _compact_scene_interactable(item, offers.get(str(item.get('id') or ''), []))
                 for item in projected_objects.get('interactables', [])
                 if isinstance(item, dict)
             ][:MAX_LIVE_SCENE_INTERACTABLES],
             'hazards': [
-                _compact_scene_interactable(item)
+                _compact_scene_interactable(item, offers.get(str(item.get('id') or ''), []))
                 for item in projected_objects.get('hazards', [])
                 if isinstance(item, dict)
             ][:MAX_LIVE_SCENE_INTERACTABLES],
@@ -525,7 +538,7 @@ def _compact_live_world_state(snapshot: dict) -> dict:
     }
 
 
-def _live_world_state_for_session(session_id) -> dict:
+def _live_world_state_for_session(session_id, *, acting_player_id: int | None = None) -> dict:
     if not session_id:
         return {}
     session = db.session.get(Session, session_id)
@@ -534,7 +547,7 @@ def _live_world_state_for_session(session_id) -> dict:
     snapshot = safe_json_loads(session.state_snapshot, {})
     if not isinstance(snapshot, dict):
         return {}
-    return _compact_live_world_state(snapshot)
+    return _compact_live_world_state(snapshot, acting_player_id=acting_player_id)
 
 
 def _record_id(record: dict | None) -> str:
@@ -2024,7 +2037,10 @@ def build_dm_context(
         min_dormancy=30,
         limit=3,
     )
-    live_world_state = _live_world_state_for_session(session_id)
+    live_world_state = _live_world_state_for_session(
+        session_id,
+        acting_player_id=int(current_player_id) if current_player_id else None,
+    )
     campaign_pack_director = _campaign_pack_director_for_session(campaign_id, session_id)
     session_obj = db.session.get(Session, session_id) if session_id else None
     content_settings = session_content_settings(session_obj)

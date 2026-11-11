@@ -50,8 +50,18 @@ describe('StoryRollPrompt', () => {
 
     const region = screen.getByRole('region', { name: 'Pending roll' })
     expect(within(region).getByText('Turn 12')).toBeInTheDocument()
-    expect(within(region).getByRole('button', { name: 'Roll stealth check' })).toBeEnabled()
+    expect(within(region).getByRole('button', { name: 'Roll Stealth check' })).toBeEnabled()
     expect(within(region).getByText('d20 + 3 against DC 13')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['intelligence', 'Roll Intelligence'],
+    ['dexterity saving throw', 'Roll Dexterity saving throw'],
+    ['sleight of hand', 'Roll Sleight of Hand'],
+  ])('capitalises the ability in %s', (ruleLabel, name) => {
+    render(<StoryRollPrompt notice={{ ...testRollNotice(), ruleLabel }} composer={testComposer()} onPrepare={vi.fn()} />)
+
+    expect(screen.getByRole('button', { name })).toBeInTheDocument()
   })
 
   it('speaks plainly about the server hint and keeps the breakdown for Roll options', () => {
@@ -101,7 +111,7 @@ describe('StoryRollPrompt', () => {
     const composer = testComposer()
     render(<PromptHarness onPrepare={onPrepare} composer={composer} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Roll stealth check' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Roll Stealth check' }))
 
     expect(onPrepare).toHaveBeenCalledWith(testRollNotice().guidance)
     expect(composer.startDiceRoll).toHaveBeenCalledTimes(1)
@@ -115,14 +125,14 @@ describe('StoryRollPrompt', () => {
     const composer = testComposer()
     render(<StoryRollPrompt notice={testRollNotice()} composer={composer} onPrepare={vi.fn()} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Roll stealth check' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Roll Stealth check' }))
     expect(composer.startDiceRoll).not.toHaveBeenCalled()
   })
 
   it('preloads the dice roller on hover and focus', () => {
     const composer = testComposer()
     render(<StoryRollPrompt notice={testRollNotice()} composer={composer} onPrepare={vi.fn()} />)
-    const button = screen.getByRole('button', { name: 'Roll stealth check' })
+    const button = screen.getByRole('button', { name: 'Roll Stealth check' })
 
     fireEvent.mouseEnter(button)
     fireEvent.focus(button)
@@ -147,13 +157,13 @@ describe('StoryRollPrompt', () => {
     fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'Hide behind the wagon' } })
     expect(composer.setRollReason).toHaveBeenCalledWith('Hide behind the wagon')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Roll stealth check' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Roll Stealth check' }))
     expect(onPrepare).toHaveBeenCalledTimes(1)
     expect(composer.startDiceRoll).toHaveBeenCalledTimes(1)
   })
 
   it('cannot be pressed while a request is in flight', () => {
     render(<StoryRollPrompt notice={testRollNotice()} composer={testComposer({ sendPending: true })} onPrepare={vi.fn()} />)
-    expect(screen.getByRole('button', { name: 'Roll stealth check' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Roll Stealth check' })).toBeDisabled()
   })
 })

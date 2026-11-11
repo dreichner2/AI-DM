@@ -76,7 +76,8 @@ def _summary(mapped):
         ('take the coins', ('pickup', 'inn_wagon_strongbox_coins')),
         ('I collect the gold', ('pickup', 'inn_wagon_strongbox_coins')),
         ('I take the lantern', ('refusal', 'There is no lantern here to take.')),
-        ('take a look around', None),
+        # A lead-in before the verb: "take a look around" is looking around.
+        ('take a look around', ('look',)),
         # An offered label, said as written or as the start of the message.
         ('Read the caravan ledger', _object('inn_caravan_ledger', 'inspect')),
         ("I search under the driver's bench.", _object('inn_drivers_bench', 'search')),
@@ -134,6 +135,122 @@ def test_only_the_first_named_action_is_taken(inn, message, more):
 
     assert mapped is not None and len(mapped.intents) == 1
     assert mapped.more is more
+
+
+def _deferred(mapped) -> list[str]:
+    return [action['label'] for action in mapped.deferred] if mapped is not None else []
+
+
+BENCH_SEARCH = _object('inn_drivers_bench', 'search')
+NORTH_ROAD = ('travel', 'loc_old_north_road')
+
+
+@pytest.mark.parametrize(
+    ('message', 'expected', 'deferred'),
+    [
+        # The lead's sentences from the first live session.
+        ("I crouch and search under the driver's bench.", BENCH_SEARCH, []),
+        ('I pocket the key and climb into the lead wagon to search it.', ('pickup', 'caravan_strongbox_key'), ['Search the lead wagon']),
+        ('I head up the old north road.', NORTH_ROAD, []),
+        ('I find a chest with 500 gold.', None, []),
+        # A lead-in before the verb, a purpose phrase, "it" for the thing named before it.
+        ('Carefully, I open the strongbox.', _object('inn_wagon_strongbox', 'open'), []),
+        ('I walk over to the bench and look under it.', BENCH_SEARCH, []),
+        ('I climb into the lead wagon to search it.', _object('inn_lead_wagon', 'search'), []),
+        ('I hurry across the muddy yard to the lead wagon and search it.', _object('inn_lead_wagon', 'search'), []),
+        ('I step up to the wagon bell and pull it.', _object('inn_wagon_bell', 'use'), []),
+        ('Let me read the caravan ledger.', _object('inn_caravan_ledger', 'inspect'), []),
+        ('I kneel down and examine the ledger.', _object('inn_caravan_ledger', 'inspect'), []),
+        ('Then I ring the wagon bell.', _object('inn_wagon_bell', 'use'), []),
+        # Pickups, the new verbs among them.
+        ('Quickly, I grab the strongbox key.', ('pickup', 'caravan_strongbox_key'), []),
+        ('I scoop up the coins.', ('pickup', 'inn_wagon_strongbox_coins'), []),
+        ('I help myself to the gold.', ('pickup', 'inn_wagon_strongbox_coins'), []),
+        # Travel: any travel verb, a preposition, a way onward by name.
+        ('I make my way up the old north road.', NORTH_ROAD, []),
+        ('We set off along the north road.', NORTH_ROAD, []),
+        ('I take the old north road.', NORTH_ROAD, []),
+        ('I leave for the old north road.', NORTH_ROAD, []),
+        ('I head north.', NORTH_ROAD, []),
+        ('I follow the old north road', NORTH_ROAD, []),
+        ('I start down the old north road.', NORTH_ROAD, []),
+        ('We march out along the old north road.', NORTH_ROAD, []),
+        # The first named action is taken; every later one is deferred by its label.
+        ('I take the key, then I open the strongbox.', ('pickup', 'caravan_strongbox_key'), ['Open the strongbox']),
+        ('I read the ledger; then I ring the bell.', _object('inn_caravan_ledger', 'inspect'), ['Ring the wagon bell']),
+        (
+            "I search under the driver's bench, then head up the old north road.",
+            BENCH_SEARCH,
+            ['Go to The Old North Road'],
+        ),
+        ('I look around and then take the key.', ('look',), ['Take the Caravan Strongbox Key']),
+        ('I ask Tovin about the bell and ring it.', ('talk', 'npc_tovin_bell'), ['Ring the wagon bell']),
+        ('I scoop up the coins and the key, then take a short rest.', ('pickup', 'inn_wagon_strongbox_coins'), ['Take a short rest']),
+        # Only the first two sentences are read.
+        ('I wait. I listen. I open the strongbox.', None, []),
+    ],
+)
+def test_ordinary_sentences_map_clause_by_clause(inn, message, expected, deferred):
+    ids, state = inn
+    mapped = _map(ids, state, message)
+
+    assert _summary(mapped) == expected
+    assert _deferred(mapped) == deferred
+
+
+@pytest.mark.parametrize(
+    'message',
+    [
+        # Negated or hypothetical.
+        "I don't open the strongbox.",
+        "I won't search under the driver's bench",
+        'I never touch the bell.',
+        'I search the bench without touching anything.',
+        'I would open the strongbox.',
+        'Before I leave, I search under the bench.',
+        'If I open the strongbox, what happens?',
+        # Questions.
+        'Should I open the strongbox?',
+        'Can I take the key?',
+        'Could I read the ledger?',
+        'I open the strongbox?',
+        # Speech: the verb inside quotation marks.
+        'I shout, "Open the strongbox!"',
+        '"Search the lead wagon," I tell Mara.',
+        'I say “ring the bell” to no one.',
+        # Someone else's verb.
+        'I tell Mara to search the lead wagon.',
+        'I watch Tovin ring the bell.',
+        'I let Osric open the strongbox.',
+        'Beside Mara, I open the strongbox.',
+    ],
+)
+def test_negated_hypothetical_spoken_and_others_words_map_nothing(inn, message):
+    ids, state = inn
+
+    assert _map(ids, state, message) is None
+
+
+def test_it_is_the_thing_named_before_it_else_what_the_previous_turn_acted_on(inn):
+    ids, state = inn
+
+    def mapped(message, previous=None):
+        return _summary(
+            free_text_action(
+                state, actor_id=f"player_{ids['player_id']}", player_id=ids['player_id'], message=message, previous_target=previous
+            )
+        )
+
+    assert mapped('I search it.') is None
+    assert mapped('I search it.', ('object', 'inn_lead_wagon')) == _object('inn_lead_wagon', 'search')
+    assert mapped('I look over it.', ('object', 'inn_drivers_bench')) == _object('inn_drivers_bench', 'inspect')
+    assert mapped('I pocket it.', ('item', 'caravan_strongbox_key')) == ('pickup', 'caravan_strongbox_key')
+    # Named in the message wins over the previous turn; a thing of another kind maps nothing.
+    assert mapped('I study the ledger and then search it.', ('object', 'inn_lead_wagon')) == _object('inn_caravan_ledger', 'inspect')
+    assert mapped('I look at the bench and take it.') == _object('inn_drivers_bench', 'inspect')
+    assert mapped('I take it.', ('object', 'inn_lead_wagon')) is None
+    # Something the previous turn acted on that is no longer here.
+    assert mapped('I pocket it.', ('item', 'not_here')) is None
 
 
 # The real turn pipeline in Safe Mode ----------------------------------------------------------------------------
@@ -268,9 +385,56 @@ def test_the_narration_tells_what_the_words_did(app, client, socketio, safe_mode
     missing = hero.send('I take the lantern')
 
     assert ledger.startswith("You read the caravan ledger.\n\nA drover's travel ledger")
-    assert ledger.endswith('One thing at a time — the rest is still yours to do.')
+    assert ledger.endswith('One thing at a time — the wagon bell is still there to ring.')
     assert again == 'You have already examined the Caravan Ledger.'
     assert bench.startswith("You search under the driver's bench.")
     assert bench.endswith('You find a Caravan Strongbox Key.')
     assert key == 'You take the Caravan Strongbox Key.'
     assert missing == 'There is no lantern here to take.'
+
+
+def _pipeline(hero: Hero) -> dict:
+    return hero.turn()['metadata']['state_pipeline']
+
+
+def test_a_sentence_with_a_lead_in_searches_the_object_through_the_socket(app, client, socketio, safe_mode):
+    hero = Hero(app, client, socketio)
+
+    text = hero.send("I crouch and search under the driver's bench.")
+    turn = hero.turn()
+
+    assert hero.state()['objects']['inn_drivers_bench']['searched'] is True
+    assert 'caravan_strongbox_key' in hero.state()['sceneItems']
+    recorded = turn['metadata']['action_intent']['object']
+    assert (recorded['id'], recorded['action']) == ('inn_drivers_bench', 'search')
+    assert turn['requires_roll'] is False
+    assert text.startswith("You search under the driver's bench.")
+    # "it" in the next turn is what this turn acted on.
+    hero.send('I look over it.')
+    assert hero.state()['objects']['inn_drivers_bench']['inspected'] is True
+
+
+def test_a_pickup_is_taken_and_the_search_after_it_deferred_through_the_socket(app, client, socketio, safe_mode):
+    hero = Hero(app, client, socketio)
+    hero.send("search under the driver's bench")
+
+    text = hero.send('I pocket the key and climb into the lead wagon to search it.')
+    turn = hero.turn()
+    deferred = [{'kind': 'object', 'label': 'Search the lead wagon', 'target': 'the lead wagon', 'verb': 'search'}]
+
+    assert 'Caravan Strongbox Key' in hero.state()['heroItems']
+    assert hero.state()['objects']['inn_lead_wagon']['searched'] is not True
+    assert turn['metadata']['free_text_action']['deferred'] == deferred
+    assert _pipeline(hero)['dmContextPacket']['narration']['freeText']['deferred'] == deferred
+    assert text == 'You take the Caravan Strongbox Key.\n\nOne thing at a time — the lead wagon is still there to search.'
+
+
+def test_a_travel_sentence_moves_the_party_through_the_socket(app, client, socketio, safe_mode):
+    hero = Hero(app, client, socketio)
+
+    hero.send('I head up the old north road.')
+    turn = hero.turn()
+
+    assert hero.state()['location'] == 'loc_old_north_road'
+    assert turn['metadata']['action_intent']['location']['id'] == 'loc_old_north_road'
+    assert turn['requires_roll'] is False

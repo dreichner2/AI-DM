@@ -1,27 +1,49 @@
-"""Typed words that name one action become the same typed intent a button sends.
+"""Typed words that name actions become the same typed intents the buttons send.
 
-``free_text_action`` reads a free-text message against what the acting hero can
-see and returns the typed intents it names (a pickup, an object action, travel
-or a rest), the refusal for a pickup of something that is not there, or a
-narration-only kind (looking around, talking to someone present). Only the
-first action is taken; ``more`` says the message named another.
+``free_text_action`` reads the first two sentences of a free-text message
+against what the acting hero can see. Each sentence is split into clauses on
+"and", "then", ", then" and ";", and each clause is mapped on its own: its verb
+may follow a lead-in of up to eight words ("Carefully, I open…") or sit in a
+purpose phrase ("climb into the lead wagon to search it"), and "it", "them" or
+"that" after the verb is the thing named last before it in the message, else the
+single scene object or item the previous turn acted on. The first mapped clause
+is taken: its typed intents (a pickup, an object action, travel or a rest), the
+refusal for a pickup of something that is not there, or a narration-only kind
+(looking around, talking to someone present). Every later mapped action is
+returned as a deferred action, by its offered label, and is not taken.
+
+A clause maps nothing when it is negated or hypothetical, its sentence is a
+question, or its verb sits inside quotation marks (speech); nor when its
+lead-in names someone present or has the hero direct or watch someone else
+("tell", "let", "order", "watch"), since the verb is then theirs.
 
 Naming rule: case-insensitive, leading articles and possessive ``'s`` ignored;
 the phrase must be the whole name or a run of whole words from it (at least one
 word of three or more letters) that matches exactly one visible candidate of
-that kind. Two or more candidates, or none, map nothing.
+that kind. Two or more candidates, or none, map nothing. ``mentions`` applies
+the same rule to every noun phrase of a text: the words after an article,
+determiner or preposition.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
-from aidm_server.interactables import available_actions_for_target, interactable_actor_context
+from aidm_server.interactables import available_actions_for_target, interactable_actor_context, take_label
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
 ARTICLES = frozenset({'the', 'a', 'an', 'some', 'my', 'your', 'our'})
+DETERMINERS = ARTICLES | {'that', 'this', 'these', 'those', 'its', 'his', 'her', 'their'}
+PREPOSITIONS = frozenset(
+    {
+        'to', 'toward', 'towards', 'into', 'onto', 'inside', 'in', 'under', 'beneath', 'behind', 'beside', 'near',
+        'at', 'on', 'over', 'through', 'across', 'along', 'up', 'down', 'by', 'with', 'from', 'for', 'of', 'around',
+        'past',
+    }
+)
+NOUN_LEADS = DETERMINERS | PREPOSITIONS
 DEFAULT_LABEL_VERBS = {
     'inspect': 'Examine',
     'search': 'Search',
@@ -35,15 +57,26 @@ DEFAULT_LABEL_VERBS = {
     'disarm': 'Disarm',
     'reset': 'Reset',
 }
-LEADING_SUBJECT = re.compile(r"^\s*(?:i|we)\s+", re.IGNORECASE)
-CLAUSE_BREAK = re.compile(r'\s*(?:[.;!?]+|,\s*(?:and\s+then|and|then)?|\band\s+then\b|\bthen\b|\band\b)\s*', re.IGNORECASE)
+MAX_SENTENCES = 2
+MAX_LEAD_IN = 8
+MAX_PHRASE_WORDS = 6
+QUOTED = re.compile(r'"[^"]*"?|“[^”]*”?')
+SENTENCE = re.compile(r'(?P<body>[^.!?]+)(?P<end>[.!?]*)')
+CLAUSE_SPLIT = re.compile(r'\s+and\s+|\s*,\s*then\s+|\s+then\s+|\s*;\s*')
+WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)*")
+HYPOTHETICAL = re.compile(r"\b(?:not|never|without|would)\b|n't\b|\b(?:before|if|should|could|can)\s+i\b")
+# Words in a lead-in that make the verb after them someone else's ("I tell Mara to open it").
+OTHERS_ACT = frozenset({'tell', 'tells', 'let', 'lets', 'order', 'orders', 'watch', 'watches'})
 REST_PHRASES = (
     ('short_rest', re.compile(r'\b(?:short rest|take a breather|rest for an hour)\b')),
     ('long_rest', re.compile(r'\b(?:long rest|make camp|sleep for the night|rest for the night|rest until morning)\b')),
 )
+REST_LABELS = {'short_rest': 'a short rest', 'long_rest': 'a long rest'}
 LOOK_AROUND = re.compile(r'^(?:look around|survey|take stock)\b')
 TAKE_ALL = re.compile(r'^(?:take everything|take all|take it all|loot it all)\b')
-PICKUP = re.compile(r'^(?:pick up|take|grab|pocket|collect|gather|retrieve|loot)\s+(?P<phrase>.+)$')
+PICKUP = re.compile(
+    r'^(?:pick up|scoop up|gather up|help myself to|take|grab|pocket|collect|gather|retrieve|loot)\s+(?P<phrase>.+)$'
+)
 COINS = re.compile(r'^(?:the\s+)?(?:coins|gold|money)$')
 # Words after "take" that make it something other than a pickup ("take a look", "take cover").
 NOT_A_PICKUP = frozenset(
@@ -84,26 +117,63 @@ OBJECT_VERBS: tuple[tuple[str, str], ...] = (
     ('use', 'use'),
 )
 OBJECT_PREPOSITIONS = frozenset({'through', 'in', 'into', 'inside', 'under', 'beneath', 'at', 'on', 'over', 'around'})
-TRAVEL = re.compile(
-    r'^(?:go back to|go to|travel to|head back to|head to|head for|walk back to|walk to|return to|make for|'
-    r'set out for|leave for)\s+(?P<phrase>.+)$'
+TRAVEL_VERBS = (
+    'make my way', 'leave for', 'make for', 'set out', 'set off', 'go back', 'travel', 'return', 'follow', 'march',
+    'start', 'head', 'walk', 'ride', 'hike', 'take', 'go',
 )
+TRAVEL_PREPOSITIONS = (
+    'out along', 'out on', 'back to', 'towards', 'toward', 'through', 'along', 'onto', 'into', 'down', 'for', 'to', 'up',
+)
+TRAVEL = re.compile(rf"^(?:{'|'.join(TRAVEL_VERBS)})(?:\s+(?:{'|'.join(TRAVEL_PREPOSITIONS)}))?\s+(?P<phrase>.+)$")
 TALK = re.compile(r'^(?:(?:talk|speak)\s+(?:to|with)|ask)\s+(?P<phrase>.+)$')
-ACTION_START = re.compile(
-    r'^(?:pick up|take|grab|pocket|collect|gather|retrieve|loot|go|travel|head|walk|return|make for|set out|leave for|'
-    r'talk|speak|ask|look|survey|rest|sleep|make camp|attack|cast|drink|use|' + '|'.join(verb for verb, _ in OBJECT_VERBS) + r')\b'
-)
+PRONOUNS = frozenset({'it', 'them'})
 
 
 @dataclass(frozen=True)
 class FreeTextAction:
-    """What one free-text message names, for the turn that carries it."""
+    """What one free-text message names, for the turn that carries it.
+
+    ``deferred`` holds the later actions the message named and the turn does
+    not take: ``{"kind", "label", "target", "verb"}``, where ``label`` is the
+    action's offered label and ``target``/``verb`` say it in prose ("the lead
+    wagon", "search").
+    """
 
     kind: str
     intents: tuple[dict[str, Any], ...] = ()
     refusal: str | None = None
     npc: dict[str, Any] | None = None
-    more: bool = False
+    deferred: tuple[dict[str, str], ...] = ()
+
+    @property
+    def more(self) -> bool:
+        return bool(self.deferred)
+
+
+@dataclass(frozen=True)
+class _Clause:
+    words: tuple[str, ...]
+    start: int
+    sentence: int
+    guarded: bool
+
+
+@dataclass(frozen=True)
+class _Mapped:
+    action: FreeTextAction
+    labels: tuple[dict[str, str], ...] = ()
+
+
+@dataclass
+class _Scene:
+    """What the acting hero can see and act on, read once per message."""
+
+    objects: list[tuple[dict[str, Any], list[dict[str, Any]]]]
+    items: list[dict[str, Any]]
+    destinations: list[dict[str, Any]]
+    npcs: list[dict[str, Any]]
+    previous: tuple[str, dict[str, Any]] | None = None
+    spans: list[tuple[int, int, tuple[str, Any]]] = field(default_factory=list)
 
 
 def _text(value: Any) -> str:
@@ -117,7 +187,9 @@ def name_words(text: Any) -> list[str]:
     return [word for word in re.findall(r'[a-z0-9]+', lowered) if word not in ARTICLES]
 
 
-def _phrase_names(phrase_words: list[str], candidate_words: list[str]) -> bool:
+def phrase_names(phrase_words: list[str], candidate_words: list[str]) -> bool:
+    """The phrase is the whole name or a run of its whole words, one of three or more letters."""
+
     if not phrase_words or not any(len(word) >= 3 for word in phrase_words):
         return False
     size = len(phrase_words)
@@ -131,9 +203,11 @@ def _match(phrase: str, candidates: list[Any], name_of: Callable[[Any], str]) ->
     """
 
     words = name_words(phrase)
+    while words and words[0] in DETERMINERS:
+        words = words[1:]
     for size in range(len(words), 0, -1):
         prefix = words[:size]
-        named = [candidate for candidate in candidates if _phrase_names(prefix, name_words(name_of(candidate)))]
+        named = [candidate for candidate in candidates if phrase_names(prefix, name_words(name_of(candidate)))]
         if len(named) == 1:
             return named[0], True
         if named:
@@ -141,13 +215,70 @@ def _match(phrase: str, candidates: list[Any], name_of: Callable[[Any], str]) ->
     return None, False
 
 
-def _clauses(message: str) -> list[str]:
-    body = LEADING_SUBJECT.sub('', _text(message).lower())
-    return [LEADING_SUBJECT.sub('', clause).strip() for clause in CLAUSE_BREAK.split(body) if clause and clause.strip()]
+def _clauses(message: str) -> list[_Clause]:
+    """Every clause of the message, quoted speech taken out, with its place among the message's words."""
+
+    text = QUOTED.sub(' ; ', _text(message).lower().replace('’', "'").replace('‘', "'"))
+    clauses: list[_Clause] = []
+    position = 0
+    sentence = 0
+    for match in SENTENCE.finditer(text):
+        question = '?' in match.group('end')
+        parts = [(part, WORD.findall(part)) for part in CLAUSE_SPLIT.split(match.group('body'))]
+        if not any(words for _part, words in parts):
+            continue
+        for part, words in parts:
+            if words:
+                clauses.append(_Clause(tuple(words), position, sentence, question or bool(HYPOTHETICAL.search(part))))
+                position += len(words)
+        sentence += 1
+    return clauses
 
 
-def _names_another_action(clauses: list[str]) -> bool:
-    return any(ACTION_START.match(clause) for clause in clauses[1:])
+def _spans(words: tuple[str, ...] | list[str], candidates: list[Any], name_of: Callable[[Any], str]) -> list[tuple[int, int, Any]]:
+    """``(start, end, candidate)`` for each noun phrase that names exactly one candidate."""
+
+    spans = []
+    index = 1
+    while index < len(words):
+        if words[index] in NOUN_LEADS or words[index - 1] not in NOUN_LEADS:
+            index += 1
+            continue
+        found = None
+        for size in range(min(MAX_PHRASE_WORDS, len(words) - index), 0, -1):
+            run = name_words(' '.join(words[index:index + size]))
+            named = [candidate for candidate in candidates if phrase_names(run, name_words(name_of(candidate)))]
+            if len(named) == 1:
+                found = (index, index + size, named[0])
+                break
+            if named:
+                break
+        if found:
+            spans.append(found)
+            index = found[1]
+        else:
+            index += 1
+    return spans
+
+
+def mentions(
+    text: str,
+    candidates: Iterable[Any],
+    name_of: Callable[[Any], str],
+    *,
+    guarded: bool = True,
+) -> list[Any]:
+    """The candidates the text names, in order, each once; ``guarded`` skips negated, hypothetical and quoted words."""
+
+    pool = list(candidates)
+    named: list[Any] = []
+    for clause in _clauses(text):
+        if guarded and clause.guarded:
+            continue
+        for _start, _end, candidate in _spans(clause.words, pool, name_of):
+            if not any(candidate is seen for seen in named):
+                named.append(candidate)
+    return named
 
 
 def _hero(state: Mapping[str, Any], actor_id: str) -> dict[str, Any]:
@@ -202,6 +333,24 @@ def _offered(
     return offered
 
 
+def _the(name: str) -> str:
+    """``the Old North Road`` for "The Old North Road", ``the Lead Wagon`` for "Lead Wagon"."""
+
+    return f'the {name[4:]}' if name.lower().startswith('the ') else f'the {name}'
+
+
+def _object_parts(label: str, name: str) -> tuple[str, str]:
+    """``(target, verb)`` of an object label: "Search the lead wagon" → ("the lead wagon", "search")."""
+
+    words = label.split()
+    article = next((index for index, word in enumerate(words) if index and word.lower() in {'the', 'a', 'an'}), None)
+    if article is not None:
+        target = ' '.join(words[article:])
+        if phrase_names(name_words(target), name_words(name)):
+            return target, ' '.join(words[:article]).lower()
+    return _the(name), (words[0].lower() if words else 'use')
+
+
 def _object_intent(entry: dict[str, Any], offer: dict[str, Any], message: str) -> dict[str, Any]:
     """The typed object intent; words naming a failed check again take time over it."""
 
@@ -228,45 +377,9 @@ def _is_coin_pile(item: Mapping[str, Any]) -> bool:
     return _text(item.get('type')).lower() == 'currency' or isinstance(item.get('currency'), Mapping)
 
 
-def _by_label(message: str, objects: list[tuple[dict[str, Any], list[dict[str, Any]]]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """The object and offer whose label the message equals or begins with (the longest such label)."""
+def ways_onward(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The places connected to the current one that the party knows of."""
 
-    words = name_words(LEADING_SUBJECT.sub('', _text(message)))
-    matches = [
-        (entry, offer, len(label_words))
-        for entry, offers in objects
-        for offer in offers
-        if (label_words := name_words(offer['label'])) and words[: len(label_words)] == label_words
-    ]
-    if not matches:
-        return None
-    longest = max(size for _entry, _offer, size in matches)
-    best = [(entry, offer) for entry, offer, size in matches if size == longest]
-    return best[0] if len(best) == 1 else None
-
-
-def _object_by_verb(
-    clause: str, objects: list[tuple[dict[str, Any], list[dict[str, Any]]]]
-) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    for verb, action in OBJECT_VERBS:
-        if not re.match(rf'^{re.escape(verb)}\b', clause):
-            continue
-        rest = clause[len(verb):].split()
-        while rest and rest[0] in OBJECT_PREPOSITIONS:
-            rest = rest[1:]
-        entry_offers, _matched = _match(' '.join(rest), objects, lambda pair: pair[0].get('name'))
-        if entry_offers is None:
-            return None
-        entry, offers = entry_offers
-        by_action = {offer['action']: offer for offer in offers}
-        if action == 'force':
-            unlock = by_action.get('unlock', {})
-            action = 'unlock' if unlock.get('needsRoll') or unlock.get('retry') else 'break'
-        return (entry, by_action[action]) if action in by_action else None
-    return None
-
-
-def _travel_destinations(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     location_id = _text((state.get('currentScene') or {}).get('locationId'))
     locations = [location for location in state.get('locations') or [] if isinstance(location, Mapping)]
     current = next((location for location in locations if _text(location.get('id')) == location_id), {})
@@ -291,90 +404,293 @@ def _present_npcs(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _scene(state: Mapping[str, Any], *, actor_id: str, player_id: int | None, previous_target: tuple[str, str] | None) -> _Scene:
+    hero = _hero(state, actor_id)
+    visible = _visible_scene(state, player_id)
+    objects = [
+        (entry, offers)
+        for collection in ('interactables', 'hazards')
+        for entry in visible.get(collection) or []
+        if isinstance(entry, dict) and (offers := _offered(state, hero, entry))
+    ]
+    items = [item for item in visible.get('items') or [] if isinstance(item, dict) and _text(item.get('id'))]
+    scene = _Scene(objects, items, ways_onward(state), _present_npcs(state))
+    if previous_target:
+        kind, target_id = previous_target
+        pool = [entry for entry, _offers in objects] if kind == 'object' else items
+        found = next((record for record in pool if _text(record.get('id')) == target_id), None)
+        scene.previous = (kind, found) if found is not None else None
+    return scene
+
+
+def _everything(scene: _Scene) -> list[tuple[str, Any]]:
+    return [
+        *(('object', pair) for pair in scene.objects),
+        *(('item', item) for item in scene.items),
+        *(('place', location) for location in scene.destinations),
+    ]
+
+
+def _entity_name(entity: tuple[str, Any]) -> str:
+    kind, record = entity
+    return _text((record[0] if kind == 'object' else record).get('name'))
+
+
+def _antecedent(scene: _Scene, position: int, kind: str) -> Any | None:
+    """What "it" at ``position`` refers to, when that is a ``kind``: the thing named last before it, else the previous turn's."""
+
+    named = [entity for _start, end, entity in scene.spans if end <= position]
+    if named:
+        found_kind, record = named[-1]
+        return record if found_kind == kind else None
+    if scene.previous and scene.previous[0] == kind:
+        record = scene.previous[1]
+        if kind == 'object':
+            return next((pair for pair in scene.objects if pair[0] is record), None)
+        return record
+    return None
+
+
+def _others_act(words: tuple[str, ...], verb_index: int, scene: _Scene) -> bool:
+    """The lead-in before ``verb_index`` makes the verb someone else's: it directs or watches them, or names them."""
+
+    if any(
+        word in OTHERS_ACT and not (word in {'let', 'lets'} and words[index + 1:index + 2] in (('me',), ('us',)))
+        for index, word in enumerate(words[:verb_index])
+    ):
+        return True
+    lead_in = name_words(' '.join(words[:verb_index]))
+    for npc in scene.npcs:
+        name = name_words(npc.get('name'))
+        candidates = [name, name[:1]] if name and len(name[0]) >= 3 else [name]
+        if any(
+            candidate and lead_in[index:index + len(candidate)] == candidate
+            for candidate in candidates
+            for index in range(len(lead_in))
+        ):
+            return True
+    return False
+
+
+def _object_labels(entry: dict[str, Any], offer: dict[str, Any]) -> tuple[dict[str, str], ...]:
+    target, verb = _object_parts(offer['label'], _text(entry.get('name')))
+    return ({'kind': 'object', 'label': offer['label'], 'target': target, 'verb': verb},)
+
+
+def _pickup_labels(items: Iterable[dict[str, Any]]) -> tuple[dict[str, str], ...]:
+    labels = []
+    for item in items:
+        label = take_label(item)
+        labels.append({'kind': 'pickup', 'label': label, 'target': label[len('Take '):], 'verb': 'take'})
+    return tuple(labels)
+
+
+def _object_action(entry: dict[str, Any], offers: list[dict[str, Any]], action: str, message: str) -> _Mapped | None:
+    by_action = {offer['action']: offer for offer in offers}
+    if action == 'force':
+        unlock = by_action.get('unlock', {})
+        action = 'unlock' if unlock.get('needsRoll') or unlock.get('retry') else 'break'
+    if action not in by_action:
+        return None
+    offer = by_action[action]
+    return _Mapped(FreeTextAction(kind='object', intents=(_object_intent(entry, offer, message),)), _object_labels(entry, offer))
+
+
+def _by_label(words: list[str], scene: _Scene, message: str) -> _Mapped | None:
+    """The object action whose label the words equal or begin with (the longest such label)."""
+
+    spoken = name_words(' '.join(words))
+    matches = [
+        (entry, offer, len(label_words))
+        for entry, offers in scene.objects
+        for offer in offers
+        if (label_words := name_words(offer['label'])) and spoken[: len(label_words)] == label_words
+    ]
+    if not matches:
+        return None
+    longest = max(size for _entry, _offer, size in matches)
+    best = [(entry, offer) for entry, offer, size in matches if size == longest]
+    if len(best) != 1:
+        return None
+    entry, offer = best[0]
+    return _Mapped(FreeTextAction(kind='object', intents=(_object_intent(entry, offer, message),)), _object_labels(entry, offer))
+
+
+def _travel(text: str, scene: _Scene, message: str) -> _Mapped | None:
+    travel = TRAVEL.match(text)
+    if not travel:
+        return None
+    location, _matched = _match(travel.group('phrase'), scene.destinations, lambda location: location.get('name'))
+    if location is None:
+        return None
+    name = _text(location.get('name'))
+    return _Mapped(
+        FreeTextAction(
+            kind='travel',
+            intents=(
+                {
+                    'kind': 'travel',
+                    'source': 'free_text',
+                    'text': message,
+                    'location': {'id': _text(location.get('id')), 'name': name},
+                },
+            ),
+        ),
+        ({'kind': 'travel', 'label': f'Go to {name}', 'target': _the(name), 'verb': 'travel to'},),
+    )
+
+
+def _pickup(text: str, position: int, scene: _Scene, message: str) -> _Mapped | None:
+    pickup = PICKUP.match(text)
+    if not pickup:
+        return None
+    raw_phrase = pickup.group('phrase').split()
+    phrase_words = [word for word in raw_phrase if word not in ARTICLES]
+    if not phrase_words or phrase_words[0] in NOT_A_PICKUP or len(phrase_words) > 5:
+        return None
+    if phrase_words[0] in PRONOUNS:
+        verb_words = len(text.split()) - len(raw_phrase)
+        item = _antecedent(scene, position + verb_words + raw_phrase.index(phrase_words[0]), 'item')
+        if item is None:
+            return None
+        return _Mapped(FreeTextAction(kind='pickup', intents=(_item_intent(item, message),)), _pickup_labels([item]))
+    phrase = ' '.join(phrase_words)
+    if COINS.match(pickup.group('phrase')):
+        piles = [item for item in scene.items if _is_coin_pile(item)]
+        if piles:
+            return _Mapped(FreeTextAction(kind='pickup', intents=tuple(_item_intent(item, message) for item in piles)), _pickup_labels(piles))
+        return _Mapped(FreeTextAction(kind='pickup', refusal=f'There is no {phrase} here to take.'))
+    item, matched = _match(phrase, [item for item in scene.items if not _is_coin_pile(item)], lambda item: item.get('name'))
+    if item is not None:
+        return _Mapped(FreeTextAction(kind='pickup', intents=(_item_intent(item, message),)), _pickup_labels([item]))
+    if matched:
+        return None
+    # "take the old north road" is travel, not a pickup.
+    travel = _travel(text, scene, message)
+    if travel is not None:
+        return travel
+    return _Mapped(FreeTextAction(kind='pickup', refusal=f'There is no {phrase} here to take.'))
+
+
+def _object_by_verb(words: list[str], position: int, scene: _Scene, message: str) -> _Mapped | None:
+    text = ' '.join(words)
+    for verb, action in OBJECT_VERBS:
+        if not re.match(rf'^{re.escape(verb)}\b', text):
+            continue
+        skipped = len(verb.split())
+        rest = words[skipped:]
+        while rest and rest[0] in OBJECT_PREPOSITIONS:
+            rest = rest[1:]
+            skipped += 1
+        # "that" is a pronoun unless a name follows it ("open that strongbox").
+        pair, _matched = _match(' '.join(rest), scene.objects, lambda pair: pair[0].get('name'))
+        if pair is None and rest and rest[0] in PRONOUNS | {'that'}:
+            pair = _antecedent(scene, position + skipped, 'object')
+        if pair is None:
+            return None
+        entry, offers = pair
+        return _object_action(entry, offers, action, message)
+    return None
+
+
+def _talk(text: str, scene: _Scene) -> _Mapped | None:
+    talk = TALK.match(text)
+    if not talk:
+        return None
+    npc, _matched = _match(talk.group('phrase'), scene.npcs, lambda npc: npc.get('name'))
+    if npc is None:
+        return None
+    name = _text(npc.get('name'))
+    return _Mapped(FreeTextAction(kind='talk', npc=npc), ({'kind': 'talk', 'label': f'Talk to {name}', 'target': name, 'verb': 'talk to'},))
+
+
+def _map_at(words: list[str], position: int, scene: _Scene, message: str) -> _Mapped | None:
+    """The action the words name when their first word is the verb."""
+
+    text = ' '.join(words)
+    if LOOK_AROUND.match(text):
+        return _Mapped(FreeTextAction(kind='look'))
+    labelled = _by_label(words, scene, message)
+    if labelled:
+        return labelled
+    if TAKE_ALL.match(text):
+        if not scene.items:
+            return _Mapped(FreeTextAction(kind='pickup', refusal='There is nothing here to take.'))
+        return _Mapped(
+            FreeTextAction(kind='pickup', intents=tuple(_item_intent(item, message) for item in scene.items)),
+            _pickup_labels(scene.items),
+        )
+    return (
+        _pickup(text, position, scene, message)
+        or _object_by_verb(words, position, scene, message)
+        or _travel(text, scene, message)
+        or _talk(text, scene)
+    )
+
+
+def _map_clause(clause: _Clause, scene: _Scene, message: str) -> _Mapped | None:
+    if clause.guarded:
+        return None
+    text = ' '.join(clause.words)
+    for rest_type, pattern in REST_PHRASES:
+        if pattern.search(text):
+            return _Mapped(
+                FreeTextAction(kind='rest', intents=({'kind': 'rest', 'source': 'free_text', 'text': message, 'rest_type': rest_type},)),
+                ({'kind': 'rest', 'label': f'Take {REST_LABELS[rest_type]}', 'target': REST_LABELS[rest_type], 'verb': 'take'},),
+            )
+    for index in range(min(MAX_LEAD_IN + 1, len(clause.words))):
+        if index and _others_act(clause.words, index, scene):
+            return None
+        mapped = _map_at(list(clause.words[index:]), clause.start + index, scene, message)
+        if mapped:
+            return mapped
+    return None
+
+
 def free_text_action(
     state: Mapping[str, Any],
     *,
     actor_id: str,
     player_id: int | None,
     message: str,
+    previous_target: tuple[str, str] | None = None,
 ) -> FreeTextAction | None:
-    """The action a free-text message clearly names, or None when it names none."""
+    """The first action a free-text message clearly names, with the later ones deferred; None when it names none.
+
+    ``previous_target`` is ``("object" | "item", id)`` for the single thing the previous turn acted on.
+    """
 
     clauses = _clauses(message)
-    if not clauses:
+    if not any(clause.sentence < MAX_SENTENCES for clause in clauses):
         return None
-    first = clauses[0]
-    more = _names_another_action(clauses)
-    for rest_type, pattern in REST_PHRASES:
-        if pattern.search(first):
-            return FreeTextAction(
-                kind='rest',
-                intents=({'kind': 'rest', 'source': 'free_text', 'text': message, 'rest_type': rest_type},),
-                more=more,
-            )
-    if LOOK_AROUND.match(first):
-        return FreeTextAction(kind='look', more=more)
-
-    hero = _hero(state, actor_id)
-    scene = _visible_scene(state, player_id)
-    objects = [
-        (entry, offers)
-        for collection in ('interactables', 'hazards')
-        for entry in scene.get(collection) or []
-        if isinstance(entry, dict) and (offers := _offered(state, hero, entry))
+    scene = _scene(state, actor_id=actor_id, player_id=player_id, previous_target=previous_target)
+    everything = _everything(scene)
+    scene.spans = [
+        (clause.start + start, clause.start + end, entity)
+        for clause in clauses
+        for start, end, entity in _spans(clause.words, everything, _entity_name)
     ]
-    labelled = _by_label(message, objects)
-    if labelled:
-        entry, offer = labelled
-        return FreeTextAction(kind='object', intents=(_object_intent(entry, offer, message),), more=more)
-
-    items = [item for item in scene.get('items') or [] if isinstance(item, dict) and _text(item.get('id'))]
-    if TAKE_ALL.match(first):
-        if not items:
-            return FreeTextAction(kind='pickup', refusal='There is nothing here to take.', more=more)
-        return FreeTextAction(kind='pickup', intents=tuple(_item_intent(item, message) for item in items), more=more)
-    pickup = PICKUP.match(first)
-    if pickup:
-        phrase_words = [word for word in pickup.group('phrase').split() if word not in ARTICLES]
-        if phrase_words and phrase_words[0] not in NOT_A_PICKUP and len(phrase_words) <= 5:
-            phrase = ' '.join(phrase_words)
-            if COINS.match(pickup.group('phrase')):
-                piles = [item for item in items if _is_coin_pile(item)]
-                if piles:
-                    return FreeTextAction(kind='pickup', intents=tuple(_item_intent(item, message) for item in piles), more=more)
-                return FreeTextAction(kind='pickup', refusal=f'There is no {phrase} here to take.', more=more)
-            item, matched = _match(phrase, [item for item in items if not _is_coin_pile(item)], lambda item: item.get('name'))
-            if item is not None:
-                return FreeTextAction(kind='pickup', intents=(_item_intent(item, message),), more=more)
-            if not matched:
-                return FreeTextAction(kind='pickup', refusal=f'There is no {phrase} here to take.', more=more)
-            return None
-
-    object_action = _object_by_verb(first, objects)
-    if object_action:
-        entry, offer = object_action
-        return FreeTextAction(kind='object', intents=(_object_intent(entry, offer, message),), more=more)
-
-    travel = TRAVEL.match(first)
-    if travel:
-        location, _matched = _match(travel.group('phrase'), _travel_destinations(state), lambda location: location.get('name'))
-        if location is not None:
-            return FreeTextAction(
-                kind='travel',
-                intents=(
-                    {
-                        'kind': 'travel',
-                        'source': 'free_text',
-                        'text': message,
-                        'location': {'id': _text(location.get('id')), 'name': _text(location.get('name'))},
-                    },
-                ),
-                more=more,
-            )
-
-    talk = TALK.match(first)
-    if talk:
-        npc, _matched = _match(talk.group('phrase'), _present_npcs(state), lambda npc: npc.get('name'))
-        if npc is not None:
-            return FreeTextAction(kind='talk', npc=npc, more=more)
-    return None
+    mapped = [
+        result
+        for clause in clauses
+        if clause.sentence < MAX_SENTENCES and (result := _map_clause(clause, scene, message)) is not None
+    ]
+    if not mapped:
+        return None
+    first, later = mapped[0], mapped[1:]
+    taken = {label['label'] for label in first.labels}
+    deferred: list[dict[str, str]] = []
+    for result in later:
+        if result.action.kind == 'look' or result.action.refusal:
+            continue
+        for label in result.labels:
+            if label['label'] not in taken and all(label['label'] != seen['label'] for seen in deferred):
+                deferred.append(label)
+    first_action = first.action
+    return FreeTextAction(
+        kind=first_action.kind,
+        intents=first_action.intents,
+        refusal=first_action.refusal,
+        npc=first_action.npc,
+        deferred=tuple(deferred),
+    )

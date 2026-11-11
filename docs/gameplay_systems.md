@@ -120,27 +120,94 @@ chapter of it, and exactly one chapter is current.
 ### Typed words that name one action run that action
 
 Free text is read against what the acting hero can see before anything else
-happens. When the words clearly name one action, the turn takes exactly the
-path that action's button takes:
+happens, in every narrator mode. When the words clearly name an action, the
+turn takes exactly the path that action's button takes:
 
-- a pickup (`take`, `pick up`, `grab`, `pocket`, `collect`, ... the key; `take
-  the coins`; `take everything`), an object action (`search the bench`, `read the
-  ledger`, `open the strongbox`, `force the grate`, or an offered action's own
-  label), travel to a known neighbouring place (`go to`, `head for`, `return
-  to`, ...), and a short or long rest (`short rest`, `make camp`, ...) become the
-  same typed intent their controls send; looking around and talking to someone
-  present are recognised for the narrator;
+- sentence-level mapping: the message's first two sentences are split into
+  clauses on ` and `, ` then `, `, then` and `;`, and each clause is mapped on
+  its own. Within a clause the verb may follow a lead-in of up to eight words
+  (`I crouch and search…`, `Carefully, I open…`) or sit in a purpose phrase
+  (`climb into the lead wagon to search it`); `it`, `them` or `that` after the
+  verb is the thing named last before it in the message, else the single scene
+  object or item the session's previous turn acted on, else nothing;
+- a pickup (`take`, `pick up`, `grab`, `pocket`, `scoop up`, `gather up`,
+  `help myself to`, `collect`, ... the key; `take the coins`; `take
+  everything`), an object action (`search the bench`, `read the ledger`, `open
+  the strongbox`, `force the grate`, or an offered action's own label), travel
+  to a known neighbouring place (`go`, `head`, `walk`, `travel`, `ride`,
+  `march`, `hike`, `set out`, `set off`, `start`, `make my way`, `make for`,
+  `leave for`, `return`, `go back`, `follow`, `take`, with an optional `to`,
+  `toward`, `up`, `down`, `along`, `for`, `onto`, `into`, `through`, `out on`,
+  `out along` or `back to`: `I head up the old north road`), and a short or
+  long rest (`short rest`, `make camp`, ...) become the same typed intent their
+  controls send; looking around and talking to someone present are recognised
+  for the narrator;
 - naming rule: case-insensitive, leading articles and possessive `'s` ignored;
   the phrase must be the whole name or a run of whole words from it (at least
   one word of three letters or more) that matches exactly one visible
   candidate. Two candidates, or none, map nothing and the turn is narrated as
   free text;
+- a clause maps nothing when it is negated or hypothetical (`not`, `n't`,
+  `never`, `without`, `before I`, `if I`, `should I`, `could I`, `can I`,
+  `would`, a question mark), when its verb sits inside quotation marks
+  (speech), or when its lead-in names someone present or directs or watches
+  someone else (`tell`, `let`, `order`, `watch`; `let me` is the hero's own);
 - a pickup of something that is not there is refused (`There is no lantern here
   to take.`);
-- only the first action of a message is taken; when the words name another,
-  the reply ends `One thing at a time — the rest is still yours to do.`;
+- only the first mapped action of a message is taken; every later one is a
+  deferred action, by its offered label, and is not taken. The Safe Mode reply
+  ends naming the first of them: `One thing at a time — the lead wagon is still
+  there to search.`; an AI narrator sees them under "Not done" in the engine
+  brief;
 - with the scripted narrator, words that map to nothing get a one-time hint
   beat pointing to the suggestions and to Settings.
+
+### A roll with no check pending
+
+A roll the player makes on their own from the dice tray, with no pending check,
+roll gate or contest, is not a check: it has no DC and no success or failure.
+(A roll sent with words that name a check, `I persuade the guard` with the
+dice, stays that check.)
+It adds the ability modifier only when the player picked an ability. Its beat
+reads `d20: 10` (`Strength: 13 (d20 10 + 3)`) and the scripted narrator answers
+`You roll a 10.` (`You roll a 13 for Strength.`). A roll that answers a pending
+check is that check, judged against its DC.
+
+### The engine brief and the narration hygiene pass (AI narrators)
+
+An AI narrator never resolves what only the engine may resolve. Directly above
+`PLAYER INPUT` its prompt carries an `ENGINE THIS TURN` block built from the
+turn's real results (`state_pipeline.engineBrief`, never from the model):
+`Did:` each executed result in plain words (an object action with its check,
+its description or action text and what it turned up, things taken, arrival,
+rests, spells, attacks and enemy turns, the turn's beats such as coins, XP,
+items received, clues and places, refused actions, the roll this turn
+resolves); `Not done:` the deferred actions and each engine-owned thing the
+player's words name (same naming rule) that has no result, by its labels;
+`Here:` the visible objects with their available labels, loose items, ways
+onward and shops; and the place the party is at. Seven rules follow it: tell
+each result faithfully and add none; for anything not done, at most one
+sentence of the hero starting toward it and a closing sentence naming the
+action still open; the party stays put unless it arrived; no rolls for anything
+the engine owns; found is not taken, and gains only when "Did" says so; speak
+to the hero as "you", no closing question, no markdown; people speak from what
+they know.
+
+Scene objects reach the model's context with their player description, state
+and available labels only; an object's authored description, contents and
+action text appear only in the "Did" result of the turn that reveals them.
+
+After the model answers, and before the reply is stored and sent, a
+deterministic hygiene pass cleans it: a closing `What do you do?` (or
+`What now?`, quoted or not) is dropped outside the opening; `*`, `_` emphasis,
+backticks and leading `#` are removed, keeping the words; a sentence that only
+restates gains the turn's beats already report (`Arden Vale gains 100 XP, 25 gp,
+and one Ash-Marked Token.`) is dropped, and so is a `You gain/take/receive …`
+sentence about coins or items the results do not contain (`You gain 15 gp.`
+before they are taken); and a roll request for a scene object, loose item,
+travel, a purchase, an attack or a spell is dropped with no roll gate opened,
+unless the engine itself waits on that roll. Roll requests for improvised
+actions stay. The scripted narrator is not touched by either.
 
 ### Offered actions and refusal sentences
 
@@ -187,7 +254,7 @@ this order:
 
 | Kind | Text |
 | --- | --- |
-| `check` | `Investigation check: 14 — success` (` (DC 10)` only when the DC is shown; ` (taking your time)` after a retry) |
+| `check` | `Investigation check: 14 — success`, naming the skill or ability once, `Check: 14 — success` when neither is known (` (DC 10)` only when the DC is shown; ` (taking your time)` after a retry); a roll made with no check pending is not a check: `d20: 10`, or `Strength: 13 (d20 10 + 3)` with the ability picked |
 | `hp` | `Took 7 damage` / `Healed 5` (`Mara took 7 damage` for another hero) |
 | `condition` | `You are prone` / `No longer prone` (only when a condition starts or ends) |
 | `death_save` | `Death save: 12 — success` |

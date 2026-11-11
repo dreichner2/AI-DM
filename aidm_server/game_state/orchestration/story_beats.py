@@ -12,6 +12,11 @@ item_gained / item_lost, coins, clue, objective_complete / objective_new,
 place, xp, level, defeat, ending, then hint (once per session, for words the
 scripted narrator could not map to an action). Beats name people and
 creatures by their display names, never by participant ids.
+
+A check beat names the skill or ability once (``Investigation check: 14 —
+success``), or reads ``Check: 14 — success`` when neither is known. A roll the
+player made on their own, with no check pending, is not a check: it reads
+``d20: 10``, or ``Strength: 13 (d20 10 + 3)`` with the ability they picked.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from aidm_server.character_state import ABILITY_KEYS, SKILL_ABILITY
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
 from aidm_server.game_state.models import parse_actor_player_id
@@ -41,6 +47,8 @@ COMBAT_END_TEXT = {
 }
 COIN_ORDER = ('pp', 'gp', 'ep', 'sp', 'cp')
 ACTIVE_COMBAT_STATUSES = frozenset({'starting', 'active'})
+# Names that say only "a check", never which one.
+GENERIC_CHECK_NAMES = frozenset({'check', 'ability'})
 
 
 def _text(value: Any) -> str:
@@ -122,17 +130,37 @@ def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
     }
 
 
-def _check_beat(check: dict[str, Any], *, show_dc: bool) -> dict[str, Any] | None:
+def _check_label(skill: Any, ability: Any) -> str:
+    """``Investigation check``; ``Check`` when neither a skill nor an ability is known."""
+
+    for value in (skill, ability):
+        name = _humanize(value).lower()
+        if name and name not in GENERIC_CHECK_NAMES:
+            return f'{name.title()} check'
+    return 'Check'
+
+
+def _check_beat(check: dict[str, Any], *, show_dc: bool, label: str | None = None) -> dict[str, Any] | None:
     total = check.get('total')
     outcome = _text(check.get('outcome')).lower()
     if not isinstance(total, int) or outcome not in {'success', 'failure'}:
         return None
-    label = _humanize(check.get('skill') or check.get('ability') or 'ability').title()
+    label = label or _check_label(check.get('skill'), check.get('ability'))
     dc = check.get('dc')
     suffix = f' (DC {dc})' if show_dc and isinstance(dc, int) else ''
     if check.get('takeTime') is True:
         suffix += ' (taking your time)'
-    return {'kind': 'check', 'text': f'{label} check: {total} — {outcome}{suffix}'}
+    return {'kind': 'check', 'text': f'{label}: {total} — {outcome}{suffix}'}
+
+
+def object_check_text(change: dict[str, Any], state_before: dict[str, Any]) -> str | None:
+    """``Investigation check: 15 — success`` for an object action's check, as its beat reads."""
+
+    event = change.get('event') if isinstance(change.get('event'), dict) else {}
+    if change.get('type') != 'scene.interactable.action' or not isinstance(event.get('check'), dict):
+        return None
+    beat = _check_beat(event['check'], show_dc=_shows_dc(state_before, change))
+    return beat['text'] if beat else None
 
 
 def _shows_dc(state: dict[str, Any], change: dict[str, Any]) -> bool:
@@ -148,13 +176,34 @@ def _shows_dc(state: dict[str, Any], change: dict[str, Any]) -> bool:
     return False
 
 
+def free_roll_text(roll: dict[str, Any]) -> str:
+    """``d20: 10``, or ``Strength: 13 (d20 10 + 3)`` with the ability the player picked."""
+
+    die = _text(roll.get('die')) or 'd20'
+    total = _int(roll.get('total'))
+    ability = _humanize((roll.get('ability') or {}).get('key') if isinstance(roll.get('ability'), dict) else '').title()
+    if not ability:
+        return f'{die}: {total}'
+    modifier = _int(roll.get('modifier'))
+    detail = f'{die} {_int(roll.get("kept"))}' + (f' + {modifier}' if modifier > 0 else f' {MINUS} {-modifier}' if modifier < 0 else '')
+    return f'{ability}: {total} ({detail})'
+
+
 def _roll_beat(roll: dict[str, Any]) -> dict[str, Any] | None:
     rule_type = _text(roll.get('rule_type')).lower()
+    if roll.get('free') is True:
+        return {'kind': 'check', 'text': free_roll_text(roll)}
     if not rule_type or rule_type in {'attack', 'spell_attack', 'initiative'}:
         return None
+    ability = roll.get('ability') if isinstance(roll.get('ability'), dict) else {}
+    if rule_type.endswith('_saving_throw'):
+        label = f"{_humanize(rule_type.removesuffix('_saving_throw')).title()} saving throw"
+    else:
+        label = _check_label(rule_type if rule_type in SKILL_ABILITY or rule_type in ABILITY_KEYS else '', ability.get('key'))
     return _check_beat(
-        {'skill': rule_type, 'total': roll.get('total'), 'outcome': roll.get('outcome'), 'dc': roll.get('dc')},
+        {'total': roll.get('total'), 'outcome': roll.get('outcome'), 'dc': roll.get('dc')},
         show_dc=isinstance(roll.get('dc'), int),
+        label=label,
     )
 
 
@@ -181,11 +230,9 @@ def story_beats(
 
     beats: list[dict[str, Any]] = []
     for change in applied_changes:
-        event = change.get('event') if isinstance(change.get('event'), dict) else {}
-        if change.get('type') == 'scene.interactable.action' and isinstance(event.get('check'), dict):
-            beat = _check_beat(event['check'], show_dc=_shows_dc(state_before, change))
-            if beat:
-                beats.append(beat)
+        text = object_check_text(change, state_before)
+        if text:
+            beats.append({'kind': 'check', 'text': text})
     if isinstance(authoritative_roll, dict):
         beat = _roll_beat(authoritative_roll)
         if beat:

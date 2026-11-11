@@ -218,8 +218,9 @@ provider, and state contracts live in [API surface](api_surface.md),
 - Codex CLI execution uses a disposable isolated workspace, a constrained
   environment, and fail-closed structured-event handling. It does not expose the
   repository or host tools to model-generated commands.
-- Deepgram TTS is optional and is exposed through the system blueprint when its
-  API key is configured.
+- The narrator voice is optional and is exposed through the system blueprint
+  when an OpenAI or Deepgram key is configured; `aidm_server/tts_openai.py` owns
+  the OpenAI Realtime session (see `docs/beta_runbook.md`, "Optional TTS").
 
 ## Frontend
 

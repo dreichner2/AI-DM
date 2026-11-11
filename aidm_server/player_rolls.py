@@ -185,6 +185,57 @@ def _secure_die(sides: int, roller: Roller | None) -> int:
     return parsed
 
 
+def _kept_die(sides: int, mode: str, roller: Roller | None) -> tuple[list[int], int]:
+    rolls = [_secure_die(sides, roller)]
+    if mode in {'advantage', 'disadvantage'}:
+        rolls.append(_secure_die(sides, roller))
+    return rolls, max(rolls) if mode == 'advantage' else min(rolls) if mode == 'disadvantage' else rolls[0]
+
+
+def _free_roll(
+    player: Player,
+    *,
+    rule_type: str,
+    die: str,
+    mode: str,
+    visibility: str,
+    action_intent: dict[str, Any] | None,
+    requested_roll: dict[str, Any],
+    roller: Roller | None,
+) -> dict[str, Any]:
+    """A roll the player makes on their own, with no check pending: the die plus the ability they
+    picked, and no DC or outcome."""
+
+    picked = requested_ability_key(action_intent)
+    ability = character_roll_spec(player, roll_type='check', requested_ability_key=picked).get('ability') if picked else None
+    modifier = int(ability['modifier']) if ability and die == 'd20' else 0
+    rolls, kept = _kept_die(int(die[1:]), mode, roller)
+    return {
+        'rule_type': rule_type,
+        'die': die,
+        'mode': mode,
+        'mode_reasons': [],
+        'rolls': rolls,
+        'kept': kept,
+        'bonus_dice': [],
+        'modifier': modifier,
+        'total': kept + modifier,
+        'auto_fail': False,
+        'dc': None,
+        'dcSource': None,
+        'outcome': None,
+        'reason': _clean_text(requested_roll.get('reason'), max_length=240) or die,
+        'result_visibility': visibility,
+        'ability': deepcopy(ability) if ability else None,
+        'proficiency': {'bonus': 0, 'skills': []},
+        'modifier_breakdown': {'ability_modifier': modifier, 'proficiency_bonus': 0, 'wound_penalty': 0, 'total': modifier},
+        'task_dc': None,
+        'attack': None,
+        'free': True,
+        'authoritative': True,
+    }
+
+
 def resolve_authoritative_player_roll(
     *,
     player: Player,
@@ -194,8 +245,13 @@ def resolve_authoritative_player_roll(
     pending_turn: DmTurn | None = None,
     attack_context: dict[str, Any] | None = None,
     roller: Roller | None = None,
+    free: bool = False,
 ) -> dict[str, Any]:
-    """Generate one canonical player result without trusting client outcomes."""
+    """Generate one canonical player result without trusting client outcomes.
+
+    ``free`` marks a roll the player makes on their own, with no pending check
+    or roll gate: it is not a check (see ``_free_roll``).
+    """
 
     requested_roll = _requested_roll(action_intent)
     stored_spec = pending_roll_spec(pending_turn)
@@ -213,6 +269,18 @@ def resolve_authoritative_player_roll(
         VALID_RESULT_VISIBILITY,
         'hidden_until_landed',
     )
+    normalized_rule_type = str(rule_type or 'check').strip().lower() or 'check'
+    if free:
+        return _free_roll(
+            player,
+            rule_type=normalized_rule_type,
+            die=die,
+            mode=mode,
+            visibility=visibility,
+            action_intent=action_intent,
+            requested_roll=requested_roll,
+            roller=roller,
+        )
     ability_key = requested_ability_key(action_intent, pending_turn)
     stored_attack_context = stored_spec.get('attack') if isinstance(stored_spec.get('attack'), dict) else None
     effective_attack_context = stored_attack_context or attack_context
@@ -223,7 +291,6 @@ def resolve_authoritative_player_roll(
         dc_hint=dc_hint,
         attack_context=effective_attack_context,
     )
-    normalized_rule_type = str(rule_type or 'check').strip().lower() or 'check'
     hud_attack = (action_intent or {}).get('kind') == 'combat'
     # HUD attacks get their mode, bonus dice and Bardic Inspiration from the
     # attack resolver, which knows the target; every other d20 roll asks the
@@ -242,11 +309,7 @@ def resolve_authoritative_player_roll(
     )
     if modifiers and mode not in {'advantage', 'disadvantage'}:
         mode = modifiers['mode']
-    sides = int(die[1:])
-    rolls = [_secure_die(sides, roller)]
-    if mode in {'advantage', 'disadvantage'}:
-        rolls.append(_secure_die(sides, roller))
-    kept = max(rolls) if mode == 'advantage' else min(rolls) if mode == 'disadvantage' else rolls[0]
+    rolls, kept = _kept_die(int(die[1:]), mode, roller)
     bonus_dice = [
         rolled
         for expression in (modifiers or {}).get('bonusDice') or []

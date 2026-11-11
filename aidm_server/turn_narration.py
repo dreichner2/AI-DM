@@ -7,9 +7,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
+from aidm_server import scripted_narrator
+from aidm_server.game_state.orchestration.story_beats import SCRIPTED_NARRATOR_PROVIDER
 from aidm_server.llm import CONTEXT_VERSION, EmergencyFallbackChunk
 from aidm_server.llm_context import build_opening_brief
 from aidm_server.models import safe_json_loads
+from aidm_server.narration_hygiene import clean_ai_narration
 from aidm_server.prompt_templates import OPENING_BRIEF_HINT_KEY, is_opening_rules_hint
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.provider_registry import narration_waits_for_background
@@ -53,6 +56,8 @@ class NarrationResult:
     provider: str | None
     model: str | None
     emergency_fallback: dict[str, Any] | None = None
+    # The hygiene pass took out a roll request for something the engine rolls itself.
+    engine_rolls_removed: bool = False
 
 
 @dataclass(frozen=True)
@@ -284,7 +289,19 @@ class TurnNarrationService:
                 session_id=request.session_id,
             )
 
-        if self._roll_prompt_is_required(request, dm_response_text):
+        engine_rolls_removed = False
+        if dm_response_text and emergency_fallback is None and narration_provider != SCRIPTED_NARRATOR_PROVIDER:
+            cleaned = clean_ai_narration(dm_response_text, request.rules_hint_payload)
+            engine_rolls_removed = cleaned.engine_rolls_removed
+            # A reply with nothing left once cleaned is told the scripted way, from the same engine results.
+            dm_response_text = cleaned.text or scripted_narrator.narrate(
+                safe_json_loads(context, {}),
+                {**request.rules_hint_payload, **({'requires_roll': False} if engine_rolls_removed else {})},
+                request.model_user_input,
+                request.player_label,
+            )
+
+        if not engine_rolls_removed and self._roll_prompt_is_required(request, dm_response_text):
             injected_prompt = dependencies.build_roll_prompt(
                 RuleHint(
                     requires_roll=True,
@@ -341,6 +358,7 @@ class TurnNarrationService:
             provider=narration_provider,
             model=narration_model,
             emergency_fallback=emergency_fallback,
+            engine_rolls_removed=engine_rolls_removed,
         )
 
     def _emit_chunk(self, request: NarrationRequest, chunk: str, index: int) -> None:

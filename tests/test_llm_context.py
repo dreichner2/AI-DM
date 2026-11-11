@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 from aidm_server.database import db
 from aidm_server.llm import build_dm_context
+from aidm_server.llm_context import _compact_live_world_state
 from aidm_server.models import (
     BestiaryEntry,
     Campaign,
@@ -684,6 +686,7 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
             'open': False,
             'locked': True,
             'revision': 2,
+            'offeredActions': ['Open Cellar Door', 'Unlock Cellar Door', 'Examine Cellar Door'],
         }
     ]
     assert live_state['currentScene']['hazards'] == []
@@ -702,6 +705,36 @@ def test_build_dm_context_includes_compact_live_world_state_from_snapshot(app):
     assert 'Private NPC memory' not in encoded_live_state
     assert 'Hidden item note' not in encoded_live_state
     assert 'Bell Tripwire' not in encoded_live_state
+
+
+def test_live_scene_gives_the_narrator_no_hidden_items_and_no_object_contents():
+    scene = {
+        'locationId': 'cellar',
+        'items': [
+            {'id': 'rope', 'name': 'Rope'},
+            {'id': 'hidden_ring', 'name': 'Hidden Ring', 'hidden': True},
+            {'id': 'gm_note', 'name': 'GM Note', 'gmOnly': True},
+        ],
+        'interactables': [
+            {
+                'id': 'crate',
+                'name': 'Crate',
+                'kind': 'container',
+                'searched': True,
+                'playerKnown': True,
+                'description': 'Under the straw lies a silver ring.',
+                'playerDescription': 'A slatted crate packed with straw.',
+                'contents': [{'id': 'silver_ring', 'name': 'Silver Ring', 'playerKnown': True}],
+            }
+        ],
+    }
+    snapshot = {'currentScene': scene, 'locations': [{'id': 'cellar', 'name': 'Cellar', 'sceneState': deepcopy(scene)}]}
+
+    live = _compact_live_world_state(snapshot)
+
+    assert [item['id'] for item in live['currentScene']['items']] == ['rope']
+    assert live['currentScene']['interactables'][0]['description'] == 'A slatted crate packed with straw.'
+    assert 'Silver Ring' not in json.dumps(live) and 'silver ring' not in json.dumps(live)
 
 
 def test_build_dm_context_includes_campaign_pack_director_packet(app):

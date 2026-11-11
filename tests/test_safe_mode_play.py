@@ -203,3 +203,80 @@ def test_safe_mode_attack_with_no_opponent_asks_for_no_roll(app, socketio, safe_
     assert 'no_target' not in swing_turn['rules_hint']
     assert swing_turn['rules_hint']['reason'] == 'No opponent is present.'
     assert swing_turn['rules_hint']['roll_requirement_cleared']['original_rule_type'] == 'attack'
+
+
+def _roll_intent(text: str, **extra) -> dict:
+    return {
+        'kind': 'roll',
+        'source': 'dice_tray',
+        'text': text,
+        'roll': {'die': 'd20', 'mode': 'normal', 'result_visibility': 'hidden_until_landed'},
+        **extra,
+    }
+
+
+@pytest.fixture()
+def table(app, socketio, safe_mode_session, monkeypatch):
+    ids, _generate_calls = safe_mode_session
+    # The hero's d20 lands on 10.
+    monkeypatch.setattr('aidm_server.player_rolls.secrets.randbelow', lambda sides: 9 if sides == 20 else 0)
+    socket_client = socketio.test_client(app, flask_test_client=app.test_client())
+    socket_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['player_id'], 'workspace_id': ids['workspace_id']},
+    )
+    socket_client.get_received()
+    _send(socket_client, ids, 'Please narrate the opening scene.', message_kind='opening', client_message_id='opening-1')
+    return ids, socket_client
+
+
+def test_a_roll_with_no_check_pending_is_just_a_roll(app, table):
+    ids, socket_client = table
+
+    bare = _send(socket_client, ids, 'I roll a d20.', client_message_id='roll-1', action_intent=_roll_intent('I roll a d20.'))
+    bare_turn = _latest_turn(app, ids['session_id'])
+    strength = _send(
+        socket_client,
+        ids,
+        'I roll for Strength.',
+        client_message_id='roll-2',
+        action_intent=_roll_intent('I roll for Strength.', ability={'key': 'strength', 'label': 'STR'}),
+    )
+    strength_turn = _latest_turn(app, ids['session_id'])
+    roll = strength_turn['rules_hint']['authoritative_roll']
+    modifier = roll['modifier']
+
+    assert _payload(bare, 'dm_response_end')['text'] == 'You roll a 10.'
+    assert _story_beats(bare) == [{'kind': 'check', 'text': 'd20: 10'}]
+    assert (bare_turn['rules_hint']['authoritative_roll']['dc'], bare_turn['rules_hint']['authoritative_roll']['outcome']) == (None, None)
+    assert bare_turn['rules_hint']['dc_hint'] is None
+    assert (bare_turn['roll_gate'], bare_turn['outcome_status']) == (None, 'resolved')
+    assert _payloads(bare, 'roll_required') == []
+    assert (roll['total'], roll['dc'], roll['outcome'], roll['free']) == (10 + modifier, None, None, True)
+    sign = f'+ {modifier}' if modifier >= 0 else f'− {-modifier}'
+    article = 'an' if str(10 + modifier).startswith('8') or 10 + modifier in (11, 18) else 'a'
+    assert _payload(strength, 'dm_response_end')['text'] == f'You roll {article} {10 + modifier} for Strength.'
+    assert _story_beats(strength) == [{'kind': 'check', 'text': f'Strength: {10 + modifier} (d20 10 {sign})'}]
+
+
+def test_a_roll_that_answers_a_pending_check_is_that_check(app, table):
+    ids, socket_client = table
+    sneak = _send(socket_client, ids, 'I sneak around behind the last wagon.', client_message_id='turn-2')
+    stated_dc = int(ROLL_REQUEST_RE.search(_payload(sneak, 'dm_response_end')['text']).group('dc'))
+    pending_turn_id = _latest_turn(app, ids['session_id'])['turn_id']
+
+    resolved = _send(
+        socket_client,
+        ids,
+        'I roll.',
+        client_message_id='roll-1',
+        action_intent=_roll_intent('I roll.', roll={'die': 'd20', 'mode': 'normal', 'result_visibility': 'hidden_until_landed', 'target_pending_turn_id': pending_turn_id}),
+    )
+    roll = _latest_turn(app, ids['session_id'])['rules_hint']['authoritative_roll']
+    outcome = 'success' if roll['total'] >= stated_dc else 'failure'
+
+    assert (roll['dc'], roll['outcome'], roll.get('free')) == (stated_dc, outcome, None)
+    assert _story_beats(resolved) == [{'kind': 'check', 'text': f"Stealth check: {roll['total']} — {outcome} (DC {stated_dc})"}]
+    assert _payload(resolved, 'dm_response_end')['text'].startswith(
+        f"Dexterity (Stealth): {roll['total']} against DC {stated_dc} — {outcome}."
+    )

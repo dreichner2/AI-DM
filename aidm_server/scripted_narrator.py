@@ -37,7 +37,7 @@ MAX_OPENING_WORDS = 220
 MAX_OPENING_DETAILS = 3
 OPENING_CLOSING_LINE = 'What do you do?'
 OPENING_MESSAGE_KIND = 'opening'
-ONE_THING_AT_A_TIME = 'One thing at a time — the rest is still yours to do.'
+ONE_THING_AT_A_TIME = 'One thing at a time — {target} is still there to {verb}.'
 DEFEAT_PARAGRAPH = (
     'Darkness takes you. When you come to, the light has changed and {enemies} {be} gone. You are alive — barely.'
 )
@@ -401,7 +401,7 @@ def narrate(
     blocks.extend(_fight_start_blocks(turn))
     blocks.append(_combat_lines(turn))
     blocks.append(aftermath)
-    roll_paragraphs = _resolved_roll_paragraphs(turn)
+    roll_paragraphs = _resolved_roll_paragraphs(turn) or _free_roll_paragraphs(turn)
     if roll_paragraphs:
         blocks.extend([[roll_paragraphs[0]], roll_paragraphs[1:]])
     if any(blocks) or turn.facts.get('partyDefeat'):
@@ -953,6 +953,18 @@ def _the(name: str) -> str:
     return f'the {name}'
 
 
+def _free_roll_paragraphs(turn: NarrationInput) -> list[str]:
+    """``You roll a 10.`` (``You roll a 13 for Strength.``) for a roll made with no check pending."""
+
+    roll = _dict(turn.rules_hint.get('authoritative_roll'))
+    total = roll.get('total')
+    if roll.get('free') is not True or not isinstance(total, int):
+        return []
+    article = 'an' if str(total).startswith('8') or total in (11, 18) else 'a'
+    ability = _humanize(_dict(roll.get('ability')).get('key')).title()
+    return [f"You roll {article} {total}{f' for {ability}' if ability else ''}."]
+
+
 def _resolved_roll_paragraphs(turn: NarrationInput) -> list[str]:
     roll = _dict(turn.rules_hint.get('authoritative_roll'))
     if not turn.rules_hint.get('resolved_turn_id') or not roll:
@@ -1128,8 +1140,9 @@ def _compose(turn: NarrationInput, blocks: list[list[str]]) -> str:
         paragraphs.append([DEFEAT_PARAGRAPH.format(enemies=enemies, be='are' if defeat.get('plural') is not False else 'is')])
     elif _text(facts.get('nextActorLine')) and not _fight_ended(turn):
         paragraphs.append([_text(facts.get('nextActorLine'))])
-    if _dict(facts.get('freeText')).get('more') is True:
-        paragraphs.append([ONE_THING_AT_A_TIME])
+    deferred = _dicts(_dict(facts.get('freeText')).get('deferred'))
+    if deferred:
+        paragraphs.append([ONE_THING_AT_A_TIME.format(target=_text(deferred[0].get('target')), verb=_text(deferred[0].get('verb')))])
     return '\n\n'.join(' '.join(paragraph) for paragraph in paragraphs)
 
 

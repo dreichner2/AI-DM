@@ -298,6 +298,8 @@ class PostTurnOutcome:
     # whose narration is already saved.
     expected_status: str | None = None
     state_application_failed: bool = False
+    # The narration's roll request was for something the engine rolls itself and was taken out.
+    engine_rolls_removed: bool = False
 
 
 def _turn_metadata(turn: DmTurn) -> dict:
@@ -1736,6 +1738,7 @@ class TurnEngine:
             emergency_fallback=narration_result.emergency_fallback,
             triggered_segments=triggered_segments,
             start_time=start_time,
+            engine_rolls_removed=narration_result.engine_rolls_removed,
         )
         for segment_payload in post_turn_segments:
             self.socketio.emit(
@@ -2027,6 +2030,8 @@ class TurnEngine:
                 outcome_deferred=False,
             )
         )
+        # The check the player's own words name, if any ("I persuade the guard"); "I roll a d20" names none.
+        worded_check = rule_hint.roll_type if rule_hint.roll_type not in (None, 'check') else None
         rule_hint = apply_action_intent_to_rule_hint(command.action_intent, rule_hint)
         rule_hint = TurnActionPolicy.apply_spell_rule_hint(rule_hint, command.action_intent, player)
         rule_hint = self._apply_pvp_rule_hint(rule_hint, pvp_payload)
@@ -2245,6 +2250,9 @@ class TurnEngine:
         )
         authoritative_roll = None
         if roll_submission_requested:
+            # A roll made on its own (no pending check, gate or contest, and words that name no check)
+            # is not a check: no DC, no outcome.
+            free_roll = pending_turn_before is None and not combat_roll_requested and not pvp_payload and worded_check is None
             authoritative_roll = resolve_authoritative_player_roll(
                 player=player,
                 rule_type=rule_hint.roll_type,
@@ -2252,7 +2260,11 @@ class TurnEngine:
                 action_intent=command.action_intent,
                 pending_turn=pending_turn_before,
                 attack_context=attack_context,
+                free=free_roll,
             )
+            if free_roll:
+                rule_hint.dc_hint = None
+                roll_spec_payload = None
             attack_target = (
                 player_attack_target(
                     combat_snapshot_from_session(session_obj.state_snapshot),
@@ -3072,6 +3084,7 @@ class TurnEngine:
         emergency_fallback: dict | None,
         triggered_segments: list[dict],
         start_time: float,
+        engine_rolls_removed: bool = False,
     ) -> list[dict]:
         outcome = PostTurnOutcome(
             turn_id=persistence_token.turn_id,
@@ -3087,6 +3100,7 @@ class TurnEngine:
             triggered_segments=triggered_segments,
             start_time=start_time,
             expected_status=persistence_token.expected_status,
+            engine_rolls_removed=engine_rolls_removed,
         )
         try:
             turn, campaign = self._reload_persistence_context(persistence_token)
@@ -3134,9 +3148,10 @@ class TurnEngine:
             stream_error is None
             and emergency_fallback is None
             and turn.roll_value is None
-            and self._dm_response_explains_no_roll_needed(dm_response_text)
+            and (outcome.engine_rolls_removed or self._dm_response_explains_no_roll_needed(dm_response_text))
             and not self._dm_response_requests_roll(dm_response_text)
         )
+        no_roll_reason = 'engine_rolls_it' if outcome.engine_rolls_removed else 'dm_explained_no_roll_needed'
         roll_gate_payload = (
             None
             if dm_explains_no_roll or emergency_fallback or command.is_opening
@@ -3149,7 +3164,7 @@ class TurnEngine:
             metadata_payload = _turn_metadata(turn)
             metadata_payload.pop('roll_gate', None)
             metadata_payload['roll_requirement_cleared'] = {
-                'reason': 'dm_explained_no_roll_needed',
+                'reason': no_roll_reason,
                 'original_rule_type': rules_hint_payload.get('roll_type'),
                 'original_reason': rules_hint_payload.get('reason'),
             }

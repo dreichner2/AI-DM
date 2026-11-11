@@ -32,6 +32,20 @@ function abilityName(keyOrLabel: string) {
   return ABILITY_NAMES[keyOrLabel.trim().slice(0, 3).toLowerCase()] ?? ''
 }
 
+/** Words of a roll label that stay lower-case: "Dexterity saving throw", "Sleight of Hand". */
+const PLAIN_ROLL_WORDS = new Set(['of', 'check', 'saving', 'throw', 'save', 'roll'])
+
+/** "intelligence" → "Intelligence", "stealth check" → "Stealth check", "animal handling" → "Animal Handling". */
+function rollLabel(ruleLabel: string) {
+  return ruleLabel
+    .trim()
+    .split(/\s+/)
+    .map((word, index) =>
+      index > 0 && PLAIN_ROLL_WORDS.has(word.toLowerCase()) ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1),
+    )
+    .join(' ')
+}
+
 function signed(value: number) {
   return value < 0 ? `−${Math.abs(value)}` : `+${value}`
 }
@@ -118,7 +132,7 @@ export function StoryRollPrompt({ notice, composer, onPrepare }: StoryRollPrompt
         disabled={composer.sendPending}
       >
         <D20Glyph size={26} className="story-roll-prompt-glyph" />
-        Roll {notice.ruleLabel}
+        Roll {rollLabel(notice.ruleLabel)}
       </button>
       <p className="story-roll-prompt-detail">{summary.line}</p>
       <button
