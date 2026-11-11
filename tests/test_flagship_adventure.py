@@ -421,7 +421,8 @@ def test_the_caravan_cutthroats_scale_to_the_party(client, app):
     alone = materialize_campaign_pack_combat_start(snapshot, start)
     full = materialize_campaign_pack_combat_start({**snapshot, 'playerCharacters': party}, start)
 
-    assert _enemies(alone) == ['enemy_ashmarked_cutthroats']
+    # The theft's floor keeps two cutthroats in the yard however few heroes there are.
+    assert _enemies(alone) == ['enemy_ashmarked_cutthroats'] * 2
     assert _enemies(full) == ['enemy_ashmarked_cutthroats'] * 2
 
 
@@ -433,7 +434,10 @@ def test_the_careful_route_renews_the_ward(table):
     assert start['currentScene']['restPolicy'] == 'safe'
     # The party arrives in the yard; the stable next door, with its mare, is known from there.
     assert table.zone() == 'inn_yard'
-    assert _visible_objects(start) == ['inn_caravan_ledger', 'inn_drivers_bench', 'inn_lead_wagon', 'inn_wagon_bell', 'inn_marked_mare']
+    assert _visible_objects(start) == [
+        'inn_caravan_ledger', 'inn_drivers_bench', 'inn_lead_wagon', 'inn_wagon_bell', 'inn_marked_mare',
+        'inn_yard_gate', 'inn_wagon_harness', 'inn_yard_lantern', 'inn_wagon_canvas', 'inn_crowd',
+    ]
     assert [flag['key'] for flag in start['campaignPack']['storyFlags']] == [flag['key'] for flag in PACK['storyFlags']]
     world_map = filter_session_snapshot_for_player(start)['worldMap']
     assert (world_map['title'], world_map['terrain'], world_map['seed']) == ('The Western Roadlands', 'moor', 1107)
@@ -449,7 +453,8 @@ def test_the_careful_route_renews_the_ward(table):
     assert ledger.flags == {'caravan_ledger_read': True}
     assert ledger.clues == {'clue_erased_caravan_ledger'}
     assert ledger.objectives == {'obj_investigate_empty_caravan': 'completed'}
-    assert _completed_checkpoints(ledger.snapshot) == ['cp_01_empty_caravan']
+    # The chapter at the inn ends only when the party sets out.
+    assert _completed_checkpoints(ledger.snapshot) == []
 
     bench = table.act('inn_drivers_bench', 'search', "Driver's Bench")
     assert table.last_check() == ('investigation', 10, 'success')
@@ -474,12 +479,12 @@ def test_the_careful_route_renews_the_ward(table):
     assert _scene_items(strongbox) == ['road_stone_fragment', 'inn_wagon_strongbox_coins']
     assert (strongbox.gp, strongbox.items) == (0, Counter())
     assert strongbox.encounter == 'enc_empty_caravan_pressure'
-    assert _enemies(strongbox.snapshot) == ['enemy_ashmarked_cutthroats']
-    # The server's own initiative (seeded by the turn) puts the hero first: the hero is the one acting when the
-    # fight is handed over.
+    assert _enemies(strongbox.snapshot) == ['enemy_ashmarked_cutthroats'] * 2
+    # The server's own initiative (seeded by the turn) puts a cutthroat first; its opening turn is played at once,
+    # and the hero is the one acting when the fight is handed over.
     combat = strongbox.snapshot['combat']
     assert combat['status'] == 'active'
-    assert combat['initiative'][0]['participantId'] == _hero(strongbox.snapshot)['id']
+    assert combat['initiative'][0]['participantId'].startswith('enemy_')
     assert combat['flags']['activeActorId'] == _hero(strongbox.snapshot)['id']
 
     fight = table.fight()
@@ -844,9 +849,15 @@ def test_the_opening_offers_only_authored_actions_and_starts_in_the_evening(tabl
             ('inspect', "Look over the driver's bench", True, False),
         ],
         'inn_lead_wagon': [('search', 'Search the lead wagon', True, False)],
-        'inn_wagon_bell': [('use', 'Ring the wagon bell', True, False)],
+        # The yard's plans: those only for a fight are shown, waiting for one.
+        'inn_wagon_bell': [('use', 'Ring the wagon bell', True, False), ('plan', 'Ring the bell for the watch', False, False)],
         # In the stable next door: taking it steps the hero in first.
         'inn_marked_mare': [('inspect', 'Look over the off-leader', True, False)],
+        'inn_yard_gate': [('plan', 'Shut and bar the yard gate', True, False)],
+        'inn_wagon_harness': [('plan', 'Cut the team loose', False, False)],
+        'inn_yard_lantern': [('plan', 'Throw the lantern into the hedge', True, False), ('plan', 'Put out the yard lantern', True, False)],
+        'inn_wagon_canvas': [('plan', 'Drag the canvas down over him', False, False)],
+        'inn_crowd': [('plan', 'Call on the crowd to hold the gate', False, False)],
     }
     assert {entry['id']: entry['zoneId'] for entry in view['currentScene']['interactables']}['inn_marked_mare'] == 'inn_stable'
     bench = next(entry for entry in view['currentScene']['interactables'] if entry['id'] == 'inn_drivers_bench')
@@ -856,9 +867,13 @@ def test_the_opening_offers_only_authored_actions_and_starts_in_the_evening(tabl
 def test_every_object_offers_exactly_its_labelled_actions():
     for location in PACK['locations']:
         for record in location.get('interactables', []):
-            assert set(record['allowedActions']) >= set(record['actionLabels']), record['id']
-            assert set(record['allowedActions']) - set(record['actionLabels']) <= {'inspect'}, record['id']
-            assert all(len(label) <= 48 for label in record['actionLabels'].values())
+            # A thing there only for its plans (the yard's gate, lantern, canvas, team and crowd) offers no action.
+            allowed = set(record.get('allowedActions') or []) - set(record.get('disabledActions') or [])
+            labels = record.get('actionLabels') or {}
+            assert allowed >= set(labels), record['id']
+            assert allowed - set(labels) <= {'inspect'}, record['id']
+            assert ('allowedActions' in record) or record.get('affordances'), record['id']
+            assert all(len(label) <= 48 for label in labels.values())
     assert {enemy['id']: (enemy.get('singularName'), enemy.get('proper')) for enemy in PACK['enemies']} == {
         'enemy_ashmarked_cutthroats': ('Ashmarked Cutthroat', None),
         'enemy_pale_lanterns': ('Pale Lantern', None),
@@ -879,13 +894,13 @@ def test_the_journal_shows_only_the_objectives_the_party_has_reached(table):
 
     journal = _story_view(table.act('inn_caravan_ledger', 'inspect', 'Caravan Ledger').snapshot)['journal']
 
+    # The chapter at the inn goes on until the party sets out: the road's objective is not reached yet.
     assert journal['objectives'] == [
         {'id': 'obj_investigate_empty_caravan', 'title': 'Investigate the empty caravan', 'optional': True, 'status': 'completed'},
-        {'id': 'obj_follow_changing_road', 'title': 'Follow the changing road', 'optional': True, 'status': 'active'},
     ]
-    assert journal['quest']['stageTitle'] == 'The Changing Road'
+    assert journal['quest']['stageTitle'] == 'The Empty Caravan'
     assert [clue['id'] for clue in journal['clues']] == ['clue_erased_caravan_ledger']
-    reached = {'obj_investigate_empty_caravan', 'obj_follow_changing_road'}
+    reached = {'obj_investigate_empty_caravan'}
     rendered = json.dumps(journal)
     for objective in quest['objectives']:
         if objective['id'] not in reached:

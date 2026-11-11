@@ -22,6 +22,7 @@ from aidm_server.combat.pipeline import (
     turn_end_preview,
 )
 from aidm_server.combat.defeat import enemies_phrase, party_defeat_recovery, party_is_beaten, party_wake
+from aidm_server.combat.maneuvers import IMPROVISE_TYPE
 from aidm_server.combat.state import (
     combat_summary_for_dm,
     combat_turn_context,
@@ -55,6 +56,8 @@ from aidm_server.game_state.orchestration import director
 from aidm_server.game_state.orchestration.engine_brief import engine_brief
 from aidm_server.game_state.orchestration.finishing_blow import finishing_blow, hold_spared_captive
 from aidm_server.game_state.orchestration.hero_threads import hero_turn_changes, hero_turn_facts
+from aidm_server.game_state.orchestration.improvised_facts import PIPELINE_KEY as IMPROVISED_FACT_KEY
+from aidm_server.game_state.orchestration.improvised_facts import improvised_fact
 from aidm_server.game_state.orchestration.narration_facts import (
     PICKUP_SOURCE,
     captives_left_behind,
@@ -2201,6 +2204,10 @@ def _with_director_note(
         ),
     )
     changed = False
+    if note is not None and not applied and _turn_awaits_player_roll(turn):
+        # A turn that did nothing yet and ends on "make a check" ends there: the note waits for the turn that
+        # tells the result. (An engine-rolled search has already happened and keeps its note.)
+        note = None
     if note is not None:
         narration[director.NOTE_KEY] = note
         if note['kind'] == 'opportunity':
@@ -2267,7 +2274,8 @@ def _plan_extraction(
 
 def _improvised_roll(turn: DmTurn, state: dict[str, Any]) -> dict[str, Any] | None:
     """The improvised attempt this turn resolves (the old rules-hint floor, amendment 7): in a pack adventure outside a
-    fight, the check the player rolled for words that named nothing the engine holds; None otherwise."""
+    fight, the check the player rolled for words that named nothing the engine holds (``{"words", "check",
+    "success"}``); None otherwise."""
 
     roll = _metadata(turn).get('authoritative_roll')
     if (
@@ -2283,7 +2291,55 @@ def _improvised_roll(turn: DmTurn, state: dict[str, Any]) -> dict[str, Any] | No
     resolved_id = _metadata(turn).get('resolved_turn_id') or (safe_json_loads(turn.rules_hint, {}) or {}).get('resolved_turn_id')
     resolved = db.session.get(DmTurn, resolved_id) if isinstance(resolved_id, int) else None
     words = str((resolved.player_input if resolved is not None else turn.player_input) or '').strip()
-    return {'words': words[:120], 'did': improvised_did(words, roll), 'success': str(roll.get('outcome') or '').lower() == 'success'}
+    return {'words': words[:120], 'check': roll, 'success': str(roll.get('outcome') or '').lower() == 'success'}
+
+
+def _improvised_fight_action(resolved_fight_action: Any, state: dict[str, Any], player_message: str) -> dict[str, Any] | None:
+    """The improvised fight action this turn resolved with success in a pack adventure (W7), as an attempt
+    (``{"words", "check", "success", "inFight"}``); None otherwise."""
+
+    action = resolved_fight_action if isinstance(resolved_fight_action, dict) else {}
+    check = action.get('check') if isinstance(action.get('check'), dict) else {}
+    if action.get('actionType') != IMPROVISE_TYPE or action.get('success') is not True or not has_campaign_pack(state):
+        return None
+    words = str(action.get('attempt') or player_message or '').strip()
+    rolled = {'skill': check.get('skill'), 'total': check.get('total'), 'dc': check.get('dc'), 'outcome': 'success'}
+    return {'words': words[:120], 'check': rolled, 'success': True, 'inFight': True}
+
+
+def _with_improvised_fact(
+    state: dict[str, Any],
+    applied_combat: list[dict[str, Any]],
+    *,
+    attempt: dict[str, Any] | None,
+    actor_id: str,
+    turn_id: Any,
+    before_provider_call: Callable[[], None] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """W9-FREEFORM: the lasting fact a successful improvised attempt leaves, applied (:mod:`improvised_facts`); the
+    record of how it was decided is ``{}`` when the turn holds no such success."""
+
+    if not attempt or not attempt['success']:
+        return state, applied_combat, {}
+    outcome = improvised_fact(state, actor_id=actor_id, attempt=attempt, turn_id=turn_id, before_provider_call=before_provider_call)
+    changes = outcome.pop('changes')
+    if not changes:
+        return state, applied_combat, outcome
+    applied = apply_state_changes(state, validated_changes_for_application(validate_state_changes(state=state, changes=changes)))
+    return applied['nextState'], [*applied_combat, *applied['appliedChanges']], outcome
+
+
+def _improvised_narration(attempt: dict[str, Any] | None, outcome: dict[str, Any]) -> dict[str, Any] | None:
+    """The narration's ``improvised`` attempt outside a fight (``words``, ``did``, ``success``; ``fact`` when it left
+    one, and ``own`` when that is the engine's record of the words). In a fight the action's own result tells it."""
+
+    if not attempt or attempt.get('inFight'):
+        return None
+    fact = str(outcome.get('fact') or '')
+    told = {'words': attempt['words'], 'did': improvised_did(attempt['words'], attempt['check'], fact=fact), 'success': attempt['success']}
+    if fact:
+        told.update(fact=fact, **({'own': True} if outcome.get('source') == 'engine' else {}))
+    return told
 
 
 def _scene_narration(
@@ -2295,10 +2351,12 @@ def _scene_narration(
     actor_id: str,
     free_text: FreeTextAction | None,
     dm_context: dict[str, Any],
+    improvised: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """The narration facts of plans and stakes (W9-SCENE): the ``effects`` resolved, words that named nothing in
-    sight (``unseen``), an ``improvised`` attempt told, and ``sceneTold``: the authored passages the engine tells as
-    written (a plan's or an object's failing-forward text first, a fight's results and ``onDefeat`` last)."""
+    sight (``unseen``), an ``improvised`` attempt told (:func:`_improvised_narration`), and ``sceneTold``: the authored
+    passages the engine tells as written (a plan's or an object's failing-forward text first, a fight's results and
+    ``onDefeat`` last)."""
 
     facts: dict[str, Any] = {}
     effects = effect_facts(applied, actor_id=actor_id)
@@ -2306,7 +2364,6 @@ def _scene_narration(
         facts['effects'] = effects
     if free_text is not None and free_text.kind == 'unseen':
         facts['unseen'] = {'line': free_text.refusal, 'did': UNSEEN_DID}
-    improvised = _improvised_roll(turn, state_after)
     if improvised:
         facts['improvised'] = improvised
     narration = dm_context.get('narration') if isinstance(dm_context.get('narration'), dict) else {}
@@ -2680,6 +2737,35 @@ def pre_dm_pipeline(
         applied_combat=applied_combat,
         finisher=finisher_facts.get('finisher'),
     )
+    # An improvised success leaves a lasting fact (W9-FREEFORM); a narrating model's helper proposes it, once.
+    improvised = _improvised_roll(turn, state_before_dm) or _improvised_fight_action(resolved_fight_action, state_before_dm, player_message)
+    fact_token = (
+        _pipeline_orm_token(turn=turn, session_obj=session_obj, campaign=campaign, player=player, players=players)
+        if improvised and improvised['success']
+        else {}
+    )
+    fact_session_released = False
+
+    def _before_fact_provider_call() -> None:
+        nonlocal fact_session_released
+        if before_helper_call:
+            before_helper_call()
+            fact_session_released = True
+
+    state_before_dm, applied_combat, improvised_outcome = _with_improvised_fact(
+        state_before_dm,
+        applied_combat,
+        attempt=improvised,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+        before_provider_call=_before_fact_provider_call if before_helper_call else None,
+    )
+    if fact_session_released:
+        turn, session_obj, campaign, player, players = _reload_pipeline_orm(fact_token)
+        players_by_id = {player_obj.player_id: player_obj for player_obj in players}
+    if improvised and improvised.get('inFight') and improvised_outcome.get('fact'):
+        # In a fight the action's own result is the turn's "Did" line: it ends with what is now true here.
+        resolved_fight_action['outcome'] = f"{resolved_fight_action['outcome']} Now true here: {improvised_outcome['fact']}"
     finalize_combat_prepare(
         session_obj=session_obj,
         campaign=campaign,
@@ -2822,6 +2908,7 @@ def pre_dm_pipeline(
             actor_id=actor_id,
             free_text=free_text,
             dm_context=dm_context,
+            improvised=_improvised_narration(improvised, improvised_outcome),
         )
     )
     director_mark = _with_director_note(
@@ -2883,6 +2970,7 @@ def pre_dm_pipeline(
         'dmContextPacket': dm_context,
         'openingEnemyTurns': opening_enemy_turns,
         **({AUTO_END_TURN_KEY: True} if ends_itself else {}),
+        **({IMPROVISED_FACT_KEY: improvised_outcome} if improvised_outcome else {}),
         'stateLog': state_log,
         'managedDomains': MANAGED_STATE_DOMAINS,
     }

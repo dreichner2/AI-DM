@@ -20,6 +20,7 @@ from aidm_server.models import Session, safe_json_dumps, safe_json_loads
 from aidm_server.prompt_templates import ENGINE_BRIEF_RULES
 from aidm_server.services.campaign_pack_linter import lint_campaign_pack_manifest
 from tests.ai_narrator import ai_narration
+from tests.test_fight_maneuvers import _one_cutthroat
 from tests.test_pack_author_traps import _pack as _trap_pack
 from tests.test_where_everyone_stands import Table, _errors, _seeded
 
@@ -31,6 +32,7 @@ MARA, TOVIN, OSRIC = 'npc_mara_reedwake', 'npc_tovin_bell', 'npc_osric_hale'
 MARA_GREETING = '"You\'ll want something hot. Then you\'ll want to know what I know," Mara says.'
 MARA_ASKS = ['Ask about the caravan', 'Ask about the horses', 'Ask about strangers on the road', 'Ask about the bell']
 TALKING = ['Say something else', 'Leave it there']
+LEDGER_NUDGE = next(entry for entry in PACK['locations'][0]['interactables'] if entry['id'] == 'inn_caravan_ledger')['nudge']
 
 
 class TalkTable(Table):
@@ -144,8 +146,10 @@ def test_the_four_asks_then_the_promise_warms_mara_and_opens_who_she_lost(solo):
     solo.talk('Arden Vale', 'Mara')
     for topic_id, label in zip(('mara_caravan', 'mara_horses', 'mara_strangers', 'mara_bell'), MARA_ASKS):
         assert _errors(solo.topic('Arden Vale', MARA, topic_id)) == []
-        assert solo.last()['narration'] == LINES[MARA][topic_id]
+        assert solo.last()['narration'].split('\n\n')[0] == LINES[MARA][topic_id]
         assert label not in solo.labels('Arden Vale')
+    # The fourth quiet turn at the inn brings its nudge (the Lantern Post chapter's ledger).
+    assert solo.last()['narration'].split('\n\n')[1] == LEDGER_NUDGE
     assert solo.labels('Arden Vale') == ['Promise to bring word of the drivers', *TALKING]
     assert solo.journal_person('Arden Vale', 'Mara Reedwake')['disposition'] == 'neutral'
 
@@ -469,7 +473,7 @@ def test_an_offer_meets_what_a_person_wants_or_they_are_not_for_sale(solo):
     solo.move('Arden Vale', 'inn_yard', 'Step out to the yard')
     solo.talk('Arden Vale', 'Tovin')
     solo.send('Arden Vale', "I'll pay you 5 gold.")
-    assert solo.last()['narration'] == 'Tovin Bell is not for sale.'
+    assert solo.last()['narration'].split('\n\n')[0] == 'Tovin Bell is not for sale.'
 
 
 def test_claims_osrics_authored_reaction_and_the_default(solo, monkeypatch):
@@ -556,6 +560,7 @@ def test_tovin_remembers_who_stood_over_him(solo):
         tovin['remembers'] = [{'heroId': 'player_1', 'key': 'protected', 'turn': 0}]
 
     solo.edit(guarded)
+    _one_cutthroat(solo.app, solo.ids['session_id'])
     for target, action in (('inn_drivers_bench', 'search'), ('inn_lead_wagon', 'search'), ('inn_wagon_strongbox', 'unlock')):
         solo.act('Arden Vale', target, action)
     solo.act('Arden Vale', 'inn_wagon_strongbox', 'search')

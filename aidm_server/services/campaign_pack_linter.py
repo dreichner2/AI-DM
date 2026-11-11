@@ -1270,6 +1270,11 @@ def _flag_setters(pack: dict[str, Any]) -> list[tuple[str, str]]:
     for path, interactable in _pack_interactables(pack):
         for action, flags in _dict(interactable.get('setsFlags')).items():
             setters.extend((stable_slug(key), f'{path}.setsFlags.{action}') for key in _dict(flags))
+        for spec_path, spec in _plan_consequences(interactable, path):
+            setters.extend((stable_slug(key), f'{spec_path}.setsFlags') for key in _dict(spec.get('setsFlags')))
+    for index, encounter in enumerate(_records(pack.get('encounters'))):
+        for spec_path, spec in _fight_consequences(encounter, f'encounters[{index}]'):
+            setters.extend((stable_slug(key), f'{spec_path}.setsFlags') for key in _dict(spec.get('setsFlags')))
     records = [
         *((f'encounters[{index}]', encounter) for index, encounter in enumerate(_records(pack.get('encounters')))),
         *((f'quests[{index}]', quest) for index, quest in enumerate(_records(pack.get('quests')))),
@@ -1477,9 +1482,10 @@ def _completion_outcomes(completion: dict[str, Any]) -> list[str]:
 
 
 # Advisory sizes. Records carry the play content the engine reads directly (objects, topics,
-# barks, zones, pressure events), so a rich place or person is expected to be a few thousand
-# characters; the warnings are for records that have outgrown even that.
-PACK_RECORD_CHAR_BUDGET = 12_000
+# barks, zones, pressure events, plans and clocks), so a rich place or person is expected to be a
+# few thousand characters, and an opening chapter's yard (the Play Now inn) about thirteen
+# thousand; the warnings are for records that have outgrown even that.
+PACK_RECORD_CHAR_BUDGET = 16_000
 PACK_COLLECTION_CHAR_BUDGET = 240_000
 
 
@@ -1724,7 +1730,10 @@ def _pack_item_ids(pack: dict[str, Any]) -> set[str]:
 
     item_ids = {_text(item.get('id')) for _path, record in _pack_interactables(pack) for item in _records(record.get('contents')) if _text(item.get('id'))}
     item_ids |= _encounter_reward_item_ids(pack)
-    for _path, effects in _talk_effects(pack):
+    gifts = [effects for _path, effects in _talk_effects(pack)]
+    gifts.extend(_dict(affordance.get('result')) for _path, record in _pack_interactables(pack) for affordance in _records(record.get('affordances')))
+    gifts.extend(result for encounter in _records(pack.get('encounters')) for result in _records(encounter.get('results')))
+    for effects in gifts:
         item_ids.update(_text(item.get('id')) for item in _records(effects.get('givesItems')) if _text(item.get('id')))
     return item_ids
 
@@ -1944,6 +1953,26 @@ def _location_object_ids(pack: dict[str, Any]) -> dict[str, set[str]]:
     return found
 
 
+def _plan_consequences(record: dict[str, Any], path: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(path, spec)`` for what a scene object's plans and failed checks bring: each affordance's ``result`` and
+    ``onFail``, and the object's ``onFail`` by action."""
+
+    found = []
+    for index, affordance in enumerate(_records(record.get('affordances'))):
+        found.extend((f'{path}.affordances[{index}].{key}', _dict(affordance.get(key))) for key in ('result', 'onFail') if _dict(affordance.get(key)))
+    found.extend((f'{path}.onFail.{action}', _dict(spec)) for action, spec in _dict(record.get('onFail')).items() if _dict(spec))
+    return found
+
+
+def _fight_consequences(encounter: dict[str, Any], path: str) -> list[tuple[str, dict[str, Any]]]:
+    """``(path, spec)`` for what the end of an encounter's fight brings: its ``results`` and its ``onDefeat`` (W9)."""
+
+    found = [(f'{path}.results[{index}]', result) for index, result in enumerate(_records(encounter.get('results')))]
+    if isinstance(encounter.get('onDefeat'), dict):
+        found.append((f'{path}.onDefeat', encounter['onDefeat']))
+    return found
+
+
 def _consequence_reference_issues(path: str, spec: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
     issues = [
         _error('unknown_reference', f'{path}.reveals', f'"{object_id}" is not a scene object of the pack.')
@@ -2020,6 +2049,14 @@ def _scene_plan_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[C
             known = _pack_item_ids(pack) if collection is None else ids[collection]
             if not value or value not in known:
                 issues.append(_error('unknown_reference', f'{at}.{reference}', f'"{value}" is not {"an item" if kind == "item" else "a person" if kind == "person" else "a scene object"} of the pack.'))
+            if 'startWhen' in stake and kind == 'person':
+                issues.append(_error('invalid_stake_state', f'{at}.startWhen', 'Only a route or item stake starts in a state of its own.'))
+                continue
+            for start_index, entry in enumerate(_records(stake.get('startWhen'))):
+                if _text(entry.get('state')) not in STATES_BY_KIND[kind]:
+                    issues.append(
+                        _error('invalid_stake_state', f'{at}.startWhen[{start_index}].state', f'"{_text(entry.get("state"))}" is not a state of {"an" if kind == "item" else "a"} {kind} stake.')
+                    )
         goals = (('enemyGoal', 'stakeId', 'item'), ('enemyGoal', 'routeStakeId', 'route'), ('secondaryGoal', 'stakeId', 'person'))
         for key, field, kind in goals:
             goal = _dict(encounter.get(key))

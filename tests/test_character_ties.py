@@ -120,7 +120,7 @@ def test_the_play_now_pack_lints_clean_with_its_tie_lines(app):
     with app.app_context():
         assert lint_campaign_pack_manifest(PACK, workspace_id='owner', strict=True)['issues'] == []
     assert [line['moment'] for line in normalize_tie_lines(PACK['tieLines'])] == [
-        'object', 'object', 'encounter', 'long_rest', 'ending', 'ending', 'ending', 'ending',
+        'object', 'object', 'encounter', 'long_rest', 'ending', 'ending', 'ending', 'ending', 'encounter',
     ]
 
 

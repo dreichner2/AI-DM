@@ -3017,6 +3017,10 @@
             "$ref": "#/$defs/talkAffect"
           }
         },
+        "givesItems": {
+          "description": "Items the plan puts in the acting hero's hands, as a topic gives them.",
+          "$ref": "#/$defs/talkEffects/properties/givesItems"
+        },
         "startsClockId": {
           "oneOf": [
             {
@@ -3094,6 +3098,28 @@
         },
         "when": {
           "$ref": "#/$defs/flagCondition"
+        },
+        "startWhen": {
+          "description": "A route or item stake's state as the fight is created: the first entry whose flags hold (an unset flag counting as false). A route started blocked stays blocked until an enemy clears it.",
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state"],
+            "properties": {
+              "flags": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean"]
+                }
+              },
+              "state": {
+                "type": "string",
+                "maxLength": 40
+              }
+            }
+          }
         }
       }
     },
@@ -3162,6 +3188,10 @@
           "items": {
             "$ref": "#/$defs/talkAffect"
           }
+        },
+        "givesItems": {
+          "description": "Items given to the hero whose turn ended the fight, else the first hero in it, as a topic gives them.",
+          "$ref": "#/$defs/talkEffects/properties/givesItems"
         }
       }
     },

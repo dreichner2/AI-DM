@@ -12,7 +12,10 @@ Stakes (``encounters[].stakes`` when it is a list; a string there stays the oper
   the next long rest, never killed) or ``taken``; a hero ``guarding`` them stops both;
 - route: ``open`` or ``blocked`` (its object's ``blocked`` state).
 
-Items and routes are read from the world (:func:`sync_stakes`): who holds the item, whether the way is blocked.
+Items and routes are read from the world (:func:`sync_stakes`): who holds the item, whether the way is blocked. A
+route or item stake's ``startWhen`` (``[{"flags": {...}, "state": "<state>"}]``) sets its state when the fight is
+created, the first entry whose flags hold (an unset flag counting as false) deciding; a route started ``blocked`` is
+``held`` blocked until an enemy clears it, whatever its object's state.
 
 Enemy goals (engine behaviour, never a model's). ``enemyGoal: {"type": "take_and_flee", "stakeId",
 "routeStakeId"}`` makes the first enemy of the first group the runner (re-chosen if it falls). Its turn, in order:
@@ -28,9 +31,10 @@ the person each turn it is not engaged.
 
 The end of the fight. The final state of every stake is kept at ``stakes[encounterId][stakeId]`` in the session
 state; every ``results`` entry whose ``when`` holds (``stakes``, ``end``, ``flags``, ``captives``) applies in order:
-``setsFlags``, a scene ``fact``, ``affects`` (dispositions), a ``lead`` (``leads``, journal ``LEADS``, beat
-``A lead — …``) and its ``text``, told as written. ``onDefeat`` (see :mod:`aidm_server.combat.defeat`) replaces the
-re-arm of a beaten party.
+``setsFlags``, a scene ``fact``, ``affects`` (dispositions), ``givesItems`` (to the hero whose turn ended the fight,
+else the first hero in it; :func:`given_items_changes`), a ``lead`` (``leads``, journal ``LEADS``, beat ``A lead —
+…``) and its ``text``, told as written. ``onDefeat`` (see :mod:`aidm_server.combat.defeat`) replaces the re-arm of a
+beaten party.
 
 Floors (:func:`encounter_floors`): ``minEnemies`` and ``enemyGroups[].minHp`` hold after party scaling for a party
 under four; a ``take_and_flee`` encounter without them gets a runner worth stopping.
@@ -122,6 +126,7 @@ def encounter_stakes(encounter: Mapping[str, Any]) -> list[dict[str, Any]]:
                 **({'npcId': _text(raw.get('npcId'))} if _text(raw.get('npcId')) else {}),
                 **({'objectId': _text(raw.get('objectId'))} if _text(raw.get('objectId')) else {}),
                 **({'when': deepcopy(raw['when'])} if isinstance(raw.get('when'), dict) else {}),
+                **({'startWhen': _dicts(raw['startWhen'])} if _dicts(raw.get('startWhen')) else {}),
             }
         )
     return found
@@ -216,7 +221,7 @@ def _world_state(state: Mapping[str, Any], stake: Mapping[str, Any]) -> str | No
 
     kind = stake.get('kind')
     if kind == 'route':
-        return 'blocked' if _object(state, _text(stake.get('objectId'))).get('blocked') is True else 'open'
+        return 'blocked' if stake.get('held') is True or _object(state, _text(stake.get('objectId'))).get('blocked') is True else 'open'
     if kind != 'item' or stake.get('state') in {'taken', 'secured'}:
         return None
     item_id = _text(stake.get('itemId'))
@@ -229,8 +234,27 @@ def _world_state(state: Mapping[str, Any], stake: Mapping[str, Any]) -> str | No
     return _text(stake.get('state')) or 'in_place'
 
 
+def start_state(state: Mapping[str, Any], stake: Mapping[str, Any]) -> str | None:
+    """The state a route or item stake's ``startWhen`` gives it as the fight is created: the first entry whose
+    ``flags`` hold (an unset flag counting as false) and whose ``state`` the stake's kind has; None."""
+
+    from aidm_server.game_state.campaign_pack_encounters import values_match
+
+    if stake.get('kind') not in {'item', 'route'}:
+        return None
+    flags = _flags(state)
+    for entry in _dicts(stake.get('startWhen')):
+        wanted = _text(entry.get('state'))
+        if wanted not in STATES_BY_KIND[_text(stake.get('kind'))]:
+            continue
+        if all(values_match(flags[key], value) if key in flags else value is False for key, value in _dict(entry.get('flags')).items()):
+            return wanted
+    return None
+
+
 def initial_stakes(state: Mapping[str, Any], encounter: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The fight's ``combat.stakes`` as it starts (person stakes whose ``when`` does not hold are left out)."""
+    """The fight's ``combat.stakes`` as it starts (person stakes whose ``when`` does not hold are left out; a
+    ``startWhen`` that holds sets the state, and a route it blocks is ``held``)."""
 
     from aidm_server.game_state.campaign_pack_encounters import flag_condition_holds
 
@@ -238,8 +262,11 @@ def initial_stakes(state: Mapping[str, Any], encounter: Mapping[str, Any]) -> li
     for stake in encounter_stakes(encounter):
         if stake['kind'] == 'person' and isinstance(stake.get('when'), dict) and not flag_condition_holds(_flags(state), stake['when']):
             continue
-        record = {key: value for key, value in stake.items() if key != 'when'}
-        record['state'] = 'safe' if stake['kind'] == 'person' else _world_state(state, {**record, 'state': 'in_place'}) or 'in_place'
+        record = {key: value for key, value in stake.items() if key not in {'when', 'startWhen'}}
+        started = start_state(state, stake)
+        if started == 'blocked':
+            record['held'] = True
+        record['state'] = started or ('safe' if stake['kind'] == 'person' else _world_state(state, {**record, 'state': 'in_place'}) or 'in_place')
         stakes.append(record)
     return stakes
 
@@ -683,6 +710,7 @@ def resolve_goal_turn(*, enemy: dict[str, Any], combat: dict[str, Any], state: d
             way = _object(state, _text(stake.get('objectId')))
             if way:
                 way['blocked'] = False
+            stake.pop('held', None)
             stake['state'] = 'open'
             events.append({'operation': 'clear', 'stakeId': stake.get('id'), 'enemyId': enemy_id, 'objectId': stake.get('objectId')})
             entry['stakeLine'] = f"{name} wrenches {stake.get('name')} open."
@@ -816,6 +844,8 @@ def apply_stake_change(state: dict[str, Any], change: Mapping[str, Any]) -> dict
                 other['conditions'] = list(dict.fromkeys([*(other.get('conditions') or []), 'escaped' if other is enemy else 'withdrawn']))
         combat.setdefault('flags', {})['enemyGoalMet'] = True
     elif operation == 'clear':
+        if stake is not None:
+            stake.pop('held', None)
         way = _object(state, _text(change.get('objectId')))
         if way:
             from aidm_server.game_state.orchestration.scene_plans import set_fact, sync_location
@@ -930,6 +960,67 @@ def finalize_changes(state: Mapping[str, Any], applied_end: Mapping[str, Any]) -
             change = affect_change(dict(state), parent={'id': f"{final['id']}:{index}", 'turnId': applied_end.get('turnId')}, entry=affect, index=position, hero_id='')
             if change:
                 changes.append(change)
+        changes.extend(
+            given_items_changes(
+                state,
+                parent_id=stable_change_id(final['id'], 'items', index),
+                turn_id=applied_end.get('turnId'),
+                items=entry.get('givesItems'),
+                hero_id=_fight_recipient(combat),
+                source=STAKE_SOURCE,
+                reason=f"The fight's outcome ({end_reason}).",
+            )
+        )
+    return changes
+
+
+def _fight_recipient(combat: Mapping[str, Any]) -> str:
+    """Who a fight's result gives to: the hero whose turn ended it, else the first hero in it (present); ''."""
+
+    heroes = [
+        participant
+        for participant in _dicts(combat.get('participants'))
+        if _text(participant.get('team')).lower() == 'player' and participant.get('isPresent', participant.get('present', True)) is not False
+    ]
+    acting = _text(_dict(combat.get('flags')).get('activeActorId'))
+    chosen = next((hero for hero in heroes if _text(hero.get('id')) == acting), heroes[0] if heroes else {})
+    return _text(chosen.get('id'))
+
+
+def given_items_changes(
+    state: Mapping[str, Any],
+    *,
+    parent_id: str,
+    turn_id: Any,
+    items: Any,
+    hero_id: str,
+    source: str,
+    reason: str,
+) -> list[dict[str, Any]]:
+    """The ``inventory.add`` changes of authored ``givesItems`` (a fight's result, a plan's result), in the shape a
+    topic's gift takes: each item keeps its id and comes from the pack; [] without a hero."""
+
+    if not _text(hero_id):
+        return []
+    pack_id = _text(_dict(state.get('campaignPack')).get('packId'))
+    changes = []
+    for item in _dicts(items):
+        if not _text(item.get('id')) or not _text(item.get('name')):
+            continue
+        given = {**deepcopy(item), 'quantity': max(1, int(item.get('quantity') or 1)), 'source': 'campaign_pack', 'packId': pack_id}
+        changes.append(
+            {
+                'id': stable_change_id(parent_id, 'item', item['id']),
+                'turnId': turn_id,
+                'type': 'inventory.add',
+                'source': source,
+                'actorId': _text(hero_id),
+                'item': given,
+                'quantity': given['quantity'],
+                'visible': True,
+                'reason': reason,
+            }
+        )
     return changes
 
 

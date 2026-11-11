@@ -393,7 +393,8 @@ def test_the_narration_tells_what_the_words_did(app, client, socketio, safe_mode
     assert ledger.endswith('One thing at a time — the wagon bell is still there to ring.')
     assert again == 'You have already examined the Caravan Ledger.'
     assert bench.startswith("You search under the driver's bench.")
-    assert bench.endswith('You find a Caravan Strongbox Key.')
+    # The key found, then the watchers' second step (the Lantern Post chapter).
+    assert bench.endswith('You find a Caravan Strongbox Key.\n\nTovin has gone very still. "There\'s someone in the lane," he says, without moving his lips.')
     assert key == 'You take the Caravan Strongbox Key.'
     assert missing == 'There is no lantern here to take.'
 

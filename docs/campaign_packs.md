@@ -1324,7 +1324,8 @@ Plans and Stakes, for what the engine does with them).
   `free`), `inFight` / `outsideFight` (both default true), `once`, `requires`
   (`{"flags": {}}`), `target` (`enemy`, `zone` or `stake:<id>`), `inspires` (an
   Inspiration reason), `result` (`fact`, `text`, `setsFlags`, `stakes`,
-  `conditions`, `affects`, `startsClockId`: recorded under `clocksStarted`),
+  `conditions`, `affects`, `givesItems`: to the acting hero, as a topic gives
+  them, `startsClockId`: recorded under `clocksStarted`),
   `failResult` (`text`, `fact`) and `onFail`. `text` is told as written by the
   engine with any narrator.
 - `guards`: the id of the object whose way this one blocks when obstructed.
@@ -1336,14 +1337,20 @@ Plans and Stakes, for what the engine does with them).
 **Encounter fields.**
 
 - `stakes`: `{"id", "name", "kind": "item" | "person" | "route"}` with `itemId`,
-  `npcId` or `objectId`; a stake may carry a `when` flag test.
+  `npcId` or `objectId`; a stake may carry a `when` flag test. A route or item
+  stake may carry `startWhen`, `[{"flags": {...}, "state": "blocked"}]`: the
+  first entry whose flags hold (an unset flag counting as false) sets its state
+  when the fight is created, and a route started `blocked` stays blocked until
+  an enemy clears it, whatever its object's state.
 - `enemyGoal`: `{"type": "take_and_flee", "stakeId": "<item stake>",
   "routeStakeId": "<route stake>"}`; `secondaryGoal`: `{"type": "silence",
   "stakeId": "<person stake>"}`.
 - `results`: applied in order when the fight ends; `when` may test `stakes`
   (final states), `end` (the end reasons, `enemy_goal_met` and `defeat`
   included), `flags` and `captives: true|false`; each may set flags, add a scene
-  `fact`, change dispositions (`affects`), add a `lead` and tell a `text`.
+  `fact`, change dispositions (`affects`), give items (`givesItems`, to the hero
+  whose turn ended the fight, else the first hero in it), add a `lead` and tell
+  a `text`.
 - `onDefeat`: `{"wakeZoneId", "text", "setsFlags", "stakes"}` replaces the
   defeat re-arm; the encounter does not happen again.
 - `outcomeRewards.flee` (or `outcomes.flee.rewards`, `onFlee`): what an

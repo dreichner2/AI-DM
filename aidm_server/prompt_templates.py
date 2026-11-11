@@ -50,7 +50,7 @@ PLAN_RULE = '19. Tell what the plan changed in the scene, as "Did" states it. Do
 IMPROVISED_RULE = (
     '20. An improvised attempt is told as effort and what the hero senses. It never finds, opens, takes, breaks, unlocks '
     'or reveals a thing, never names a thing that is not under "Here", and leaves the hero in the area "Where" names. '
-    'On a success the hero learns or achieves only what the words asked for that needs no change to the scene.'
+    'On a success tell it happening exactly as "Now true here" states, and add nothing else that changes the scene.'
 )
 
 

@@ -434,7 +434,8 @@ def test_the_narrating_model_is_given_the_thread_to_tell_and_the_heros_desire_an
     # The beats are the player's: the brief does not ask the narrator to announce them.
     assert 'A thread of your own' not in brief
     assert 'Inspiration —' not in brief
-    assert ai_table.turn().dm_output == 'Beneath the last black stroke, one name survives.'
+    # The narrator's reply, then the watchers' first step, told by the engine (the Lantern Post chapter).
+    assert ai_table.turn().dm_output == 'Beneath the last black stroke, one name survives.\n\nOut past the hedge a horse stamps, where no horse should be standing.'
     assert ai_table.snapshot()['playerCharacters'][0]['inspiration'] is True
 
 

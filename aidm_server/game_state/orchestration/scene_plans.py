@@ -36,6 +36,11 @@ clause. With an AI narrator, words still unplaced (and not speech) go once to th
 A plan is resolved by :func:`resolve_plan` into one ``scene.effect`` change (plus the combat effects it lays on
 participants); the applier calls :func:`apply_effect_change` and :func:`plan_followup_changes` adds its flags,
 dispositions, memories, Inspiration and any encounter it starts.
+
+An improvised success leaves a fact of its own (:mod:`aidm_server.game_state.orchestration.improvised_facts`): a
+``scene.effect`` change carrying ``improvised`` (``{"text", "heroId", "turn"}``) and, when it undoes one,
+``removesImprovised``; the place keeps its records in ``improvisedFacts`` beside its facts, at most
+:data:`IMPROVISED_LIMIT`. An effect it brings is resolved without a check and marked ``fromImprovised``.
 """
 
 from __future__ import annotations
@@ -86,6 +91,10 @@ PLAN_WORDS_ACTION_ID = 'plan.words'
 PLAN_ACTION_TYPE = 'plan'
 FACTS_KEY = 'facts'
 FACT_KEYS_KEY = 'factKeys'
+# The facts an improvised success left at a place (W9-FREEFORM), at most this many; an effect it brought is marked.
+IMPROVISED_KEY = 'improvisedFacts'
+IMPROVISED_LIMIT = 6
+FROM_IMPROVISED = 'fromImprovised'
 ZONE_CONDITIONS_KEY = 'zoneConditions'
 CUT_OFF_KEY = 'cutOff'
 DISTRACTED_KEY = 'distracted'
@@ -326,6 +335,39 @@ def clear_transient_facts(scene: dict[str, Any]) -> None:
         set_fact(scene, key, '')
     for key in (CUT_OFF_KEY, DISTRACTED_KEY, GUARDS_KEY):
         scene.pop(key, None)
+
+
+def improvised_facts(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The place's facts an improvised success left (``currentScene.improvisedFacts``: ``{"text", "heroId",
+    "turn"}``, oldest first)."""
+
+    return _dicts(_scene(state).get(IMPROVISED_KEY))
+
+
+def drop_improvised_fact(scene: dict[str, Any], text: str) -> bool:
+    """Remove an improvised fact of this place, and its sentence unless a table fact (``factKeys``) holds the same."""
+
+    records = _dicts(scene.get(IMPROVISED_KEY))
+    if not any(_text(record.get('text')) == text for record in records):
+        return False
+    scene[IMPROVISED_KEY] = [record for record in records if _text(record.get('text')) != text]
+    if text not in _dict(scene.get(FACT_KEYS_KEY)).values():
+        scene[FACTS_KEY] = [fact for fact in _strings(scene.get(FACTS_KEY)) if fact != text]
+    return True
+
+
+def add_improvised_fact(scene: dict[str, Any], record: Mapping[str, Any]) -> None:
+    """Add an improvised fact (a sentence the place already holds is kept, an improvised one made newest); the place
+    keeps at most :data:`IMPROVISED_LIMIT`, the oldest dropped first. Table and authored facts are never dropped."""
+
+    text = _text(record.get('text'))
+    if not text or (not drop_improvised_fact(scene, text) and text in _strings(scene.get(FACTS_KEY))):
+        return
+    if text not in _strings(scene.get(FACTS_KEY)):
+        scene[FACTS_KEY] = [*_strings(scene.get(FACTS_KEY)), text]
+    scene[IMPROVISED_KEY] = [*_dicts(scene.get(IMPROVISED_KEY)), {'text': text, 'heroId': _text(record.get('heroId')), 'turn': record.get('turn')}]
+    while len(scene[IMPROVISED_KEY]) > IMPROVISED_LIMIT:
+        drop_improvised_fact(scene, _text(scene[IMPROVISED_KEY][0].get('text')))
 
 
 def is_cut_off(state: Mapping[str, Any], npc_id: Any) -> bool:
@@ -653,6 +695,22 @@ def _verb_at(words: list[str], index: int) -> tuple[str, str, int] | None:
     return None
 
 
+def name_run(words: list[str], name: list[str], seen: Iterable[set[str]]) -> list[str]:
+    """The run of ``words`` that names a thing called ``name`` (name words): its whole name, or two of its name words
+    in a row, unless those words are all words of a thing in sight (``seen``); [] when none does."""
+
+    seen = list(seen)
+    for start in range(len(words)):
+        run = []
+        index = start
+        while index < len(words) and words[index] in name and len(run) < len(name):
+            run.append(words[index])
+            index += 1
+        if (run == name or len(set(run)) >= 2) and not any(set(run) <= visible for visible in seen):
+            return run
+    return []
+
+
 def hidden_named(state: Mapping[str, Any], actor_id: str, message: str) -> dict[str, Any] | None:
     """Amendment 5: the still hidden object the words name (its whole name, or two of its name words), with the words
     as typed (``{"object", "typed"}``); None when they name none."""
@@ -665,16 +723,9 @@ def hidden_named(state: Mapping[str, Any], actor_id: str, message: str) -> dict[
         if _visible(entry) or entry.get('gmOnly') is True:
             continue
         name = _name_words(_text(entry.get('name')))
-        if not name:
-            continue
-        for start in range(len(words)):
-            run = []
-            index = start
-            while index < len(words) and words[index] in name and len(run) < len(name):
-                run.append(words[index])
-                index += 1
-            if (run == name or len(set(run)) >= 2) and not any(set(run) <= visible for visible in seen):
-                return {'object': entry, 'typed': ' '.join(run)}
+        run = name_run(words, name, seen) if name else []
+        if run:
+            return {'object': entry, 'typed': ' '.join(run)}
     return None
 
 
@@ -1061,12 +1112,13 @@ def _distracted_people(state: Mapping[str, Any], zone_id: str) -> list[dict[str,
     return [npc for npc in present_npcs(state) if not zones or npc_zone_id(state, npc.get('id'), zones) == zone_id]
 
 
-def resolve_plan(state: Mapping[str, Any], *, actor_id: str, plan: Mapping[str, Any], turn_id: Any) -> dict[str, Any]:
+def resolve_plan(state: Mapping[str, Any], *, actor_id: str, plan: Mapping[str, Any], turn_id: Any, checked: bool = True) -> dict[str, Any]:
     """Resolve one plan for the hero: ``{"ok", "reason", "changes", "result"}``.
 
     ``changes`` are the ``scene.effect`` change and the combat effects it lays on participants; ``result`` is what
     the narration tells (``effect``, ``label``, ``success``, ``did``, ``text``, ``fact``). A plan that is not
-    possible here is refused with its reason and changes nothing.
+    possible here is refused with its reason and changes nothing. Unless ``checked`` (an improvised success whose
+    roll already happened, :mod:`aidm_server.game_state.orchestration.improvised_facts`) its check is rolled.
     """
 
     actor = find_actor(dict(state), actor_id) or {}
@@ -1113,7 +1165,7 @@ def resolve_plan(state: Mapping[str, Any], *, actor_id: str, plan: Mapping[str, 
         subject_kind, subject = 'enemy', enemies[0]['record']
     zone_id = fight_zone(state) or (object_zone_id(state, entry.get('id'), zones) if entry else hero_zone_id(state, actor_id, zones))
     seed = f"plan:{state.get('sessionId')}:{turn_id}:{actor_id}:{effect}:{_text(plan.get('objectId'))}:{_text(plan.get('subjectId'))}"
-    check_spec = _check_spec(plan, affordance)
+    check_spec = _check_spec(plan, affordance) if checked else None
     rolled = _roll(state, actor_id, check_spec[0], dc=check_spec[1], seed=seed) if check_spec else None
     success = rolled is None or rolled.get('passed') is True
     change_id = stable_change_id(turn_id, EFFECT_CHANGE, actor_id, effect, _text(plan.get('objectId')), _text(plan.get('subjectId')), _text(plan.get('affordanceId')))
@@ -1267,6 +1319,8 @@ def _resolve_success(
             change[key] = deepcopy(authored[key])
     if _dicts(authored.get('affects')):
         change['affects'] = deepcopy(authored['affects'])
+    if _dicts(authored.get('givesItems')):
+        change['givesItems'] = deepcopy(authored['givesItems'])
     for condition in _strings(authored.get('conditions')):
         if subject.get('kind') == 'enemy' and in_fight:
             extra.append(
@@ -1400,7 +1454,8 @@ def effect_change_problem(state: Mapping[str, Any], change: Mapping[str, Any]) -
 
     if _text(change.get('source')) != EFFECT_SOURCE:
         return 'Only the engine resolves plans.'
-    if _text(change.get('effect')) not in EFFECTS:
+    # An improvised fact alone (W9-FREEFORM) is no effect.
+    if _text(change.get('effect')) not in EFFECTS and not _text(_dict(change.get('improvised')).get('text')):
         return 'Unknown effect.'
     if _text(change.get('locationId')) and _text(change.get('locationId')) != _text(_scene(state).get('locationId')):
         return 'The plan was made somewhere else.'
@@ -1514,8 +1569,12 @@ def apply_effect_change(state: dict[str, Any], change: Mapping[str, Any]) -> dic
     guard = _dict(change.get('guard'))
     if guard and not fighting(state):
         scene[GUARDS_KEY] = {**guards(state), _text(change.get('actorId')): deepcopy(guard)}
+    if _text(change.get('removesImprovised')):
+        drop_improvised_fact(scene, _text(change['removesImprovised']))
     for fact in _dicts(change.get('facts')):
         set_fact(scene, _text(fact.get('key')), _text(fact.get('text')))
+    if _dict(change.get('improvised')):
+        add_improvised_fact(scene, change['improvised'])
     if _text(change.get('startsClockId')):
         state[CLOCKS_STARTED_KEY] = list(dict.fromkeys([*_strings(state.get(CLOCKS_STARTED_KEY)), _text(change['startsClockId'])]))
     sync_location(state)
@@ -1585,8 +1644,8 @@ def consequence_changes(state: Mapping[str, Any], parent: Mapping[str, Any], spe
 
 
 def plan_followup_changes(state: dict[str, Any], applied: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """What follows one applied change: a plan's flags, dispositions, memory and Inspiration; an object action's
-    ``onFail``."""
+    """What follows one applied change: a plan's flags, dispositions, items, memory and Inspiration; an object
+    action's ``onFail``."""
 
     change_type = _text(applied.get('type'))
     if change_type == 'scene.interactable.action':
@@ -1600,6 +1659,14 @@ def plan_followup_changes(state: dict[str, Any], applied: Mapping[str, Any]) -> 
     reason = f"{_text(applied.get('label')) or 'A plan'}."
     spec = applied if applied.get('success') is True else _dict(applied.get('onFail'))
     changes = consequence_changes(state, applied, spec, hero_id=hero_id, reason=reason)
+    if applied.get('success') is True:
+        from aidm_server.game_state.orchestration.fight_stakes import given_items_changes
+
+        changes.extend(
+            given_items_changes(
+                state, parent_id=_text(applied.get('id')), turn_id=applied.get('turnId'), items=applied.get('givesItems'), hero_id=hero_id, source=EFFECT_SOURCE, reason=reason
+            )
+        )
     guard = _dict(applied.get('guard'))
     if applied.get('success') is True and guard.get('kind') == 'person':
         remembered = memory_change(state, hero_id=hero_id, npc_id=guard.get('targetId'), key='protected', turn_id=applied.get('turnId'))
@@ -1693,11 +1760,17 @@ def _object_on_fail_changes(state: dict[str, Any], applied: Mapping[str, Any]) -
 
 def effect_facts(applied_changes: Iterable[Mapping[str, Any]], *, actor_id: str) -> list[dict[str, Any]]:
     """The narration packet's ``effects``: each plan the hero resolved this turn (``effect``, ``label``, ``success``,
-    ``did``, ``text``, ``fact``, ``check``)."""
+    ``did``, ``text``, ``fact``, ``check``). An effect an improvised success brought is told by its ``Improvised —``
+    line."""
 
     facts = []
     for change in applied_changes:
-        if not isinstance(change, Mapping) or _text(change.get('type')) != EFFECT_CHANGE or change.get('consequence') is True:
+        if (
+            not isinstance(change, Mapping)
+            or _text(change.get('type')) != EFFECT_CHANGE
+            or change.get('consequence') is True
+            or change.get(FROM_IMPROVISED) is True
+        ):
             continue
         facts.append(
             {
@@ -1729,21 +1802,35 @@ IMPROVISED_SCRIPTED = {
     (True, False): '{hero} tries it. It comes to nothing.',
     (True, True): '{hero} manages it, for what it is worth.',
 }
+# A success that left a fact (W9-FREEFORM): the fact follows, unless it is the engine's own record of the words.
+IMPROVISED_DONE = {False: 'You manage it.', True: '{hero} manages it.'}
 
 
-def improvised_did(words: str, roll: Mapping[str, Any]) -> str:
-    """``Improvised — "<words>": Athletics 14 vs DC 12, success. The engine changed nothing.``"""
+def improvised_check(roll: Mapping[str, Any]) -> str:
+    """``Athletics 14 vs DC 12``: an improvised attempt's roll (the player's, or a fight action's check)."""
 
     skill = _text(roll.get('rule_type') or roll.get('skill')).replace('_', ' ').title() or 'Check'
     if skill.lower() in {'check', 'ability check'}:
         skill = _text(_dict(roll.get('ability')).get('key')).title() or 'Check'
-    outcome = 'success' if _text(roll.get('outcome')).lower() == 'success' else 'failure'
     dc = roll.get('dc') if isinstance(roll.get('dc'), int) else roll.get('task_dc')
-    against = f' vs DC {dc}' if isinstance(dc, int) else ''
-    return f'Improvised — "{_text(words)[:120]}": {skill} {roll.get("total")}{against}, {outcome}. The engine changed nothing.'
+    return f"{skill} {roll.get('total')}{f' vs DC {dc}' if isinstance(dc, int) else ''}"
 
 
-def improvised_line(*, success: bool, hero: str = '') -> str:
+def improvised_did(words: str, roll: Mapping[str, Any], *, fact: str = '') -> str:
+    """``Improvised — "<words>": Athletics 14 vs DC 12, success. The engine changed nothing.``; a success that left a
+    fact ends ``Now true here: <fact>``."""
+
+    outcome = 'success' if _text(roll.get('outcome')).lower() == 'success' else 'failure'
+    changed = f'Now true here: {_text(fact)}' if _text(fact) and outcome == 'success' else 'The engine changed nothing.'
+    return f'Improvised — "{_text(words)[:120]}": {improvised_check(roll)}, {outcome}. {changed}'
+
+
+def improvised_line(*, success: bool, hero: str = '', recorded: bool = False, fact: str = '') -> str:
+    """The scripted narrator's improvised attempt; a success that ``recorded`` a fact says it after ``You manage it.``
+    (``fact`` is '' for the engine's own record of the words)."""
+
+    if success and recorded:
+        return ' '.join(part for part in (IMPROVISED_DONE[bool(hero)].format(hero=hero), _text(fact)) if part)
     return IMPROVISED_SCRIPTED[(bool(hero), success)].format(hero=hero)
 
 

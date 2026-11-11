@@ -2,8 +2,8 @@
 
 Through the real socket pipeline on the Play Now adventure, in Safe Mode unless an AI narrator is named
 (``tests/ai_narrator.py``, its pre-narration helper a counting fake). Clocks, nudges, chapter breaks, decision lines,
-stakes and leads are written into the session by hand: the Play Now pack does not author them (the Lantern Post
-chapter will), and stakes and leads come from fights that are another task's. Seeded dice as in
+stakes and leads are written into the session by hand: the Lantern Post chapter's own clocks, nudges and chapter break
+(``tests/test_lantern_post_chapter.py``) are taken out first, so each test has only what it writes. Seeded dice as in
 ``tests/test_where_everyone_stands.py``.
 """
 
@@ -63,9 +63,25 @@ def _note(table: TalkTable) -> dict | None:
     return ((table.last()['pipeline'].get('dmContextPacket') or {}).get('narration') or {}).get(director.NOTE_KEY)
 
 
+def _without_the_inns_own_pacing(snapshot: dict) -> None:
+    """The Lantern Post without its chapter's clocks, nudges and chapter break."""
+
+    _location(snapshot).pop('clocks', None)
+    for encounter in snapshot['campaignPack']['catalog']['encounters']:
+        encounter.pop('clocks', None)
+    for entry in [*_location(snapshot)['interactables'], *snapshot['currentScene']['interactables']]:
+        entry.pop('nudge', None)
+    for npc in snapshot['campaignPack']['catalog']['npcs']:
+        for topic in npc.get('topics') or []:
+            topic.pop('nudge', None)
+    for checkpoint in snapshot['campaignPack']['checkpoints']:
+        checkpoint.pop('chapterBreak', None)
+
+
 @pytest.fixture()
 def solo(app, client, socketio, safe_mode):
     table = TalkTable(app, client, socketio, party=False)
+    table.edit(_without_the_inns_own_pacing)
     yield table
     table.close()
 
@@ -73,6 +89,7 @@ def solo(app, client, socketio, safe_mode):
 @pytest.fixture()
 def party(app, client, socketio, safe_mode):
     table = TalkTable(app, client, socketio, party=True)
+    table.edit(_without_the_inns_own_pacing)
     yield table
     table.close()
 

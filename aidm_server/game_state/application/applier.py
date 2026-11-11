@@ -64,7 +64,13 @@ from aidm_server.game_state.leveling import sync_actor_level_for_xp, sync_stats_
 from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, apply_talk_change, talk_followup_changes
 from aidm_server.game_state.orchestration.fight_stakes import STAKE_CHANGE, apply_stake_change, stake_followup_changes
 from aidm_server.game_state.orchestration.hero_threads import HERO_CHANGE_TYPES, apply_hero_change
-from aidm_server.game_state.orchestration.scene_plans import EFFECT_CHANGE, apply_effect_change, clear_transient_facts, plan_followup_changes
+from aidm_server.game_state.orchestration.scene_plans import (
+    EFFECT_CHANGE,
+    IMPROVISED_KEY,
+    apply_effect_change,
+    clear_transient_facts,
+    plan_followup_changes,
+)
 from aidm_server.game_state.quest_engine import derive_quest_changes
 from aidm_server.game_state.validation.validator import supported_scene_type
 from aidm_server.game_state.zones import (
@@ -1261,8 +1267,9 @@ SCENE_LOCAL_SCALAR_FIELDS = (
     'musicTag',
     'updatedAtTurn',
 )
-# A place's scene facts and zone conditions (W9-SCENE) are kept with it and restored on return.
-SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items', 'interactables', 'hazards', VISITED_ZONES_KEY, 'facts')
+# A place's scene facts, the records of those an improvised success left, and its zone conditions (W9-SCENE,
+# W9-FREEFORM) are kept with it and restored on return.
+SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items', 'interactables', 'hazards', VISITED_ZONES_KEY, 'facts', IMPROVISED_KEY)
 SCENE_LOCAL_DICT_FIELDS = ('playerPositions', 'playerZones', 'characterPositions', 'characterZones', 'factKeys', 'zoneConditions')
 PUBLIC_AUTHORED_LOCATION_FIELDS = (
     'region',
@@ -1634,6 +1641,7 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
             'characterZones': deepcopy(target_state.get('characterZones')) if isinstance(target_state.get('characterZones'), dict) else {},
             VISITED_ZONES_KEY: _string_list(target_state.get(VISITED_ZONES_KEY)),
             'facts': _string_list(target_state.get('facts')),
+            IMPROVISED_KEY: [deepcopy(record) for record in target_state.get(IMPROVISED_KEY) or [] if isinstance(record, dict)],
             'factKeys': deepcopy(target_state.get('factKeys')) if isinstance(target_state.get('factKeys'), dict) else {},
             'zoneConditions': deepcopy(target_state.get('zoneConditions')) if isinstance(target_state.get('zoneConditions'), dict) else {},
         }

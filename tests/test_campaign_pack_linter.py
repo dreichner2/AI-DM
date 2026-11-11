@@ -192,6 +192,7 @@ def test_road_of_unremembered_kings_example_has_clean_authoring_surface(app):
             'enemyId': 'enemy_ashmarked_cutthroats',
             'count': 2,
             'role': 'opening_theft_cell',
+            'minHp': 14,
         }
     ]
 

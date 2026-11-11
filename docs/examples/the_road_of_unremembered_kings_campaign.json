@@ -134,7 +134,8 @@
               "clue_erased_caravan_ledger"
             ]
           },
-          "zoneId": "inn_yard"
+          "zoneId": "inn_yard",
+          "nudge": "The ledger is still open on the bench, its pages lifting in the wet wind."
         },
         {
           "id": "inn_drivers_bench",
@@ -170,7 +171,12 @@
               "description": "A flat iron key on a greasy leather thong, its bow stamped with a wagon wheel."
             }
           ],
-          "zoneId": "inn_yard"
+          "zoneId": "inn_yard",
+          "setsFlags": {
+            "search": {
+              "bench_key_found": true
+            }
+          }
         },
         {
           "id": "inn_lead_wagon",
@@ -193,7 +199,12 @@
               "clue_ash_marks"
             ]
           },
-          "zoneId": "inn_yard"
+          "zoneId": "inn_yard",
+          "setsFlags": {
+            "search": {
+              "strongbox_found": true
+            }
+          }
         },
         {
           "id": "inn_wagon_strongbox",
@@ -249,6 +260,9 @@
           "setsFlags": {
             "search": {
               "stone_fragment_recovered": true
+            },
+            "break": {
+              "strongbox_broken": true
             }
           },
           "discoversClueIds": {
@@ -265,7 +279,19 @@
               }
             ]
           },
-          "zoneId": "inn_yard"
+          "zoneId": "inn_yard",
+          "onFail": {
+            "break": {
+              "text": "The lid holds, and the crack of your boot on iron carries across the whole yard. Osric is already walking toward you.",
+              "affects": [
+                {
+                  "npcId": "npc_osric_hale",
+                  "disposition": -1
+                }
+              ],
+              "noRetry": false
+            }
+          }
         },
         {
           "id": "inn_wagon_bell",
@@ -288,7 +314,27 @@
           "actionText": {
             "use": "You strike the bell. It gives one low note that hangs over the yard longer than it should. Far out on the dark hills a pale light kindles, then another, as if something on the old road had been waiting to answer."
           },
-          "zoneId": "inn_yard"
+          "zoneId": "inn_yard",
+          "tags": [
+            "noise"
+          ],
+          "affordances": [
+            {
+              "id": "ring_for_watch",
+              "effect": "distract",
+              "label": "Ring the bell for the watch",
+              "keywords": [
+                "bell",
+                "ring",
+                "watch",
+                "alarm"
+              ],
+              "cost": "action",
+              "inFight": true,
+              "outsideFight": false,
+              "once": true
+            }
+          ]
         },
         {
           "id": "inn_marked_mare",
@@ -303,6 +349,260 @@
           "description": "The off-side mare of the caravan's lead pair, dappled grey and rain-dark. On her neck a white dust handprint, five fingers spread, as if someone had patted her and told her to stand. She is not afraid; she stands easy, ears forward, as calm as the rest of the team.",
           "playerDescription": "The off-side mare of the caravan's lead pair stands quiet in her stall, rain still dark on her grey coat.",
           "zoneId": "inn_stable"
+        },
+        {
+          "id": "inn_yard_gate",
+          "name": "The Yard Gate",
+          "kind": "object",
+          "tags": [
+            "barrier",
+            "exit"
+          ],
+          "playerDescription": "A two-leaved gate onto the north lane, standing open, its bar leaning against the post.",
+          "disabledActions": [
+            "inspect"
+          ],
+          "affordances": [
+            {
+              "id": "bar_gate",
+              "effect": "obstruct",
+              "label": "Shut and bar the yard gate",
+              "keywords": [
+                "gate",
+                "bar",
+                "shut",
+                "close"
+              ],
+              "check": {
+                "skill": "athletics",
+                "dc": 10
+              },
+              "cost": "action",
+              "inFight": true,
+              "outsideFight": true,
+              "once": true,
+              "result": {
+                "fact": "The yard gate is barred.",
+                "stakes": {
+                  "way_out": "blocked"
+                },
+                "text": "You put your shoulder to the gate and drop the bar. Nobody is leaving that way in a hurry."
+              },
+              "failResult": {
+                "text": "The gate drags in the mud and will not close."
+              }
+            }
+          ],
+          "zoneId": "inn_yard"
+        },
+        {
+          "id": "inn_wagon_harness",
+          "name": "The Team in the Traces",
+          "kind": "object",
+          "tags": [
+            "rope",
+            "animal"
+          ],
+          "playerDescription": "Four horses still harnessed to the lead wagon, steaming in the rain.",
+          "disabledActions": [
+            "inspect"
+          ],
+          "affordances": [
+            {
+              "id": "cut_team_loose",
+              "effect": "separate",
+              "label": "Cut the team loose",
+              "keywords": [
+                "harness",
+                "traces",
+                "team",
+                "horses",
+                "cut",
+                "loose"
+              ],
+              "cost": "action",
+              "inFight": true,
+              "outsideFight": false,
+              "once": true,
+              "inspires": "quick thinking",
+              "result": {
+                "fact": "The wagon team is loose in the yard.",
+                "setsFlags": {
+                  "team_loose": true
+                },
+                "text": "Two strokes and the traces part. The team goes through the yard like a wall falling over."
+              }
+            }
+          ],
+          "zoneId": "inn_yard"
+        },
+        {
+          "id": "inn_yard_lantern",
+          "name": "The Yard Lantern",
+          "kind": "object",
+          "tags": [
+            "light",
+            "fragile"
+          ],
+          "playerDescription": "A storm lantern on an iron hook by the lead wagon, the only good light in the yard.",
+          "disabledActions": [
+            "inspect"
+          ],
+          "affordances": [
+            {
+              "id": "lantern_into_hedge",
+              "effect": "expose",
+              "label": "Throw the lantern into the hedge",
+              "keywords": [
+                "lantern",
+                "throw",
+                "hedge",
+                "lane"
+              ],
+              "cost": "action",
+              "once": true,
+              "requires": {
+                "flags": {
+                  "yard_lantern_out": false
+                }
+              },
+              "result": {
+                "fact": "The hedge is burning; the lane is lit.",
+                "setsFlags": {
+                  "lookout_seen": true
+                },
+                "text": "The lantern bursts in the hedge and the whole lane jumps into view: three horses, and a third man already swinging into the saddle."
+              }
+            },
+            {
+              "id": "snuff_lantern",
+              "effect": "destroy",
+              "label": "Put out the yard lantern",
+              "keywords": [
+                "lantern",
+                "snuff",
+                "douse",
+                "dark"
+              ],
+              "cost": "action",
+              "once": true,
+              "requires": {
+                "flags": {
+                  "lookout_seen": false
+                }
+              },
+              "result": {
+                "fact": "The yard is dark.",
+                "setsFlags": {
+                  "yard_lantern_out": true
+                },
+                "text": "The light dies. For a moment everyone in the yard is only a sound."
+              }
+            }
+          ],
+          "zoneId": "inn_yard"
+        },
+        {
+          "id": "inn_lane_horses",
+          "name": "Horses in the Lane",
+          "kind": "object",
+          "hidden": true,
+          "allowedActions": [
+            "inspect"
+          ],
+          "actionLabels": {
+            "inspect": "Look at the horses in the lane"
+          },
+          "description": "Three horses stand saddled in the lane beyond the hedge, ash-marked blankets under their saddles, all of them facing north. One saddle is empty of bags: whoever was to ride it expected to be carrying something.",
+          "playerDescription": "Three saddled horses in the north lane, beyond the hedge.",
+          "zoneId": "inn_yard"
+        },
+        {
+          "id": "inn_wagon_canvas",
+          "name": "The Wagon Canvas",
+          "kind": "object",
+          "tags": [
+            "cover"
+          ],
+          "disabledActions": [
+            "inspect"
+          ],
+          "affordances": [
+            {
+              "id": "canvas_down",
+              "effect": "restrain",
+              "label": "Drag the canvas down over him",
+              "keywords": [
+                "canvas",
+                "tarp",
+                "sheet",
+                "drag",
+                "pull"
+              ],
+              "check": {
+                "skill": "athletics",
+                "dc": 12
+              },
+              "cost": "action",
+              "inFight": true,
+              "outsideFight": false,
+              "target": "enemy",
+              "inspires": "quick thinking",
+              "result": {
+                "text": "Wet canvas comes down on him like a thrown net."
+              },
+              "failResult": {
+                "text": "The lashings hold. The canvas only flaps."
+              }
+            }
+          ],
+          "zoneId": "inn_yard"
+        },
+        {
+          "id": "inn_crowd",
+          "name": "The Crowd",
+          "kind": "object",
+          "tags": [
+            "crowd"
+          ],
+          "playerDescription": "Half the settlement, wet through, watching.",
+          "disabledActions": [
+            "inspect"
+          ],
+          "guards": "inn_yard_gate",
+          "affordances": [
+            {
+              "id": "crowd_hold_gate",
+              "effect": "obstruct",
+              "label": "Call on the crowd to hold the gate",
+              "keywords": [
+                "crowd",
+                "people",
+                "everyone",
+                "hold",
+                "gate"
+              ],
+              "check": {
+                "skill": "persuasion",
+                "dc": 13
+              },
+              "cost": "action",
+              "inFight": true,
+              "outsideFight": false,
+              "once": true,
+              "result": {
+                "fact": "The crowd has closed the gate with their bodies.",
+                "stakes": {
+                  "way_out": "blocked"
+                },
+                "text": "\"Hold the gate!\" For a breath nobody moves. Then the smith does, and the rest follow him."
+              },
+              "failResult": {
+                "text": "They look at one another, and at the knives, and stay where they are."
+              }
+            }
+          ],
+          "zoneId": "inn_yard"
         }
       ],
       "zones": [
@@ -336,7 +636,32 @@
           "description": "Straw, warm horse-breath and lamplight: the caravan's team stands quiet in the stalls, far calmer than horses that came off that road should be."
         }
       ],
-      "startZoneId": "inn_yard"
+      "startZoneId": "inn_yard",
+      "clocks": [
+        {
+          "id": "clock_hedge_watchers",
+          "advanceOn": {
+            "flags": [
+              "caravan_ledger_read",
+              "bench_key_found",
+              "strongbox_found"
+            ]
+          },
+          "steps": [
+            {
+              "text": "Out past the hedge a horse stamps, where no horse should be standing."
+            },
+            {
+              "text": "Tovin has gone very still. \"There's someone in the lane,\" he says, without moving his lips.",
+              "effects": {
+                "setsFlags": {
+                  "tovin_saw_the_lane": true
+                }
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": "loc_old_north_road",
@@ -1238,7 +1563,86 @@
           },
           "line": "She listens to all of it with her hands flat on the counter. When you finish she nods once, and sets a place at the table that she does not explain.",
           "effects": {
-            "keepsPromise": "promised_mara_word"
+            "keepsPromise": "promised_mara_word",
+            "setsFlags": {
+              "maras_word_kept": true
+            }
+          }
+        },
+        {
+          "id": "mara_lamp",
+          "label": "Ask Mara for a lamp for the road",
+          "kind": "say",
+          "keywords": [
+            "lamp"
+          ],
+          "requires": {
+            "dispositionAtLeast": 1,
+            "flags": {
+              "theft_resolved": true
+            }
+          },
+          "line": "She takes a storm lamp down from behind the counter, trims it, and puts it in your hands without a word. It was somebody's.",
+          "effects": {
+            "givesItems": [
+              {
+                "id": "maras_storm_lamp",
+                "name": "Mara's Storm Lamp",
+                "type": "quest",
+                "quantity": 1
+              }
+            ],
+            "setsFlags": {
+              "carries_maras_lamp": true
+            }
+          }
+        },
+        {
+          "id": "mara_owe",
+          "label": "Ask what you owe her",
+          "kind": "say",
+          "keywords": [
+            "owe",
+            "debt"
+          ],
+          "requires": {
+            "flags": {
+              "owes_mara": true,
+              "promised_mara_word": false
+            }
+          },
+          "line": "\"A quiet night. And word of the drivers, when you have it. That's the price.\"",
+          "effects": {
+            "promise": {
+              "id": "promised_mara_word",
+              "keptText": "You kept your word to Mara Reedwake.",
+              "brokenText": "You never did bring Mara Reedwake word.",
+              "openText": "Mara Reedwake is still waiting for word."
+            },
+            "setsFlags": {
+              "owes_mara": false
+            }
+          }
+        },
+        {
+          "id": "mara_owe_word_given",
+          "label": "Ask what you owe her",
+          "kind": "say",
+          "keywords": [
+            "owe",
+            "debt"
+          ],
+          "requires": {
+            "flags": {
+              "owes_mara": true,
+              "promised_mara_word": true
+            }
+          },
+          "line": "\"A quiet night. And word of the drivers, when you have it. That's the price.\"",
+          "effects": {
+            "setsFlags": {
+              "owes_mara": false
+            }
           }
         }
       ],
@@ -1266,7 +1670,22 @@
       ],
       "ifSkipped": "Move her key information to a stablehand, the caravan ledger, a frightened traveler, or road signs on the first journey.",
       "gmNotes": "Do not make Mara helpless. She is not a combatant, but she is competent, respected, and emotionally grounded.",
-      "zoneId": "inn_common_room"
+      "zoneId": "inn_common_room",
+      "callbacks": [
+        {
+          "id": "mara_watches_the_door",
+          "when": {
+            "remembers": "promised",
+            "on": "arrival",
+            "atLocationId": "loc_lantern_post_inn",
+            "flags": {
+              "promised_mara_word": true,
+              "maras_word_kept": false
+            }
+          },
+          "text": "Mara looks up as you come in, then at the door behind you, then back at her counter."
+        }
+      ]
     },
     {
       "id": "npc_tovin_bell",
@@ -1320,7 +1739,8 @@
             "horse",
             "handprint"
           ],
-          "line": "\"The off-leader's got a handprint on her neck. White dust, five fingers. Like somebody patted her and told her to stand.\""
+          "line": "\"The off-leader's got a handprint on her neck. White dust, five fingers. Like somebody patted her and told her to stand.\"",
+          "nudge": "Tovin keeps glancing toward the stable."
         },
         {
           "id": "tovin_bench",
@@ -1338,6 +1758,25 @@
             "bell"
           ],
           "line": "\"It rang three times before they stopped. Not a rattle. Rung. Like someone was announcing them.\""
+        },
+        {
+          "id": "tovin_lane",
+          "label": "the lane",
+          "keywords": [
+            "lane"
+          ],
+          "requires": {
+            "flags": {
+              "tovin_saw_the_lane": true
+            }
+          },
+          "line": "\"Two of them. Since before you came. They've been waiting for somebody to open that box for them.\"",
+          "effects": {
+            "setsFlags": {
+              "tovin_named_the_lane": true
+            },
+            "disposition": 1
+          }
         },
         {
           "id": "tovin_gently",
@@ -1375,7 +1814,8 @@
                 "line": "Mara Reedwake saw how you spoke to the boy."
               }
             ]
-          }
+          },
+          "inspires": "a kindness"
         },
         {
           "id": "tovin_lean",
@@ -1406,7 +1846,8 @@
               }
             ],
             "setsFlags": {
-              "tovin_button_revealed": true
+              "tovin_button_revealed": true,
+              "tovin_leaned_on": true
             },
             "disposition": -1,
             "affects": [
@@ -1415,6 +1856,30 @@
                 "disposition": -1,
                 "line": "Mara Reedwake will remember how you spoke to the boy."
               }
+            ]
+          }
+        },
+        {
+          "id": "tovin_milestone",
+          "label": "Ask Tovin to show you the first milestone",
+          "kind": "say",
+          "keywords": [
+            "milestone"
+          ],
+          "requires": {
+            "dispositionAtLeast": 1,
+            "flags": {
+              "theft_resolved": true,
+              "tovin_hurt": false
+            }
+          },
+          "line": "\"I can do that. I can do that much.\" He is already getting his coat.",
+          "effects": {
+            "setsFlags": {
+              "tovin_guides": true
+            },
+            "discoversLocationIds": [
+              "loc_ridge_and_culvert_paths"
             ]
           }
         }
@@ -1637,6 +2102,60 @@
               }
             ],
             "disposition": 1
+          }
+        },
+        {
+          "id": "osric_post_watch",
+          "label": "Ask him to post the watch at the gate",
+          "kind": "say",
+          "keywords": [
+            "watch"
+          ],
+          "requires": {
+            "dispositionAtLeast": 0,
+            "flags": {
+              "tovin_named_the_lane": true
+            }
+          },
+          "line": "\"…Two men. At the gate. Until I say otherwise.\"",
+          "effects": {
+            "setsFlags": {
+              "watch_posted": true
+            }
+          }
+        },
+        {
+          "id": "osric_open_yard",
+          "label": "Ask him to open the yard",
+          "kind": "say",
+          "keywords": [
+            "yard",
+            "chain",
+            "chained"
+          ],
+          "requires": {
+            "flags": {
+              "yard_chained": true
+            }
+          },
+          "check": {
+            "skill": "persuasion",
+            "ability": "charisma",
+            "dc": 12,
+            "dcWhen": [
+              {
+                "flags": {
+                  "mara_trusts_party": true
+                },
+                "dc": 9
+              }
+            ]
+          },
+          "line": "Osric looks at the bruises on you for a while. \"Go on, then. They've taken what there was to take.\"",
+          "effects": {
+            "setsFlags": {
+              "yard_chained": false
+            }
           }
         },
         {
@@ -3833,12 +4352,44 @@
         {
           "enemyId": "enemy_ashmarked_cutthroats",
           "count": 2,
-          "role": "opening_theft_cell"
+          "role": "opening_theft_cell",
+          "minHp": 14
         }
       ],
       "description": "As the party investigates the empty caravan, ashmarked cutthroats attempt to steal the road-stone fragment or silence a witness.",
-      "setup": "Rain thickens, the lantern tower gutters, and one of the wagon doors creaks open though nobody stands beside it.",
-      "stakes": "If the fragment is stolen, it appears later in enemy hands, raising the ward corruption level.",
+      "setup": "Rain thickens, the lantern tower gutters, and men come over the hedge at a run: straight for the strongbox, and for the gate.",
+      "stakes": [
+        {
+          "id": "fragment",
+          "name": "the road-stone fragment",
+          "kind": "item",
+          "itemId": "road_stone_fragment"
+        },
+        {
+          "id": "witness",
+          "name": "Tovin Bell",
+          "kind": "person",
+          "npcId": "npc_tovin_bell",
+          "when": {
+            "flagKey": "tovin_named_the_lane",
+            "equals": true
+          }
+        },
+        {
+          "id": "way_out",
+          "name": "the yard gate",
+          "kind": "route",
+          "objectId": "inn_yard_gate",
+          "startWhen": [
+            {
+              "flags": {
+                "watch_posted": true
+              },
+              "state": "blocked"
+            }
+          ]
+        }
+      ],
       "completion": {
         "anyOf": [
           "defeat",
@@ -3901,7 +4452,110 @@
           ]
         }
       },
-      "zoneId": "inn_yard"
+      "zoneId": "inn_yard",
+      "minEnemies": 2,
+      "enemyGoal": {
+        "type": "take_and_flee",
+        "stakeId": "fragment",
+        "routeStakeId": "way_out"
+      },
+      "secondaryGoal": {
+        "type": "silence",
+        "stakeId": "witness"
+      },
+      "results": [
+        {
+          "when": {
+            "stakes": {
+              "fragment": "secured"
+            },
+            "captives": true
+          },
+          "setsFlags": {
+            "cutthroat_captured": true,
+            "theft_resolved": true
+          },
+          "lead": "The man you took alive has things to say.",
+          "affects": [
+            {
+              "npcId": "npc_osric_hale",
+              "disposition": 1,
+              "line": "\"A live man answers questions,\" Osric says, and it is almost approval."
+            }
+          ]
+        },
+        {
+          "when": {
+            "stakes": {
+              "fragment": "secured"
+            },
+            "captives": false
+          },
+          "setsFlags": {
+            "theft_resolved": true
+          },
+          "lead": "They had horses waiting in the north lane."
+        },
+        {
+          "when": {
+            "stakes": {
+              "fragment": "taken"
+            }
+          },
+          "setsFlags": {
+            "fragment_stolen": true,
+            "theft_resolved": true
+          },
+          "lead": "The fragment went north with the man who took it. He will not stop before the waystation.",
+          "text": "The gate bangs. Hooves in the lane, going north, and then only the rain."
+        },
+        {
+          "when": {
+            "stakes": {
+              "witness": "hurt"
+            }
+          },
+          "setsFlags": {
+            "tovin_hurt": true
+          },
+          "text": "Tovin is carried into the common room, grey-faced and silent."
+        }
+      ],
+      "onDefeat": {
+        "wakeZoneId": "inn_common_room",
+        "text": "You wake on the common-room floor with Mara's coat under your head and the taste of rain and iron. \"I dragged you in myself,\" she says. \"They took what they came for. And Osric has the yard chained.\"",
+        "setsFlags": {
+          "fragment_stolen": true,
+          "yard_chained": true,
+          "owes_mara": true,
+          "theft_resolved": true,
+          "woke_on_maras_floor": true
+        },
+        "stakes": {
+          "fragment": "taken"
+        }
+      },
+      "clocks": [
+        {
+          "id": "clock_hedge_watchers_strike",
+          "startWhen": {
+            "flags": {
+              "tovin_saw_the_lane": true
+            }
+          },
+          "advanceOn": {
+            "everyTurnsAfterStart": 7
+          },
+          "steps": [
+            {
+              "text": "They are done waiting.",
+              "effects": {
+                "startsEncounterId": "enc_empty_caravan_pressure"
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": "enc_pale_lantern_detour",
@@ -3958,7 +4612,18 @@
         "xp": 150,
         "gp": 20
       },
-      "zoneId": "road_crown"
+      "zoneId": "road_crown",
+      "adjustments": [
+        {
+          "when": {
+            "flagKey": "carries_maras_lamp",
+            "equals": true
+          },
+          "enemyId": "enemy_pale_lanterns",
+          "hpMultiplier": 0.75,
+          "text": "Mara's lamp burns steady, and the pale lights will not come inside its ring."
+        }
+      ]
     },
     {
       "id": "enc_waystation_ambush",
@@ -4087,7 +4752,43 @@
           ]
         }
       },
-      "zoneId": "ws_court"
+      "zoneId": "ws_court",
+      "adjustments": [
+        {
+          "when": {
+            "flagKey": "fragment_stolen",
+            "equals": true
+          },
+          "text": "One of them is the man from the yard."
+        }
+      ],
+      "results": [
+        {
+          "when": {
+            "end": [
+              "victory",
+              "surrender"
+            ],
+            "flags": {
+              "fragment_stolen": true
+            }
+          },
+          "givesItems": [
+            {
+              "id": "road_stone_fragment",
+              "name": "Pale Road-Stone Fragment",
+              "type": "quest",
+              "quantity": 1,
+              "description": "A palm-sized chip of white road-stone, cool as river water, cut with half a name-rune and fine lines like a map of roads."
+            }
+          ],
+          "setsFlags": {
+            "fragment_recovered": true,
+            "fragment_stolen": false
+          },
+          "text": "It is in his saddlebag, wrapped in the same oiled wool."
+        }
+      ]
     },
     {
       "id": "enc_roadwarden_judgment",
@@ -4538,9 +5239,6 @@
         "clue_tovin_silver_button"
       ],
       "completeWhen": {
-        "objectiveIds": [
-          "obj_investigate_empty_caravan"
-        ],
         "locationIds": [
           "loc_old_north_road",
           "loc_ridge_and_culvert_paths",
@@ -4560,7 +5258,96 @@
         "cp_02_moving_road"
       ],
       "rejoinTargetCheckpointId": "cp_02_moving_road",
-      "gmNotes": "If the players skip the inn, move the fragment to a milestone or enemy agent. If cutthroats steal it, let the party continue but raise ward corruption."
+      "gmNotes": "If the players skip the inn, move the fragment to a milestone or enemy agent. If cutthroats steal it, let the party continue but raise ward corruption.",
+      "chapterBreak": true,
+      "decisionLines": [
+        {
+          "when": {
+            "flags": {
+              "promised_mara_word": true
+            }
+          },
+          "text": "You gave Mara Reedwake your word."
+        },
+        {
+          "when": {
+            "flags": {
+              "tovin_leaned_on": true
+            }
+          },
+          "text": "You leaned on the stable-boy until he gave it up."
+        },
+        {
+          "when": {
+            "flags": {
+              "tovin_leaned_on": false
+            },
+            "remembers": {
+              "npcId": "npc_tovin_bell",
+              "key": "threatened"
+            }
+          },
+          "text": "You leaned on the stable-boy until he gave it up."
+        },
+        {
+          "when": {
+            "remembers": {
+              "npcId": "npc_osric_hale",
+              "key": "claimed_authority"
+            }
+          },
+          "text": "You claimed an authority you do not hold."
+        },
+        {
+          "when": {
+            "flags": {
+              "strongbox_broken": true
+            }
+          },
+          "text": "You broke the strongbox against the reeve's word."
+        },
+        {
+          "when": {
+            "flags": {
+              "cutthroat_captured": true
+            }
+          },
+          "text": "You took the cutthroat alive."
+        },
+        {
+          "when": {
+            "flags": {
+              "fragment_stolen": true
+            }
+          },
+          "text": "The fragment went north without you."
+        },
+        {
+          "when": {
+            "remembers": {
+              "npcId": "npc_tovin_bell",
+              "key": "protected"
+            }
+          },
+          "text": "You stood over Tovin when the knives came out."
+        },
+        {
+          "when": {
+            "flags": {
+              "team_loose": true
+            }
+          },
+          "text": "You turned the settlement's horses loose."
+        },
+        {
+          "when": {
+            "flags": {
+              "woke_on_maras_floor": true
+            }
+          },
+          "text": "You woke on Mara's floor, in her debt."
+        }
+      ]
     },
     {
       "id": "cp_02_moving_road",
@@ -5478,6 +6265,15 @@
         "ending": "ward_claimed"
       },
       "text": "{name} kneels with the rest as you pass. You tell yourself that is not why you did it."
+    },
+    {
+      "id": "tie_duty_theft",
+      "kind": "desire",
+      "desire": "keep_duty",
+      "at": {
+        "encounterId": "enc_empty_caravan_pressure"
+      },
+      "text": "The oath you never finished was about nights like this one."
     }
   ]
 }

@@ -18,7 +18,7 @@ from aidm_server.combat.legal_actions import legal_combat_actions_for_player, ma
 from aidm_server.combat.maneuvers import grapple_holds
 from aidm_server.database import db
 from aidm_server.game_state.extraction.free_text_actions import fight_words
-from aidm_server.models import DmTurn, Player, Session, safe_json_loads
+from aidm_server.models import DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.narration_hygiene import clean_ai_narration
 from aidm_server.scripted_narrator import engine_turn_line
 from tests.ai_narrator import ENGINE_BRIEF_RE, ai_narration
@@ -50,6 +50,21 @@ PALADIN = {
 INITIATIVE = {'Thalion': 20, 'Corin Ashby': 15}
 
 
+def _one_cutthroat(app, session_id: int) -> None:
+    """The caravan fight as these tests stage it: one cutthroat, fighting for nothing but itself. The Lantern Post
+    chapter's floors, stakes and goals for it are ``tests/test_lantern_post_chapter.py``'s."""
+
+    with app.app_context():
+        session = db.session.get(Session, session_id)
+        snapshot = safe_json_loads(session.state_snapshot, {})
+        encounter = next(record for record in snapshot['campaignPack']['catalog']['encounters'] if record['id'] == 'enc_empty_caravan_pressure')
+        for key in ('minEnemies', 'stakes', 'enemyGoal', 'secondaryGoal', 'results', 'onDefeat'):
+            encounter.pop(key, None)
+        encounter['enemyGroups'][0].pop('minHp', None)
+        session.state_snapshot = safe_json_dumps(snapshot, {})
+        db.session.commit()
+
+
 class FightTable:
     """Two browsers at the Play Now table, the caravan cutthroat's fight under way."""
 
@@ -74,6 +89,7 @@ class FightTable:
             self.sockets[name] = socket_client
         self.drain()
         self.sent = 0
+        _one_cutthroat(app, self.ids['session_id'])
         self.operator([{'type': 'combat.start', 'campaignPackEncounterId': 'enc_empty_caravan_pressure', 'combat': {}}])
 
     def drain(self) -> None:
@@ -253,7 +269,8 @@ def test_the_owners_fight_replayed_tackle_yield_captive_questions_and_leaving_it
         "\"The road. Lately it don't take you where you're going. It takes you where it wants,\" the ashmarked cutthroat tells Thalion.",
         '"We were paid in ash-marked coin to bring names, ledgers and stone. I never saw who paid," the ashmarked cutthroat says, voice low.',
         "\"There's a man they call the Scribe. He don't want the road dead. He wants it to answer to him,\" the ashmarked cutthroat says, voice low.",
-        'The ashmarked cutthroat glares and says nothing more the party can use.',
+        # Four quiet turns at the inn bring the Lantern Post's nudge.
+        'The ashmarked cutthroat glares and says nothing more the party can use.\n\nThe ledger is still open on the bench, its pages lifting in the wet wind.',
     ]
 
     table.send('Thalion', 'The party travels to The Old North Road.', {'kind': 'travel', 'source': 'scene_panel', 'location': {'id': 'loc_old_north_road', 'name': 'The Old North Road'}})
@@ -790,6 +807,7 @@ def test_alone_the_hero_is_spoken_to(app, client, socketio, safe_mode, monkeypat
     socket_client = socketio.test_client(app, flask_test_client=app.test_client())
     socket_client.emit('join_session', {'session_id': ids['session_id'], 'player_id': ids['player_id'], 'workspace_id': ids['workspace_id']})
     socket_client.get_received()
+    _one_cutthroat(app, ids['session_id'])
     started = client.post(
         f"/api/sessions/{ids['session_id']}/combat/apply-state-changes",
         json={'changes': [{'type': 'combat.start', 'campaignPackEncounterId': 'enc_empty_caravan_pressure', 'combat': {}}]},

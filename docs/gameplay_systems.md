@@ -274,7 +274,9 @@ list that reads a message for a roll is not consulted:
   costs the action and rolls the better of Strength (Athletics) or Dexterity
   (Acrobatics) against DC 12; on a success against a named (or the only) enemy
   that enemy is `off_balance` until the end of its next turn (its next attack
-  has disadvantage). Its result is in the turn's "Did" and a check beat, and the
+  has disadvantage); in a pack adventure a success also leaves a lasting fact
+  about the place (`Improvised attempts leave facts`, under Plans and Stakes).
+  Its result is in the turn's "Did" and a check beat, and the
   narration tells what the hero tried from that result; a failed attempt says
   the hero tries (`Thalion tries to kick the lantern at it, but it does not come
   off.`), as every failed attempt does (`You try to break the strongbox open. It
@@ -1332,10 +1334,12 @@ Engine: `game_state/orchestration/scene_plans.py` (plans) and
   roll is asked for and the line is `You see no saddle cache here.` (`Arden Vale
   sees no …` in party play; a model is told `Did: nothing — the hero finds no
   such thing in sight.`).
-- An improvised attempt outside a fight (the rules-hint roll) changes nothing:
-  the scripted narrator says `You try it. It comes to nothing.` or `You manage
-  it, for what it is worth.`; a model is given `Improvised — "<words>": Athletics
-  19 vs DC 14, success. The engine changed nothing.` and rule 20, and its
+- An improvised attempt outside a fight (the rules-hint roll) never finds, opens
+  or takes anything: a failure is told `You try it. It comes to nothing.`; a
+  success leaves one lasting fact about the place (below, `Improvised attempts
+  leave facts`), or, when the engine refuses the fact, `You manage it, for what
+  it is worth.` and, for a model, `Improvised — "<words>": Athletics 19 vs DC 14,
+  success. The engine changed nothing.`. A model is given rule 20, and the
   narration is not read for state (reason `improvised`).
 - A narrating model is told a plan under `Did` (`Effect — obstruct: the yard
   gate is barred (Athletics 19 vs DC 10)`), with rule 19 (`Tell what the plan
@@ -1348,6 +1352,64 @@ Engine: `game_state/orchestration/scene_plans.py` (plans) and
 - Every check a plan rolls is a roll card (`storyRolls`), as are a fight's
   clearing, grabbing past a guard and wresting (`against: {"kind":
   "Athletics"}` for a contest) and a conversation's checks.
+
+### Improvised attempts leave facts
+
+`aidm_server/game_state/orchestration/improvised_facts.py`.
+
+- When: a successful improvised attempt in an adventure played from a pack —
+  the roll turn outside a fight, or the improvised fight action (whose
+  `off_balance` stands). One fact per attempt; a failure records nothing.
+- Where it comes from: with a narrating model the helper (task
+  `improvised_fact`) is asked once before narration for `{"fact", "effect",
+  "targetId", "about", "removes", "none"}`, given the words, the check, the
+  place and room, the ids and names of the things and people in the hero's room
+  (nothing hidden, nobody unmet), the facts already true here and the nine
+  effects. With the scripted narrator, without the helper, or when it fails or
+  times out, the fact is the engine's own record: `Arden Vale: "I climb onto
+  the stable roof." — done.` (the words at most 80 characters; no effect,
+  `about` or `removes`).
+- What the engine accepts (anything else records nothing, the turn is told as
+  before, and the reason is the turn pipeline's `improvisedFact.reason`):
+  - `fact` is one sentence of 12–110 characters ending in a full stop, with no
+    line break and no digits the words did not hold (`length`,
+    `not_one_sentence`, `digits`; the engine's own record is spared these);
+  - it names no hidden object or item, no room or place not yet found and no
+    clue not yet found (`names_hidden`, whole words matched as the hidden-thing
+    rule matches them), no person of the pack the party has not met
+    (`names_unmet_person`), and no person or hero, by full or first name, who is
+    not in the hero's room (`person_not_here`);
+  - it gives or takes nothing: no `gold`, `gp`, `silver`, `coin(s)` or `xp`, no
+    having, finding or learning a key, map, letter, secret, name or password,
+    and no item the pack places in the world (container contents, scene items,
+    `givesItems`, rewards) unless the hero holds it or it lies in the room
+    (`gives_or_takes`);
+  - it kills, removes or turns nobody (`dead`, `dies`, `killed`, `slain`, `gone
+    for good`, `joins you`, `is now your ally`…: `kills_or_turns`); a person may
+    have agreed to something;
+  - `removes`, when given, is exactly an improvised fact of this place
+    (`unknown_removes`); no fact is `invalid_answer`, `{"none": true}` is
+    `none`.
+- An `effect` and `targetId` the table allows for an object in the hero's room
+  apply that effect with no second check, through the plans' own path, and its
+  own fact is kept (`The yard lantern is out; the yard is dark.`); any other pair
+  is ignored and the fact stands alone.
+- An accepted fact joins `currentScene.facts`, with `currentScene.improvisedFacts`
+  (`{"text", "heroId", "turn"}`) beside it: a place keeps at most six, the oldest
+  dropped first (authored and table facts never are), and `removes` drops the one
+  it names. Facts are kept with the place, restored on return and carried into
+  the next chapter. It is shown under the Scene tab's `What has changed`, gives a
+  `change` beat and is in `Now true here:` on every later turn there.
+- Each person in `about` who is in the hero's room remembers it (`witnessed`,
+  `words` the fact; the journal's `Remembers: <fact>`), once a turn.
+- Telling it: a model is given `Improvised — "<words>": Athletics 19 vs DC 14,
+  success. Now true here: <fact>` with rule 20 (`On a success tell it happening
+  exactly as "Now true here" states, and add nothing else that changes the
+  scene.`); in a fight the action's own result ends `Now true here: <fact>`. The
+  scripted narrator says `You manage it. <fact>` (`Arden Vale manages it. <fact>`
+  in party play), and `You manage it.` alone for the engine's own record. A
+  successful improvised roll turn with a narrating model makes two model calls:
+  the fact helper, then the narrator; the post-narration helper is not asked.
 
 ### Stakes
 

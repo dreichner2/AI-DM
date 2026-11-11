@@ -17,10 +17,18 @@ BENCH_TEXT = (
 YARD_WHERE = 'Where: Arden Vale is in the yard with Tovin Bell and Osric Hale. Next door, in the common room: Mara Reedwake.'
 # Arden Vale's own threads open every brief of his turns.
 HERO = 'Hero: Arden Vale wants to keep a duty and would not abandon Edda Vale (sister).\n'
+# The yard's plans (the Lantern Post chapter): those only for a fight offer nothing until one starts.
+YARD_PLANS = (
+    'The Yard Gate: Shut and bar the yard gate | The Team in the Traces: nothing offered | The Yard Lantern: Throw the '
+    'lantern into the hedge, Put out the yard lantern | The Wagon Canvas: nothing offered | The Crowd: nothing offered'
+)
 INN_OBJECTS = (
     "objects Caravan Ledger: Read the caravan ledger | Driver's Bench: Look over the driver's bench | "
-    'Lead Wagon: Search the lead wagon | Wagon Bell: Ring the wagon bell'
+    f'Lead Wagon: Search the lead wagon | Wagon Bell: Ring the wagon bell | {YARD_PLANS}'
 )
+# The watchers' clock steps, told by the engine after the yard's first two discoveries.
+STEP_ONE = 'Out past the hedge a horse stamps, where no horse should be standing.'
+STEP_TWO = 'Tovin has gone very still. "There\'s someone in the lane," he says, without moving his lips.'
 
 
 @pytest.fixture()
@@ -47,6 +55,7 @@ def test_the_brief_for_the_leads_three_sentences(table):
     assert bench == (
         f'{HERO}Did: Search under the driver\'s bench (Investigation check: 15 — success): done. What it shows: "{BENCH_TEXT}" '
         'Found and taken by the hero: a Caravan Strongbox Key.\n'
+        f'Already told this turn (do not repeat or contradict): {STEP_ONE}\n'
         'Not done: nothing\n'
         f"Here (only the engine decides these): {INN_OBJECTS}; loose items none; "
         "ways onward The Old North Road; shops none\n"
@@ -56,11 +65,12 @@ def test_the_brief_for_the_leads_three_sentences(table):
     assert wagon.startswith(f'{HERO}Did: Search the lead wagon: done.')
     assert wagon.endswith(
         'Uncovered: Wagon Strongbox. Clue — Ash Marks on the Road.\n'
+        f'Already told this turn (do not repeat or contradict): {STEP_TWO}\n'
         'Not done: nothing\n'
         "Here (only the engine decides these): objects Caravan Ledger: Read the caravan ledger | Driver's Bench: Look over the "
         "driver's bench | Lead Wagon: nothing offered | Wagon Strongbox: Search the strongbox, Open the strongbox, Unlock the "
-        "strongbox, Break the strongbox open | Wagon Bell: Ring the wagon bell; loose items none; ways onward The Old North Road; "
-        "shops none\n"
+        f"strongbox, Break the strongbox open | Wagon Bell: Ring the wagon bell | {YARD_PLANS}; loose items none; ways onward "
+        "The Old North Road; shops none\n"
         'The party is at The Lantern Post Inn.\n'
         f'{YARD_WHERE}'
     )

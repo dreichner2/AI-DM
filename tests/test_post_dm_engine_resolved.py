@@ -195,6 +195,8 @@ ENGINE_RESOLVED_TURNS = [
                 'New place on the map — Ridge and Culvert Paths',
                 'Met — Radan Greycloak',
                 'Met — Veyra Ashcap',
+                # Setting out ends the Lantern Post chapter.
+                'End of chapter 1 · The Empty Caravan',
             ],
             'place': 'loc_old_north_road',
             'looseItems': [],

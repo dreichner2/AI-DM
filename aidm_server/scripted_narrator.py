@@ -1806,7 +1806,15 @@ def _resolved_roll_paragraphs(turn: NarrationInput) -> list[str]:
         # An improvised attempt is told, never invented (W9-SCENE amendment 7).
         from aidm_server.game_state.orchestration.scene_plans import improvised_line
 
-        told = [improvised_line(success=improvised.get('success') is True, hero=turn.actor if turn.party_play else '')]
+        # A success that left a fact says it (W9-FREEFORM); the engine's own record of the words is not repeated.
+        told = [
+            improvised_line(
+                success=improvised.get('success') is True,
+                hero=turn.actor if turn.party_play else '',
+                recorded=bool(_text(improvised.get('fact'))),
+                fact='' if improvised.get('own') is True else _text(improvised.get('fact')),
+            )
+        ]
         return told if turn.rolls_shown else [f'{label}: {total}{dc_clause} — {outcome}.', *told]
     if turn.rolls_shown:
         # The roll's card shows the numbers; the story tells what came of it.

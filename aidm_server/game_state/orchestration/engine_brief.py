@@ -39,7 +39,8 @@ clock step, a nudge) is told by the engine around the narration and given as ``a
 Plans and stakes (W9-SCENE, :mod:`aidm_server.game_state.orchestration.scene_plans`,
 :mod:`aidm_server.game_state.orchestration.fight_stakes`): ``did`` tells each plan resolved (``Effect — obstruct:
 the yard gate is barred (Athletics 19 vs DC 10)``), words that named nothing in sight (``nothing — the hero finds
-no such thing in sight.``) and an improvised attempt (``Improvised — "…": … The engine changed nothing.``) and
+no such thing in sight.``) and an improvised attempt (``Improvised — "…": … The engine changed nothing.``; a success
+that left a fact ends ``Now true here: <fact>``, W9-FREEFORM) and
 each runner's or silencer's move; ``facts`` are what has changed in the place (``Now true here:``), ``atStake`` a
 fight's stakes in words as they stand once the turn's enemy moves apply, and the authored passages the engine tells
 as written (an affordance's text, failing forward, a fight's results, ``onDefeat``) join ``alreadyTold``.

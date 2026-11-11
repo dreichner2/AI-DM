@@ -93,6 +93,7 @@ All notable AIDM closed-beta changes should be recorded here.
 - Typing an action on something not yet found looks for it where it is, or says
   it is not in sight; an improvised attempt is told as what the hero tried and
   never invents a find. Every check, in a conversation too, is a roll card.
+- An improvised success leaves a lasting fact about the place.
 - Pacing follows causes: a place's clock moves only when something the players
   did moves it, an earlier act can come back, and a stuck table is told plainly
   what is in reach. Chapters end where the story does, with what you decided

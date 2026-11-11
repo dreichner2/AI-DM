@@ -492,6 +492,7 @@ class Helper:
 
 HELPER_MODULES = (
     'aidm_server.game_state.orchestration.scene_plans',
+    'aidm_server.game_state.orchestration.improvised_facts',
     'aidm_server.game_state.orchestration.speech_acts',
     'aidm_server.game_state.extraction.pre_dm_action_extractor',
     'aidm_server.game_state.extraction.post_dm_outcome_extractor',
@@ -671,7 +672,7 @@ def _roll_for(table: YardTable) -> dict:
     return {'kind': 'roll', 'source': 'dice_tray', 'roll': roll}
 
 
-@pytest.mark.parametrize(('table', 'line'), [('solo', 'You manage it, for what it is worth.'), ('party', 'Arden Vale manages it, for what it is worth.')])
+@pytest.mark.parametrize(('table', 'line'), [('solo', 'You manage it.'), ('party', 'Arden Vale manages it.')])
 def test_an_improvised_attempt_is_told_in_the_engines_words(request, table, line):
     table = request.getfixturevalue(table)
     table.send(ARDEN, 'I climb onto the stable roof.')
@@ -679,13 +680,15 @@ def test_an_improvised_attempt_is_told_in_the_engines_words(request, table, line
     table.send(ARDEN, 'I roll.', _roll_for(table))
 
     assert table.last()['narration'].endswith(line)
-    assert table.facts() == []
+    # The success is kept as the engine's own record of the words (W9-FREEFORM, tests/test_improvised_facts.py).
+    assert table.facts() == ['Arden Vale: "I climb onto the stable roof." — done.']
 
 
 def test_an_improvised_attempt_tells_an_ai_narrator_the_engine_changed_nothing(ai):
     ai.send(ARDEN, 'I climb onto the stable roof.')
 
-    assert _model_calls(ai, lambda: ai.send(ARDEN, 'I roll.', _roll_for(ai))) == (1, 0)
+    # The fact helper is asked (W9-FREEFORM); this one's answer holds no fact, so nothing is recorded.
+    assert _model_calls(ai, lambda: ai.send(ARDEN, 'I roll.', _roll_for(ai))) == (1, 1)
 
     assert _line(ai, 'Did: ').startswith(
         'Did: Improvised — "I climb onto the stable roof.": Athletics 19 vs DC 14, success. The engine changed nothing.'

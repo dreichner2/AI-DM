@@ -32,7 +32,8 @@ each reads as its own line (:func:`word_lines`). The people the party met each h
 
 People. Each known person keeps on their record ``disposition`` (−2…2, :data:`DISPOSITION_WORDS`; the pack's word
 until it first changes, anything but one of the five words counting as neutral), ``remembers`` (``{"heroId", "key",
-"words"?, "turn"}``, newest last, at most eight) and ``talk`` (``told``, ``knowsTold``, ``greeted``, ``callbacks``,
+"words"?, "turn"}``, newest last, at most eight; ``witnessed`` holds in ``words`` the fact a hero's improvised success
+left before them, :func:`witness_change`) and ``talk`` (``told``, ``knowsTold``, ``greeted``, ``callbacks``,
 ``reacts``, ``waived``, ``promisedBy``, ``apologyChapter``). Promises are the state's ``promises``.
 
 Reactions to speech acts (recognised in :mod:`aidm_server.game_state.orchestration.speech_acts`): a person's first
@@ -84,6 +85,8 @@ SAY_SOMETHING_ELSE = 'Say something else'
 LEAVE_IT_THERE = 'Leave it there'
 DEFAULT_DC = 12
 NEGATIVE_MEMORIES = frozenset({'threatened', 'caught_lying'})
+# A person who saw what a hero's improvised success left (W9-FREEFORM) remembers the fact itself.
+WITNESSED = 'witnessed'
 UNKNOWN_CLUE_STATUSES = frozenset({'hidden', 'undiscovered', 'unknown'})
 # Inspiration a conversation earns.
 WORD_GIVEN = 'your word given'
@@ -193,6 +196,9 @@ def memory_line(entry: dict[str, Any]) -> str:
         return f'you gave your word {rest}' if rest else f'you gave your word: "{words}"'
     if key == 'shown':
         return f'you showed them the {words}' if words else 'you showed them something'
+    if key == WITNESSED and words:
+        # The fact as it stands in the scene; the journal closes the line itself.
+        return words.rstrip('.')
     return MEMORY_PHRASES.get(key) or key.replace('_', ' ')
 
 
@@ -940,6 +946,20 @@ def memory_change(state: dict[str, Any], *, hero_id: str, npc_id: Any, key: str,
     if person is None or not _text(hero_id) or remembers(person, hero_id, key):
         return None
     return _change(turn_id, 'remember', hero_id, npc_id, key, npcName=_text(person.get('name')), effects={'remember': key})
+
+
+def witness_change(state: dict[str, Any], *, hero_id: str, npc_id: Any, fact: str, turn_id: Any) -> dict[str, Any] | None:
+    """The change by which a person in the hero's room remembers what this hero's improvised success left
+    (``witnessed``, ``words`` the fact); None when they are not known or not there, or already witnessed one this
+    turn."""
+
+    person = person_record(state, npc_id)
+    if person is None or not _text(hero_id) or not _text(fact) or not in_room(state, hero_id, npc_id):
+        return None
+    if any(_text(entry.get('key')) == WITNESSED and entry.get('turn') == turn_id for entry in memories(person)):
+        return None
+    effects = {'remember': WITNESSED, 'rememberWords': _text(fact)}
+    return _change(turn_id, 'remember', hero_id, npc_id, WITNESSED, npcName=_text(person.get('name')), effects=effects)
 
 
 def _affect_change(state: dict[str, Any], parent: dict[str, Any], entry: dict[str, Any], index: int) -> dict[str, Any] | None:
