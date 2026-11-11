@@ -153,3 +153,23 @@ def test_rest_policy_is_copied_to_the_scene_at_import_and_on_arrival(client, app
         [{'id': 'move_square', 'type': 'scene.move_location', 'locationId': 'square', 'name': 'Market Square'}],
     )['nextState']
     assert back['currentScene']['restPolicy'] == 'safe'
+
+
+def test_a_stock_entry_keeps_the_item_id_it_names(client, app):
+    pack = _pack()
+    pack['merchants'][0]['stock'].append({'name': "Mason's Hammer", 'type': 'tool', 'price': {'gp': 8}, 'itemId': 'masons_hammer'})
+    pack['merchants'][1]['stock'][0]['itemId'] = 'board_rations'
+
+    snapshot = _import(client, app, pack)
+
+    assert snapshot['merchants']['hilde_stall']['stock'][3] == {
+        'stockId': 'hilde_stall_3',
+        'name': "Mason's Hammer",
+        'type': 'tool',
+        'price': {'gp': 8},
+        'quantity': None,
+        'itemId': 'masons_hammer',
+    }
+    assert snapshot['merchants']['square_board']['stock'] == [
+        {'stockId': 'square_board_0', 'catalog': 'rations', 'quantity': None, 'itemId': 'board_rations'}
+    ]

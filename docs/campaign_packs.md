@@ -389,15 +389,18 @@ the Play Now adventure, uses every mechanism on this page and passes
 - Objects on every location: checks (`inn_drivers_bench`, `ws_memorial_wall`,
   `ridge_culvert_grate`), keys and a check to break (`inn_wagon_strongbox`),
   a hidden object revealed by a search (`inn_lead_wagon`), flag-gated actions
-  (`cairn_banner_stone`, `valley_last_road_stone`), and contents, clues,
-  flags, and places found by actions.
+  (`cairn_banner_stone`, `valley_last_road_stone`, whose claim is a
+  `triggerable` action), and contents (coin included), clues, flags, and
+  places found by actions.
 - Encounters started by `on_interactable` and `on_enter` triggers with
   `when`/`unless` gates, `enemyGroups` authored for four heroes, and
-  per-outcome quest events and consequences (`enc_roadwarden_judgment`).
+  per-outcome quest events and consequences, clue discoveries among them
+  (`enc_roadwarden_judgment`, `enc_final_binding`).
 - A quest whose objectives complete from flags, places, and an encounter quest
   event, with optional objectives, rewards, and `onComplete`; checkpoints
-  completed by objectives, places, flags, and an encounter; `storyFlags` so
-  talk can achieve what objects can; and two merchants.
+  completed by objectives, places, flags, and an encounter, ending on a
+  terminal checkpoint; `storyFlags` so talk can achieve what objects can; and
+  two merchants, one selling a hammer whose `itemId` a requirement names.
 
 `tests/test_flagship_adventure.py` plays it through in Safe Mode by two routes.
 
@@ -534,7 +537,11 @@ Checkpoint graph fields:
 - `prerequisitePolicy`: `completed`, `completed_or_skipped`, `completed_or_skipped_or_failed`, or `terminal`.
 - `optional`: marks a beat as non-blocking when the tracker is choosing the next linear checkpoint.
 - `failureCheckpointIds`: fallback beats used when a checkpoint fails.
-- `terminal`: marks an end/finale checkpoint.
+- `terminal`: marks an end/finale checkpoint. Once reached it stays the active
+  checkpoint with status `reached` (it never completes itself away), and the
+  player projection carries `ending: {checkpointId, title, summary}` from its
+  player-safe title and summary. Player checkpoint payloads include
+  `terminal: true|false`.
 - `chapter` and `act`: group checkpoints for authored graph views.
 - `priority`: authoring metadata for director and graph views. Runtime branch
   selection currently uses the authored `nextCheckpointIds` order.
@@ -627,7 +634,12 @@ Objects resolve themselves on the server:
   `discovered`.
 - Contents a container reveals (on open, or all of them on search) become
   scene items with `containerId`, so each can be taken with the exact-id scene
-  pickup; the container still lists them until they are taken.
+  pickup; the container still lists them until they are taken. A contents
+  entry may be coin, `{"currency": {"gp": 15}}`: it becomes a pile named for
+  its amount (id `<container id>_coins`), and taking it adds to the taker's
+  coin. Narration of a reveal never takes what was revealed.
+- `trigger` is offered on hazards and on any object marked `"triggerable": true`;
+  a non-hazard can be triggered once unless it is `repeatable`.
 - In combat, object actions are offered with the combat actions: `inspect` is
   free, every other action costs the actor's action.
 
@@ -660,7 +672,10 @@ Outcome consequences may be authored under
 hooks `onVictory`, `onDefeat`, `onRetreat`, `onSurrender`, `onNegotiation`, and
 `onObjectiveCompletion`. The bounded consequence types are `flag.set`,
 `flag.unset`, `npc.update`, `npc.relationship.update`, `npc.move`,
-`location.update`, `scene.update`, `scene.item.add`, and `scene.item.remove`.
+`location.update`, `location.discover`, `scene.update`, `scene.item.add`,
+`scene.item.remove`, `clue.discover`, and `quest.add`; records named by id are
+materialized from the catalog. A `combat.end` for a combat that has already
+ended grants nothing again.
 Use quest events rather than direct `quest.complete` or `quest.fail`
 consequences so the quest engine remains authoritative.
 
@@ -743,7 +758,9 @@ in the runtime trade shape: every stock entry gets a stable `stockId`
 (`<merchant id>_<index>`), a priced entry keeps `name`, `type` (default
 `gear`), `effectId`, `metadata`, `price`, and `quantity` (`null` = unlimited),
 and a `{"catalog": key}` entry is stored as `{"stockId", "catalog", "quantity"}`
-for the trade rules to price. `initialStock` is a copy of the stock. A merchant
+for the trade rules to price. Either kind may carry `itemId`: the item a
+purchase puts in the inventory keeps that id, so a requirement such as
+`anyToolIds` can name it. `initialStock` is a copy of the stock. A merchant
 needs an `npcId` or a `locationId`, and prices must be positive whole `gp`,
 `sp`, or `cp` amounts.
 

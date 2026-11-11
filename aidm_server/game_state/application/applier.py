@@ -1498,6 +1498,9 @@ def _merge_location(state: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     for key in ('name', 'type', 'status', 'parentLocationId', 'firstDiscoveredTurn', 'lastVisitedTurn'):
         if key == 'firstDiscoveredTurn' and record.get(key):
             continue
+        # Discovering a place the party has already visited never downgrades it.
+        if key == 'status' and record.get('status') == 'visited' and payload.get('status') == 'discovered':
+            continue
         _set_if_present(record, key, payload.get(key))
     _merge_rich_text(record, 'description', payload.get('description'))
     for key in ('connectedLocationIds', 'npcIds', 'questIds', 'tags'):
@@ -2838,6 +2841,11 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             applied_change['participantName'] = participant.get('name')
         elif change_type == 'combat.end':
             combat = ensure_combat_state(next_state)
+            # A combat that a combat.end already closed keeps its outcome: a
+            # second end grants no rewards, quest events or consequences.
+            if _text(combat.get('status')).lower() in {'ended', 'resolved'} and _text((combat.get('flags') or {}).get('endReason')):
+                skipped.append({'change': change, 'reason': 'Combat has already ended.'})
+                continue
             combat['status'] = change.get('status') or 'ended'
             combat['lastRoundSummary'] = change.get('summary') or change.get('reason') or combat.get('lastRoundSummary')
             flags = combat.setdefault('flags', {})

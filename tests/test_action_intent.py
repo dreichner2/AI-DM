@@ -123,6 +123,36 @@ def test_apply_roll_intent_overrides_natural_language_rule_hint():
     assert updated.confidence == 0.99
 
 
+def test_typed_object_action_never_asks_the_player_for_a_roll():
+    # "attempts to search" reads as an Investigation check, but the object rolls
+    # its own check on the server as part of the action.
+    hint = RuleHint(
+        requires_roll=True,
+        roll_type='investigation',
+        dc_hint='12',
+        reason='Search for clues',
+        confidence=0.8,
+        roll_value=None,
+        outcome_deferred=True,
+    )
+    intent, error = validate_action_intent(
+        {
+            'kind': 'object',
+            'source': 'scene_panel',
+            'text': "Arden Vale attempts to search Driver's Bench.",
+            'object': {'id': 'inn_drivers_bench', 'action': 'search'},
+        }
+    )
+
+    assert error is None
+    updated = apply_action_intent_to_rule_hint(intent, hint)
+
+    assert updated.requires_roll is False
+    assert updated.roll_type is None
+    assert updated.dc_hint is None
+    assert updated.outcome_deferred is False
+
+
 def test_validate_ability_and_item_intents():
     ability, ability_error = validate_action_intent(
         {

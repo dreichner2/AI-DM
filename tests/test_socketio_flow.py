@@ -3725,7 +3725,8 @@ def test_session_state_progresses_location_and_quest(app, socketio, app_runtime,
     with app.app_context():
         state = SessionState.query.filter_by(session_id=ids['session_id']).first()
         assert state is not None
-        assert state.current_location == 'rooftop gutters'
+        # Narration names no known place and never moves the party: the scene stays put.
+        assert state.current_location == 'Old Ruins'
         assert 'Hidden Chamber Unlocked' in (state.current_quest or '')
 
 
@@ -3765,7 +3766,8 @@ def test_turn_creates_emergent_memory_records(app, socketio, app_runtime, monkey
     with app.app_context():
         entities = StoryEntity.query.filter_by(campaign_id=ids['campaign_id']).all()
         entity_names = {(entity.entity_type, entity.name.lower()) for entity in entities}
-        assert ('location', 'rooftop gutters') in entity_names
+        # "Liora leads you into the rooftop gutters" is not the party moving to a known place.
+        assert ('location', 'rooftop gutters') not in entity_names
         assert ('npc', 'liora') in entity_names
 
         threads = StoryThread.query.filter_by(campaign_id=ids['campaign_id']).all()

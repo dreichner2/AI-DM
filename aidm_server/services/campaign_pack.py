@@ -1022,9 +1022,16 @@ def _runtime_merchants(records: list[dict[str, Any]]) -> dict[str, dict[str, Any
             quantity = entry.get('quantity')
             quantity = quantity if isinstance(quantity, int) and not isinstance(quantity, bool) and quantity >= 0 else None
             stock_id = stable_slug(f'{merchant_id}_{index}')
+            # The item a purchase puts in the inventory keeps this id, so a requirement can name it.
+            item_id = _clean_id(entry.get('itemId'))
             catalog_key = _optional_text(entry.get('catalog'), max_length=MAX_ID_LENGTH)
             if catalog_key:
-                stock.append({'stockId': stock_id, 'catalog': catalog_key, 'quantity': quantity})
+                stock.append({
+                    'stockId': stock_id,
+                    'catalog': catalog_key,
+                    'quantity': quantity,
+                    **({'itemId': item_id} if item_id else {}),
+                })
                 continue
             price = _record(entry.get('price'))
             item = {
@@ -1043,6 +1050,8 @@ def _runtime_merchants(records: list[dict[str, Any]]) -> dict[str, dict[str, Any
                 item['effectId'] = effect_id
             if isinstance(entry.get('metadata'), dict):
                 item['metadata'] = deepcopy(entry['metadata'])
+            if item_id:
+                item['itemId'] = item_id
             stock.append(item)
         buy_rate = record.get('buyRate')
         restock = (_optional_text(record.get('restock'), max_length=40) or 'long_rest').lower()
@@ -1509,7 +1518,8 @@ def _initial_snapshot(
         'interactables': _starting_scene_collection(current_scene, starting_location, 'interactables', path=scene_path),
         'hazards': _starting_scene_collection(current_scene, starting_location, 'hazards', path=scene_path),
         'musicTag': _optional_text(_first(current_scene, 'musicTag', 'music_tag'), max_length=120) or None,
-        'updatedAtTurn': None,
+        # The imported scene is authoritative from before the first turn.
+        'updatedAtTurn': 0,
     }
     rest_policy = (
         _optional_text(_first(current_scene, 'restPolicy'), max_length=20)

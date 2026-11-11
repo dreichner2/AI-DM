@@ -180,3 +180,36 @@ def test_frontend_api_contract_matches_backend_endpoint_payloads(client, app):
     )
     _assert_contract_payload('SessionSummary', ended_session)
     assert ended_session['status'] == 'ended'
+
+
+def test_creation_options_endpoint_matches_its_contract_and_the_creation_tables(client):
+    response = client.get('/api/rules/creation-options')
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    _assert_contract_payload('CreationOptionsResponse', payload)
+    classes = {entry['id']: entry for entry in payload['classes']}
+    assert list(classes) == [
+        'barbarian', 'bard', 'cleric', 'druid', 'fighter', 'monk',
+        'paladin', 'ranger', 'rogue', 'sorcerer', 'warlock', 'wizard',
+    ]
+    for entry in classes.values():
+        _assert_contract_payload('CreationClassOption', entry)
+        for feature in entry['levelOneFeatures']:
+            _assert_contract_payload('CreationClassFeature', feature)
+        for feature in entry['laterFeatures']:
+            _assert_contract_payload('CreationLaterClassFeature', feature)
+    fighter, rogue, wizard = classes['fighter'], classes['rogue'], classes['wizard']
+    assert (fighter['hitDie'], fighter['savingThrows'], fighter['skillChoices']['count']) == (10, ['strength', 'constitution'], 2)
+    assert fighter['fightingStyles'] == {'level': 1, 'options': ['defense', 'dueling', 'great_weapon', 'archery']}
+    assert classes['paladin']['fightingStyles']['level'] == 2
+    assert (rogue['skillChoices']['count'], rogue['expertise']) == (4, {'count': 2})
+    assert 'expertise' not in fighter and 'fightingStyles' not in wizard
+    assert [feature['name'] for feature in fighter['levelOneFeatures']] == ['Second Wind', 'Fighting Style']
+    assert {'level': 5, 'name': 'Extra Attack', 'summary': 'Two attacks with every Attack action.'} in fighter['laterFeatures']
+    assert 'Magic Missile' in wizard['spells'] and 'Fire Bolt' in wizard['cantrips']
+    assert fighter['startingKit'][:3] == ['Longsword', 'Shield', 'Chain Mail']
+    backgrounds = {entry['id']: entry for entry in payload['backgrounds']}
+    for entry in backgrounds.values():
+        _assert_contract_payload('CreationBackgroundOption', entry)
+    assert backgrounds['soldier']['skills'] == ['athletics', 'intimidation']

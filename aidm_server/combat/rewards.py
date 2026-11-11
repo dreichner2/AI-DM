@@ -76,9 +76,12 @@ CONSEQUENCE_TYPES = frozenset(
         'npc.relationship.update',
         'npc.move',
         'location.update',
+        'location.discover',
         'scene.update',
         'scene.item.add',
         'scene.item.remove',
+        'clue.discover',
+        'quest.add',
     }
 )
 

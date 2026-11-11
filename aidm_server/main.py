@@ -52,6 +52,7 @@ from aidm_server.blueprints.maps import maps_bp
 from aidm_server.blueprints.onboarding import onboarding_bp
 from aidm_server.blueprints.players import players_bp
 from aidm_server.blueprints.races import races_bp
+from aidm_server.blueprints.rules import rules_bp
 from aidm_server.blueprints.runtime_config import runtime_config_bp
 from aidm_server.blueprints.segments import segments_bp
 from aidm_server.blueprints.sessions import sessions_bp
@@ -454,6 +455,7 @@ def create_app() -> Flask:
     app.register_blueprint(worlds_bp, url_prefix='/api/worlds')
     app.register_blueprint(players_bp, url_prefix='/api/players')
     app.register_blueprint(races_bp, url_prefix='/api')
+    app.register_blueprint(rules_bp, url_prefix='/api')
     app.register_blueprint(creatures_bp, url_prefix='/api')
     app.register_blueprint(sessions_bp, url_prefix='/api/sessions')
     app.register_blueprint(maps_bp, url_prefix='/api/maps')

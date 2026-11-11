@@ -450,3 +450,86 @@ def test_authored_consequences_materialise_catalog_records_they_name():
     cellar = next(location for location in state['locations'] if location['id'] == 'loc_cellar')
     assert (cellar['name'], cellar['status']) == ('Smugglers Cellar', 'discovered')
     assert 'Smoke drifts up.' in cellar['description']
+
+
+def test_discovering_a_visited_location_keeps_it_visited():
+    state = _state()
+    state['locations'].append({'id': 'loc_cellar', 'name': 'Smugglers Cellar', 'status': 'visited'})
+
+    result = apply_state_changes(state, [{'id': 'discover_cellar', 'type': 'location.discover', 'locationId': 'loc_cellar'}])
+    cellar = next(location for location in result['nextState']['locations'] if location['id'] == 'loc_cellar')
+
+    assert cellar['status'] == 'visited'
+
+
+def _pickup(state: dict, item: dict, *, turn: int) -> dict:
+    intent, error = validate_action_intent(
+        {
+            'kind': 'item',
+            'source': 'scene_panel',
+            'text': f"Mara takes {item['name']}.",
+            'inventory_action': 'pick_up',
+            'item': {'id': item['id'], 'name': item['name'], 'quantity': 1},
+        }
+    )
+    assert error is None
+    extraction = extract_pre_dm_actions(
+        current_state=state,
+        player_message=f"Mara takes {item['name']}.",
+        recent_timeline=[],
+        actor_id='player_1',
+        action_intent=intent,
+    )
+    declared = validate_declared_actions(
+        state=state,
+        declared_actions=extraction['declaredActions'],
+        current_turn=turn,
+        expected_actor_id='player_1',
+    )
+    validation = validate_state_changes(state=state, changes=declared['immediateChanges'], expected_actor_id='player_1')
+    return apply_state_changes(state, validated_changes_for_application(validation))['nextState']
+
+
+def test_coins_in_a_container_are_taken_into_the_takers_purse():
+    state = _state()
+    for scene_state in (state['currentScene'], state['locations'][0]['sceneState']):
+        scene_state['interactables'][1]['contents'].append({'currency': {'gp': 15, 'sp': 4}})
+    _, opened = _act(state, 'strongbox', 'open', turn=3)
+    _, searched = _act(opened['nextState'], 'strongbox', 'search', turn=4)
+    coins = next(item for item in searched['nextState']['currentScene']['items'] if item.get('currency'))
+
+    assert (coins['id'], coins['name'], coins['currency']) == ('strongbox_coins', '15 gp, 4 sp', {'gp': 15, 'sp': 4})
+
+    taken = _pickup(searched['nextState'], coins, turn=5)
+    purse = taken['playerCharacters'][0]['inventory']
+
+    assert (purse['currency']['gp'], purse['currency']['sp'], purse['items']) == (15, 4, [])
+    assert all(item['id'] != coins['id'] for item in taken['currentScene']['items'])
+
+
+def test_an_object_the_author_marks_triggerable_can_be_triggered():
+    state = _state()
+    lever = {
+        'id': 'brass_lever',
+        'name': 'Brass Lever',
+        'kind': 'object',
+        'triggerable': True,
+        'revision': 0,
+        'setsFlags': {'trigger': {'gate_raised': True}},
+    }
+    for scene_state in (state['currentScene'], state['locations'][0]['sceneState']):
+        scene_state['interactables'].append(deepcopy(lever))
+    offers = available_actions_for_target(state, location_id='vault', target_id='brass_lever', actor={'id': 'player_1'})
+    assert {entry['action'] for entry in offers['actions']} == {'inspect', 'trigger'}
+
+    _, triggered = _act(state, 'brass_lever', 'trigger', turn=3)
+    assert triggered['nextState']['flags']['gate_raised'] is True
+    assert _object(triggered['nextState'], 'brass_lever')['triggered'] is True
+
+    _, again = _act(triggered['nextState'], 'brass_lever', 'trigger', turn=4)
+    assert again['appliedChanges'] == []
+    plain = deepcopy(lever)
+    plain.pop('triggerable')
+    state['currentScene']['interactables'][-1] = plain
+    plain_offers = available_actions_for_target(state, location_id='vault', target_id='brass_lever', actor={'id': 'player_1'})
+    assert {entry['action'] for entry in plain_offers['actions']} == {'inspect'}

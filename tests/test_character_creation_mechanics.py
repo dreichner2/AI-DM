@@ -518,3 +518,25 @@ def test_narrated_classes_are_created_as_today_but_take_no_class_choices(client,
     rejected = _create(client, ids, char_class='Dream Knight', background='sage', skill_choices=['arcana', 'history'])
     assert rejected.status_code == 400
     assert rejected.get_json()['error'] == 'Class skill choices apply only to the twelve core classes.'
+
+
+def test_the_recommended_ancestries_are_stored_as_chosen(client, app):
+    ids = seed_world_campaign_player_session(app)
+    recommended = ['human', 'elf', 'dwarf', 'halfling', 'gnome', 'dragonborn', 'tiefling']
+
+    stored = {}
+    for race_id in recommended:
+        response = _create(
+            client,
+            ids,
+            char_class='Fighter',
+            race=race_id.title(),
+            race_selection={'raceId': race_id, 'source': 'curated'},
+            background='soldier',
+        )
+        assert response.status_code == 201, race_id
+        with app.app_context():
+            player = db.session.get(Player, response.get_json()['player_id'])
+            stored[race_id] = (safe_json_loads(player.race_selection, {})['raceId'], player.race)
+
+    assert stored == {race_id: (race_id, race_id.title()) for race_id in recommended}

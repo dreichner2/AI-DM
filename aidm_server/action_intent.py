@@ -297,7 +297,8 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
         name = clean_inventory_item_name(_clean_text(item.get('name'), max_length=ACTION_ITEM_MAX_LENGTH))
         if not name and not (inventory_action == 'use' and item_id):
             return None, 'item.name is required.'
-        if name and not looks_like_inventory_item(name):
+        # A pickup by exact scene id takes what the scene holds, a pile of coins included.
+        if name and not looks_like_inventory_item(name) and not (inventory_action == 'pick_up' and item_id):
             return None, 'item.name must be a tangible inventory item.'
         quantity = _coerce_int(item.get('quantity'))
         target_id = _clean_text(item.get('target_id') or item.get('targetId'), max_length=ACTION_ID_MAX_LENGTH)
@@ -488,7 +489,8 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
             hint.outcome_deferred = False
         return hint
 
-    if kind in {'ooc', 'emote', 'item', 'travel', 'rest', 'shop', 'admin'}:
+    # A typed object action rolls the object's own check on the server.
+    if kind in {'ooc', 'emote', 'item', 'object', 'travel', 'rest', 'shop', 'admin'}:
         hint.requires_roll = False
         hint.roll_type = None
         hint.dc_hint = None

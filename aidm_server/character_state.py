@@ -1430,7 +1430,9 @@ def _apply_delta(
     }
 
 
-def apply_character_state_changes(turn: DmTurn, dm_output: str) -> list[dict[str, Any]]:
+def apply_character_state_changes(turn: DmTurn, dm_output: str, *, include_currency: bool = True) -> list[dict[str, Any]]:
+    """Legacy narration-driven gold, coin, HP and XP; ``include_currency=False`` leaves coin alone."""
+
     if not turn.player_id:
         return []
 
@@ -1439,16 +1441,17 @@ def apply_character_state_changes(turn: DmTurn, dm_output: str) -> list[dict[str
         return []
 
     text = re.sub(r'\*+', '', dm_output or '')
-    gold_gain = _sum_patterns(text, GOLD_GAIN_PATTERNS)
-    gold_loss = _sum_patterns(text, GOLD_LOSS_PATTERNS)
-    gold_delta = gold_gain - gold_loss
-    currency_gain = _sum_currency_patterns(text, CURRENCY_GAIN_PATTERNS)
-    currency_loss = _sum_currency_patterns(text, CURRENCY_LOSS_PATTERNS)
-    currency_delta = {
-        denomination: currency_gain.get(denomination, 0) - currency_loss.get(denomination, 0)
-        for denomination in {'copper', 'silver', 'electrum', 'platinum'}
-        if currency_gain.get(denomination, 0) - currency_loss.get(denomination, 0)
-    }
+    gold_delta = 0
+    currency_delta: dict[str, int] = {}
+    if include_currency:
+        gold_delta = _sum_patterns(text, GOLD_GAIN_PATTERNS) - _sum_patterns(text, GOLD_LOSS_PATTERNS)
+        currency_gain = _sum_currency_patterns(text, CURRENCY_GAIN_PATTERNS)
+        currency_loss = _sum_currency_patterns(text, CURRENCY_LOSS_PATTERNS)
+        currency_delta = {
+            denomination: currency_gain.get(denomination, 0) - currency_loss.get(denomination, 0)
+            for denomination in {'copper', 'silver', 'electrum', 'platinum'}
+            if currency_gain.get(denomination, 0) - currency_loss.get(denomination, 0)
+        }
     hp_delta = _sum_patterns(text, HEAL_PATTERNS) - _sum_patterns(text, DAMAGE_PATTERNS)
     xp_delta = _sum_patterns(text, XP_GAIN_PATTERNS)
     applied = _apply_delta(

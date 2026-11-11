@@ -987,8 +987,8 @@ def test_projection_syncs_session_state_and_snapshot_quests(app):
         session_obj = db.session.get(Session, ids['session_id'])
         session_obj.state_snapshot = safe_json_dumps(
             {
+                # A legacy scene without a locationId may still be set from canon.
                 'currentScene': {
-                    'locationId': 'south_dock',
                     'name': 'south dock',
                     'sceneType': 'combat',
                     'dangerLevel': 8,
@@ -1712,3 +1712,107 @@ def test_build_emergent_context_caps_candidate_pools(app, monkeypatch):
     assert len(capped_context['entities']) == 2
     assert len(capped_context['facts']) == 2
     assert len(capped_context['threads']) == 2
+
+
+INN_SNAPSHOT_LOCATIONS = [
+    {'id': 'loc_lantern_post_inn', 'name': 'The Lantern Post Inn', 'status': 'visited'},
+    {'id': 'loc_old_north_road', 'name': 'The Old North Road', 'status': 'known', 'aliases': ['North Road']},
+]
+
+
+def _seed_inn_snapshot(app, ids) -> None:
+    with app.app_context():
+        session = db.session.get(Session, ids['session_id'])
+        session.state_snapshot = safe_json_dumps(
+            {
+                'currentScene': {'locationId': 'loc_lantern_post_inn', 'name': 'The Lantern Post Inn'},
+                'locations': INN_SNAPSHOT_LOCATIONS,
+                'playerCharacters': [{'id': f"player_{ids['player_id']}", 'name': 'Seraphina'}],
+                'campaignPack': {'catalog': {'locations': [{'id': 'loc_hidden_valley', 'name': 'Hidden Valley'}]}},
+            },
+            {},
+        )
+        db.session.commit()
+
+
+def _inferred_location(app, ids, dm_output: str, player_input: str = 'I look around.') -> str | None:
+    with app.app_context():
+        turn = _create_turn(app, ids, player_input=player_input, dm_output=dm_output)
+        patch, _model = extract_canon_patch(
+            turn=turn,
+            campaign=turn.campaign,
+            dm_output=dm_output,
+            speaking_player_name='Seraphina',
+            triggered_segments=[],
+        )
+        return patch['projection'].get('current_location')
+
+
+def test_narration_infers_only_a_known_place_reached_by_the_party(app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    monkeypatch.setattr('aidm_server.emergent_memory._extract_with_provider', lambda *args, **kwargs: (None, None))
+    _seed_inn_snapshot(app, ids)
+
+    assert _inferred_location(app, ids, 'Within reach are Mara Reedwake, the Caravan Ledger, and the way to The Old North Road.') is None
+    assert _inferred_location(app, ids, 'You enter the dark cellar beneath the stairs.') is None
+    assert _inferred_location(app, ids, 'Mara leads you into the North Road at dusk.') is None
+    assert _inferred_location(app, ids, 'The wind reaches the North Road before you do.') is None
+    assert _inferred_location(app, ids, 'You travel to the North Road as the light fails.') == 'The Old North Road'
+    assert _inferred_location(app, ids, 'Seraphina arrives at the old north road.') == 'The Old North Road'
+    assert _inferred_location(app, ids, 'The party reaches the Hidden Valley.') == 'Hidden Valley'
+    assert _inferred_location(app, ids, 'Mara gives a nod.', player_input='We head to loc_old_north_road.') == 'The Old North Road'
+
+
+def test_canon_never_moves_a_scene_that_names_its_location(app):
+    ids = seed_world_campaign_player_session(app)
+    _seed_inn_snapshot(app, ids)
+
+    with app.app_context():
+        turn = _create_turn(app, ids, player_input='I look around.', dm_output='Within reach are Mara Reedwake.')
+        db.session.add(
+            StoryFact(
+                campaign_id=ids['campaign_id'],
+                predicate='current_location',
+                value_text='are Mara Reedwake',
+                fact_status='accepted',
+                source_turn_id=turn.turn_id,
+            )
+        )
+        db.session.commit()
+
+        refresh_session_projection(ids['session_id'], turn.campaign)
+        db.session.commit()
+
+        snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+        state = SessionState.query.filter_by(session_id=ids['session_id']).one()
+
+    assert (snapshot['currentScene']['locationId'], snapshot['currentScene']['name']) == (
+        'loc_lantern_post_inn',
+        'The Lantern Post Inn',
+    )
+    assert state.current_location == 'The Lantern Post Inn'
+    assert [location['id'] for location in snapshot['locations']] == ['loc_lantern_post_inn', 'loc_old_north_road']
+
+
+def test_legacy_fallback_mints_no_item_or_coin_when_the_state_pipeline_ran(app):
+    ids = seed_world_campaign_player_session(app)
+
+    with app.app_context():
+        turn = _create_turn(
+            app,
+            ids,
+            player_input='I search the altar.',
+            dm_output='You take the silver key from the altar. You find 5 gp beneath it.',
+        )
+        turn.metadata_json = safe_json_dumps({'state_pipeline': {'managedDomains': ['inventory', 'currency', 'health', 'xp']}}, {})
+        db.session.commit()
+        from aidm_server.emergent_memory import apply_immediate_state_changes
+
+        summary = apply_immediate_state_changes(turn, turn.campaign, turn.dm_output)
+        db.session.commit()
+        player = db.session.get(Player, ids['player_id'])
+
+        assert summary['inventory_changes_applied'] == []
+        assert summary['character_state_changes_applied'] == []
+        assert safe_json_loads(player.inventory, []) in ([], None)
+        assert safe_json_loads(player.stats, {}).get('gold', 0) == 0

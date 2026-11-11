@@ -934,6 +934,7 @@ def _use_action(
             'actionEconomy': _text(descriptor.get('actionEconomy')),
             'cost': deepcopy(descriptor.get('cost') or {}),
             'pool': descriptor.get('pool'),
+            'poolName': descriptor.get('poolName'),
             'current': int_or_default((pool or {}).get('current'), default=0) if pool else None,
             'max': int_or_default((pool or {}).get('max'), default=0) if pool else None,
             'refreshesOn': descriptor.get('refreshesOn'),

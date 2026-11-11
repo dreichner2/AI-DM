@@ -86,7 +86,7 @@ CLASS_POOLS: dict[str, tuple[dict[str, Any], ...]] = {
     ),
     'monk': ({'id': 'ki', 'name': 'Ki', 'minimumLevel': 2, 'poolPerLevel': 1, 'refreshesOn': 'short_rest'},),
     'paladin': ({'id': 'lay_on_hands', 'name': 'Lay on Hands', 'minimumLevel': 1, 'poolPerLevel': 5, 'refreshesOn': 'long_rest'},),
-    'sorcerer': ({'id': 'sorcery_points', 'name': 'Sorcery Points', 'minimumLevel': 2, 'poolPerLevel': 1, 'refreshesOn': 'long_rest'},),
+    'sorcerer': ({'id': 'sorcery_points', 'name': 'Sorcery points', 'minimumLevel': 2, 'poolPerLevel': 1, 'refreshesOn': 'long_rest'},),
     'wizard': ({'id': 'arcane_recovery', 'name': 'Arcane Recovery', 'minimumLevel': 1, 'poolByLevel': {1: 1}, 'refreshesOn': 'long_rest'},),
 }
 
@@ -424,6 +424,15 @@ def class_pools(class_name: Any, level: Any) -> list[dict[str, Any]]:
     ]
 
 
+def pool_display_name(class_name: Any, pool_id: Any) -> str:
+    """The player-facing name of one of the class's pools ("Ki", "Sorcery points")."""
+
+    return next(
+        (pool['name'] for pool in CLASS_POOLS.get(primary_class(class_name) or '', ()) if pool['id'] == _text(pool_id)),
+        _text(pool_id).replace('_', ' ').capitalize(),
+    )
+
+
 def normalize_class_feature_state(
     raw_state: Any,
     *,
@@ -535,6 +544,7 @@ def capabilities_for_class(class_name: Any, level: Any) -> list[dict[str, Any]]:
         pool = pools.get(_text(cost.get('pool')))
         if pool is not None:
             capability['pool'] = pool['id']
+            capability['poolName'] = pool['name']
             capability['refreshesOn'] = pool_refreshes_on(pool, character_level)
         capabilities.append(capability)
     return capabilities
@@ -790,6 +800,7 @@ def class_feature_descriptors(
             pool_id = _text(variant['cost'].get('pool') or gain.get('pool') or capability.get('pool'))
             if pool_id in state:
                 descriptor['pool'] = pool_id
+                descriptor['poolName'] = pool_display_name(class_name, pool_id)
                 descriptor['maxUses'] = state[pool_id]['max']
                 descriptor['refreshesOn'] = state[pool_id]['refreshesOn']
             descriptors.append(descriptor)

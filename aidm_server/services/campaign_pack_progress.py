@@ -13,7 +13,8 @@ from aidm_server.services.campaign_pack_coordination import (
     serialized_campaign_pack_progress,
 )
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
-from aidm_server.services.campaign_pack_visibility import player_visible_checkpoint_payloads
+from aidm_server.services.campaign_pack_graph import is_terminal_checkpoint
+from aidm_server.services.campaign_pack_visibility import player_ending, player_visible_checkpoint_payloads
 from aidm_server.services.campaign_pack_storage import (
     propagate_shared_campaign_pack_progress,
     record_campaign_pack_progress_event,
@@ -228,7 +229,8 @@ def _update_campaign_pack_progress_locked(
     )
     next_checkpoint = active_checkpoint
     reason = None
-    if active_checkpoint:
+    # A reached terminal checkpoint is the story's ending: it stays active.
+    if active_checkpoint and not is_terminal_checkpoint(active_checkpoint):
         downstream_location_match = _matching_downstream_checkpoint(
             active_checkpoint=active_checkpoint,
             checkpoints=checkpoints,
@@ -468,6 +470,7 @@ def campaign_pack_progress_payload(*, session_id: int, include_hidden: bool = Tr
         'failedCheckpointIds': visible_failed_ids,
         'checkpointStatuses': visible_statuses,
         'checkpoints': visible_checkpoints,
+        **({'ending': ending} if not include_hidden and (ending := player_ending(visible_checkpoints)) else {}),
         'directorRules': director_rules,
         'activeDirectorRules': active_rules,
         'flags': visible_flags,
@@ -1639,7 +1642,7 @@ def _checkpoint_statuses(
         if not checkpoint_id:
             continue
         if key == active_key:
-            statuses[checkpoint_id] = 'active'
+            statuses[checkpoint_id] = 'reached' if is_terminal_checkpoint(checkpoint) else 'active'
         elif key in failed_keys:
             statuses[checkpoint_id] = 'failed'
         elif key in skipped_keys:

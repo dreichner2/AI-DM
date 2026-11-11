@@ -61,6 +61,7 @@ from aidm_server.game_clock import (
     resolve_short_rest_hit_dice,
 )
 from aidm_server.interactables import interactable_actor_context, object_rolls, resolve_interactable_action
+from aidm_server.price_list import normalize_price
 from aidm_server.item_effects import (
     ITEM_EFFECT_AUTHORITY,
     ITEM_USE_SOURCE,
@@ -871,6 +872,9 @@ def _validate_scene_item_pickup(
             return _invalid(action, f"No scene item matches '{_action_value(action, 'itemName', 'item_name') or 'that item'}'.")
     item = matches[0]
     item_id = _text(item.get('id'))
+    coins = normalize_price(item.get('currency'))
+    if coins:
+        return _coin_pickup(action, actor, item, coins, current_turn=current_turn)
     if item_id and any(
         _text(owned.get('id')) == item_id
         for candidate in _records(state, 'playerCharacters')
@@ -928,6 +932,56 @@ def _validate_scene_item_pickup(
         f"{actor_name(actor)} can pick up the exact scene item {item.get('name')}.",
         normalized_action={**action, 'itemId': item_id, 'itemName': item.get('name')},
         immediate_changes=[remove_change, add_change],
+    )
+
+
+def _coin_pickup(
+    action: dict[str, Any],
+    actor: dict[str, Any],
+    item: dict[str, Any],
+    coins: dict[str, int],
+    *,
+    current_turn: int,
+) -> dict[str, Any]:
+    """Taking a pile of coins empties it into the taker's purse."""
+
+    item_id = _text(item.get('id'))
+    transfer_id = stable_change_id(current_turn, 'pre_dm', action.get('id'), 'scene.item.pickup', item_id, 1)
+    reason = f"{actor_name(actor)} took {item.get('name')}."
+    remove_change = {
+        'id': f'{transfer_id}:scene_remove',
+        'turnId': current_turn,
+        'type': 'scene.item.remove',
+        'source': 'pre_dm_world_action',
+        'actorId': actor.get('id'),
+        'itemId': item_id,
+        'itemName': item.get('name'),
+        'quantity': 1,
+        'item': {**item, 'quantity': 1},
+        'transferId': transfer_id,
+        'reason': reason,
+        'visible': False,
+    }
+    currency_changes = [
+        {
+            'id': f'{transfer_id}:currency_add:{code}',
+            'turnId': current_turn,
+            'type': 'currency.add',
+            'source': 'pre_dm_world_action',
+            'actorId': actor.get('id'),
+            'currency': code,
+            'amount': amount,
+            'transferId': transfer_id,
+            'reason': reason,
+            'visible': False,
+        }
+        for code, amount in coins.items()
+    ]
+    return _valid(
+        action,
+        f"{actor_name(actor)} can take {item.get('name')}.",
+        normalized_action={**action, 'itemId': item_id, 'itemName': item.get('name')},
+        immediate_changes=[remove_change, *currency_changes],
     )
 
 

@@ -173,3 +173,47 @@ def test_combat_end_applies_authored_reward_transaction_exactly_once_on_replay()
     assert len({entry["id"] for entry in replay_state["stateChangeLedger"]}) == len(
         replay_state["stateChangeLedger"]
     )
+
+
+def test_a_second_combat_end_for_an_ended_combat_grants_nothing() -> None:
+    state = _state()
+    state["campaignPack"]["catalog"]["encounters"][0]["questEvents"] = [
+        {"eventType": "bridge_won", "questId": "quest_wolf_road"}
+    ]
+    ended = apply_state_changes(state, [_end_change()])["nextState"]
+
+    second_end = {**_end_change(), "id": "operator-end-wolf-bridge", "turnId": 31}
+    validation = validate_state_changes(state=ended, changes=[second_end])
+    again = apply_state_changes(ended, validated_changes_for_application(validation))
+    again_state = again["nextState"]
+    actor = again_state["playerCharacters"][0]
+
+    assert [change["type"] for change in again["appliedChanges"]] == []
+    assert again["skippedChanges"][0]["reason"] == "Combat has already ended."
+    assert actor["xp"]["current"] == 35
+    assert actor["inventory"]["currency"]["gp"] == 5
+    assert [item["name"] for item in actor["inventory"]["items"]] == ["Alpha Fang"]
+    assert len(again_state["combatRewardLedger"]) == 1
+    assert again_state["stateChangeLedger"] == ended["stateChangeLedger"]
+
+
+def test_encounter_outcomes_discover_clues_quests_and_places() -> None:
+    state = _state()
+    catalog = state["campaignPack"]["catalog"]
+    catalog["clues"] = [{"id": "clue_wolf_tracks", "title": "Wolf Tracks", "summary": "Tracks lead north."}]
+    catalog["quests"] = [{"id": "quest_wolf_den", "title": "The Wolf Den", "status": "active", "objectives": []}]
+    catalog["locations"] = [{"id": "loc_wolf_den", "name": "Wolf Den"}]
+    catalog["encounters"][0]["outcomes"]["victory"]["consequences"] = [
+        {"type": "clue.discover", "clueId": "clue_wolf_tracks"},
+        {"type": "quest.add", "questId": "quest_wolf_den"},
+        {"type": "location.discover", "locationId": "loc_wolf_den"},
+    ]
+
+    ended = apply_state_changes(state, [_end_change()])["nextState"]
+
+    assert [clue["id"] for clue in ended["clues"]] == ["clue_wolf_tracks"]
+    assert [quest["id"] for quest in ended["quests"]] == ["quest_wolf_den"]
+    assert {location["id"]: location["status"] for location in ended["locations"]} == {
+        "wolf_bridge": "visited",
+        "loc_wolf_den": "discovered",
+    }

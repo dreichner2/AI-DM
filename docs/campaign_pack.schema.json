@@ -1354,6 +1354,10 @@
           "description": "A price-list key; priced by the trade rules.",
           "type": "string",
           "maxLength": 120
+        },
+        "itemId": {
+          "description": "The id the purchased item keeps in the inventory.",
+          "$ref": "#/$defs/id"
         }
       }
     },

@@ -14,6 +14,7 @@ from aidm_server.combat.attacks import resolve_attack, resolve_save
 from aidm_server.combat.intent_planner import plan_enemy_intents
 from aidm_server.combat.legal_actions import legal_combat_actions_for_player, resolve_combat_legal_action
 from aidm_server.combat.pipeline import (
+    _should_start_combat,
     hostile_action_targets_creature,
     prepare_combat_for_turn,
     turn_boundaries,
@@ -936,6 +937,17 @@ def test_bardic_inspiration_is_added_to_a_failed_save_against_an_enemy_ability_o
 ])
 def test_a_hostile_action_aimed_at_a_creature_is_told_apart_from_a_strike_at_an_object(message, creature):
     assert hostile_action_targets_creature(message) is creature
+
+
+@pytest.mark.parametrize(('message', 'starts'), [
+    ('I kick the door.', False),
+    ('I smash the old wooden crate.', False),
+    ('I attack the bandit.', True),
+    ('I draw my longsword and attack the nearest cutthroat.', True),
+])
+def test_only_a_hostile_action_aimed_at_a_creature_starts_combat(message, starts):
+    state = {'combat': {'status': 'none'}, 'currentScene': {'locationId': 'yard', 'combatState': 'none'}}
+    assert _should_start_combat(state, message) is starts
 
 
 def test_the_no_opponent_answer_is_reserved_for_attacks_on_creatures():

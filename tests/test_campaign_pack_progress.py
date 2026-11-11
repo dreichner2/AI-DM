@@ -40,6 +40,7 @@ from aidm_server.services.campaign_pack_progress import (
     update_campaign_pack_progress,
 )
 from aidm_server.services.campaign_pack_storage import sync_campaign_pack_progress
+from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 from aidm_server.services.campaign_pack_storage import campaign_pack_progress_lock_session_ids
 from aidm_server.turn_coordinator import session_turn_coordinator
 from aidm_server.turn_engine import TurnCommand, TurnEngine
@@ -1318,6 +1319,66 @@ def test_pack_progress_does_not_jump_backward_after_terminal_checkpoint_completi
     assert result.active_checkpoint_id is None
 
 
+def test_a_terminal_checkpoint_once_reached_stays_active_as_the_ending(app):
+    ids = _seed_pack_session(
+        app,
+        _pack_snapshot(
+            location_id='watchtower_ruins',
+            flags={'campaignPackActiveCheckpointId': 'cp_watchtower'},
+            quests=[
+                {
+                    'id': 'q_missing_caravan',
+                    'title': 'Find the Missing Caravan',
+                    'status': 'completed',
+                    'objectives': [{'id': 'obj_light_beacon', 'description': 'Light the beacon.', 'status': 'completed'}],
+                    'source': 'campaign_pack',
+                    'packId': 'bleakmoor_intro',
+                }
+            ],
+            checkpoints=[
+                {
+                    'id': 'cp_watchtower',
+                    'title': 'Light the watchtower beacon',
+                    'completeWhen': {'objectiveIds': ['obj_light_beacon']},
+                    'nextCheckpointIds': ['cp_dawn'],
+                },
+                {
+                    'id': 'cp_dawn',
+                    'title': 'Dawn over Bleakmoor (GM)',
+                    'playerTitle': 'Dawn over Bleakmoor',
+                    'summary': 'GM: resolve the lantern debt.',
+                    'playerSummary': 'The lanterns gutter out and the moor is quiet.',
+                    'completeWhen': {'questIds': ['q_missing_caravan']},
+                    'terminal': True,
+                },
+            ],
+        ),
+    )
+
+    with app.app_context():
+        first = update_campaign_pack_progress(session_id=ids['session_id'], campaign_id=ids['campaign_id'])
+        second = update_campaign_pack_progress(session_id=ids['session_id'], campaign_id=ids['campaign_id'])
+        snapshot = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+        payload = campaign_pack_progress_module.campaign_pack_progress_payload(session_id=ids['session_id'], include_hidden=False)
+
+    ending = {
+        'checkpointId': 'cp_dawn',
+        'title': 'Dawn over Bleakmoor',
+        'summary': 'The lanterns gutter out and the moor is quiet.',
+    }
+    assert (first.active_checkpoint_id, first.completed_checkpoint_ids) == ('cp_dawn', ['cp_watchtower'])
+    assert (second.changed, second.active_checkpoint_id, second.completed_checkpoint_ids) == (False, 'cp_dawn', ['cp_watchtower'])
+    assert payload['checkpointStatuses'] == {'cp_watchtower': 'completed', 'cp_dawn': 'reached'}
+    assert [(checkpoint['id'], checkpoint['terminal']) for checkpoint in payload['checkpoints']] == [
+        ('cp_watchtower', False),
+        ('cp_dawn', True),
+    ]
+    assert payload['ending'] == ending
+    player_pack = filter_session_snapshot_for_player(snapshot)['campaignPack']
+    assert (player_pack['activeCheckpointId'], player_pack['checkpointStatuses']['cp_dawn']) == ('cp_dawn', 'reached')
+    assert player_pack['ending'] == ending
+
+
 def test_pack_progress_marks_failed_checkpoint_and_uses_failure_route(app):
     ids = _seed_pack_session(
         app,
@@ -2030,12 +2091,14 @@ def test_hidden_checkpoints_require_player_aliases_in_both_player_projections(tm
         {
             'id': 'cp_secret_alias',
             'status': 'completed',
+            'terminal': False,
             'title': 'Follow the last clue',
             'summary': 'The party followed the evidence to its conclusion.',
         },
         {
             'id': 'cp_public_rumor',
             'status': 'open',
+            'terminal': False,
             'title': 'Hear a public rumor',
         },
     ]

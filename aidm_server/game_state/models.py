@@ -386,7 +386,8 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
     race_ability_state = stats.get('race_ability_state', stats.get('raceAbilityState'))
     if isinstance(race_ability_state, dict):
         actor['raceAbilityState'] = deepcopy(race_ability_state)
-    # Deferred imports: both modules import this one.
+    # Deferred imports: these modules import this one.
+    from aidm_server.commerce import item_price
     from aidm_server.game_clock import hit_dice_for
     from aidm_server.item_effects import item_effect_descriptor
 
@@ -395,6 +396,9 @@ def player_character_from_model(player: Player) -> dict[str, Any]:
         descriptor = item_effect_descriptor(item, class_name=player.class_)
         if descriptor:
             item['itemEffect'] = descriptor
+        price = item_price(item)
+        if price:
+            item['price'] = price
     return actor
 
 

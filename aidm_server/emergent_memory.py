@@ -41,6 +41,7 @@ from aidm_server.models import (
     Campaign,
     DmTurn,
     Player,
+    Session,
     StoryEntity,
     StoryFact,
     StoryThread,
@@ -282,6 +283,28 @@ def _find_existing_entity(
     return _EntityLookupIndex(campaign_id).find(incoming_type, incoming_name)
 
 
+def _session_places_and_party(session_id: int | None, speaking_player_name: str | None) -> tuple[list[dict], list[str]]:
+    """The session's known and catalog locations, and the names of its characters."""
+
+    session_obj = db.session.get(Session, session_id) if session_id else None
+    snapshot = safe_json_loads(session_obj.state_snapshot, {}) if session_obj else {}
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    pack = snapshot.get('campaignPack') if isinstance(snapshot.get('campaignPack'), dict) else {}
+    catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
+    locations = [
+        location
+        for source in (snapshot.get('locations'), catalog.get('locations'))
+        for location in (source if isinstance(source, list) else [])
+        if isinstance(location, dict)
+    ]
+    names = [
+        str(actor.get('name') or '').strip()
+        for actor in (snapshot.get('playerCharacters') or [])
+        if isinstance(actor, dict)
+    ]
+    return locations, [name for name in [*names, speaking_player_name or ''] if name]
+
+
 def _heuristic_patch(
     turn: DmTurn,
     campaign: Campaign,
@@ -290,7 +313,8 @@ def _heuristic_patch(
     triggered_segments: list[dict],
 ) -> dict:
     patch = _normalize_patch(None)
-    location = infer_location_update(turn.player_input, dm_output)
+    locations, party_names = _session_places_and_party(turn.session_id, speaking_player_name)
+    location = infer_location_update(turn.player_input, dm_output, locations=locations, subjects=party_names)
     if location:
         patch['entities'].append(
             {
@@ -492,8 +516,16 @@ def apply_immediate_state_changes(turn: DmTurn, campaign: Campaign, dm_output: s
 
     patch = extract_deterministic_state_patch(turn, dm_output)
     validated_patch, rejections = validate_canon_patch(turn=turn, campaign=campaign, patch=patch)
-    inventory_changes = _apply_inventory_changes(turn, validated_patch['inventory_changes'])
-    character_state_changes = _apply_character_state_changes(turn, dm_output or '')
+    # Once the state pipeline owns inventory and coin, narration never changes them here.
+    managed_domains = _state_pipeline_managed_domains(turn)
+    inventory_changes = (
+        [] if 'inventory' in managed_domains else _apply_inventory_changes(turn, validated_patch['inventory_changes'])
+    )
+    character_state_changes = _apply_character_state_changes(
+        turn,
+        dm_output or '',
+        include_currency='currency' not in managed_domains,
+    )
     summary = {
         'inventory_changes_applied': inventory_changes,
         'character_state_changes_applied': character_state_changes,

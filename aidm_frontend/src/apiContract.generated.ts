@@ -59,6 +59,43 @@ export type CustomRaceGenerateResponse = { draftRace: RaceDefinition; balanceAna
 
 export type CustomRaceSaveResponse = { race: RaceDefinition; summary: RaceSummary }
 
+export type CreationClassFeature = {
+  name: string
+  summary: string
+}
+
+export type CreationLaterClassFeature = {
+  level: number
+  name: string
+  summary: string
+}
+
+export type CreationClassOption = {
+  id: string
+  name: string
+  hitDie: number
+  savingThrows: string[]
+  skillChoices: { count: number; options: string[] }
+  fightingStyles?: { level: number; options: string[] }
+  expertise?: { count: number }
+  startingKit: string[]
+  cantrips: string[]
+  spells: string[]
+  levelOneFeatures: CreationClassFeature[]
+  laterFeatures: CreationLaterClassFeature[]
+}
+
+export type CreationBackgroundOption = {
+  id: string
+  name: string
+  skills: string[]
+}
+
+export type CreationOptionsResponse = {
+  classes: CreationClassOption[]
+  backgrounds: CreationBackgroundOption[]
+}
+
 export type CreatureSource = 'core_bestiary' | 'campaign_pack' | 'region_bestiary' | 'generated' | 'generated_variant' | 'user_custom' | 'evolved'
 
 export type BestiaryScope = 'core' | 'campaign' | 'region' | 'session'

@@ -8,8 +8,10 @@ from aidm_server.canon_inventory import append_drop_all_inventory_changes_from_t
 from aidm_server.canon_text import int_or_default
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.modifiers import MODIFIER_ENGINE_SOURCE
+from aidm_server.combat.intent_planner import attach_intents_to_combat
 from aidm_server.combat.pipeline import (
     combat_turn_advance_change,
+    deterministic_enemy_intent_plan,
     finalize_combat_prepare,
     prepare_combat_for_turn,
     prepare_combat_from_dm_response,
@@ -57,6 +59,7 @@ from aidm_server.game_state.validation.validator import (
     validated_changes_for_application,
 )
 from aidm_server.models import Campaign, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.price_list import catalog_item, normalize_price
 from aidm_server.turn_events import record_turn_event
 
 
@@ -68,6 +71,7 @@ SAFE_PRE_DM_IMMEDIATE_CHANGE_TYPES = {
     'inventory.unequip',
     'inventory.add',
     'inventory.remove',
+    'currency.add',
     'scene.item.add',
     'scene.item.remove',
     'scene.move_location',
@@ -604,6 +608,52 @@ def _turn_combat_action(turn: DmTurn) -> dict[str, Any] | None:
     return combat_action
 
 
+def _opens_with_enemy_turns(state: dict[str, Any], applied_changes: list[dict[str, Any]]) -> bool:
+    """A fight an authored trigger started this turn whose first turns belong to enemies.
+
+    Those enemies act in this same turn, up to the first player character, so
+    no player is left waiting on "X is acting now".
+    """
+
+    if not any(
+        isinstance(change, dict) and change.get('type') == 'combat.start' and isinstance(change.get('campaignPackTrigger'), dict)
+        for change in applied_changes
+    ):
+        return False
+    combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
+    if str(combat.get('status') or '') != 'active':
+        return False
+    current_actor = combat_turn_context(combat).get('currentActor')
+    return isinstance(current_actor, dict) and current_actor.get('team') == 'enemy'
+
+
+def _opening_enemy_turn_changes(
+    state: dict[str, Any],
+    *,
+    turn_id: int,
+    actor_id: str,
+    already_applied: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The engine's resolution of an enemy opening block that narration never saw."""
+
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    combat_context = combat_summary_for_dm(attach_intents_to_combat(combat, deterministic_enemy_intent_plan(combat)))
+    resolved_context = build_dm_combat_context(
+        state=state,
+        combat_context=combat_context,
+        pending_rolls=[],
+        resolved_player_roll=False,
+        turn_id=turn_id,
+    )
+    return derive_trusted_damage_changes(
+        state=state,
+        dm_context_packet={'combatState': resolved_context},
+        actor_id=actor_id,
+        turn_id=turn_id,
+        already_applied_changes=already_applied,
+    ).all_changes
+
+
 def _combat_enemy_deferred_reason(turn: DmTurn) -> str | None:
     combat_action = _turn_combat_action(turn)
     if not isinstance(combat_action, dict):
@@ -998,6 +1048,19 @@ def _without_confirmed_inventory_overlaps(
     return filtered
 
 
+def _names_revealed_item(change: dict[str, Any], revealed: dict[str, Any]) -> bool:
+    item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    change_id = str(change.get('itemId') or item.get('id') or '').strip()
+    if change_id and change_id == str(revealed.get('id') or '').strip():
+        return True
+    return bool(normalize_item_name(_narrated_item_name(change)) == normalize_item_name(revealed.get('name')) != '')
+
+
+def _narrated_item_name(change: dict[str, Any]) -> str:
+    item = change.get('item') if isinstance(change.get('item'), dict) else {}
+    return str(change.get('itemName') or item.get('name') or '').strip()
+
+
 def _without_applied_immediate_overlaps(
     changes: list[dict[str, Any]],
     applied_immediate: list[dict[str, Any]],
@@ -1039,6 +1102,19 @@ def _without_applied_immediate_overlaps(
         for candidate in changes or []
         if isinstance(candidate, dict) and str(candidate.get('type') or '').strip() == 'scene.item.remove'
     ]
+    # Contents an object action revealed this turn stay in the scene until a
+    # typed pickup takes them: narrating the reveal neither carries an item
+    # off nor pockets a pile of coins.
+    revealed_items = [
+        item
+        for change in applied
+        if change.get('type') == 'scene.interactable.action' and isinstance(change.get('event'), dict)
+        for item in (change['event'].get('revealedItems') or [])
+        if isinstance(item, dict)
+    ]
+    revealed_coins = {
+        (code, amount) for item in revealed_items for code, amount in normalize_price(item.get('currency')).items()
+    }
     filtered: list[dict[str, Any]] = []
     for change in changes or []:
         if not isinstance(change, dict):
@@ -1082,14 +1158,28 @@ def _without_applied_immediate_overlaps(
             for trade in applied_trades
         ):
             continue
-        # A free-form DM response is not an item source. Inventory gains must
-        # come from a validated typed transaction (pickup/commerce/transfer),
-        # the quest engine, or another authoritative subsystem. Otherwise a
-        # sentence such as "you find a sword" could mint equipment directly
-        # into the persistent inventory.
-        if not intent_kind and change_type == 'inventory.add' and str(change.get('source') or '') == 'post_dm':
-            if not any(_item_reference_matches(change, removal) for removal in grounded_scene_removals):
-                continue
+        if change_type in {'inventory.add', 'scene.item.remove'} and any(
+            _names_revealed_item(change, item) for item in revealed_items
+        ):
+            continue
+        if change_type == 'currency.add' and (
+            str(change.get('currency') or '').strip().lower(),
+            int_or_default(change.get('amount'), default=0),
+        ) in revealed_coins:
+            continue
+        # A free-form DM response is not an item source. Inventory gains come
+        # from a validated typed transaction (pickup, purchase, reward, object
+        # contents); narration may only confirm the typed item request or name
+        # an item it lifts from the scene or one the item catalog knows.
+        # Otherwise "the quest takes a step forward" mints a "step forward".
+        if (
+            change_type == 'inventory.add'
+            and str(change.get('source') or '') == 'post_dm'
+            and not (intent_kind == 'item' and _item_reference_matches(change, intent_item))
+            and not any(_item_reference_matches(change, removal) for removal in grounded_scene_removals)
+            and catalog_item(_narrated_item_name(change)) is None
+        ):
+            continue
         if intent_kind == 'item' and inventory_action == 'pick_up':
             if change_type in {'inventory.add', 'scene.item.remove'} and _item_reference_matches(change, intent_item):
                 continue
@@ -1586,7 +1676,8 @@ def pre_dm_pipeline(
         prepare_result=combat_prepare,
     )
 
-    enemy_deferred_reason = _combat_enemy_deferred_reason(turn)
+    opening_enemy_turns = _opens_with_enemy_turns(state_before_dm, [*applied_immediate, *applied_combat])
+    enemy_deferred_reason = None if opening_enemy_turns else _combat_enemy_deferred_reason(turn)
     dm_context = _dm_context_packet(
         state=state_before_dm,
         player_message=player_message,
@@ -1600,7 +1691,8 @@ def pre_dm_pipeline(
         ),
         applied_changes=[*applied_immediate, *applied_combat],
         combat_context=combat_context_for_dm,
-        resolved_player_roll=_turn_awaits_player_roll(turn) or _resolved_player_roll_should_defer_enemy(turn),
+        resolved_player_roll=not opening_enemy_turns
+        and (_turn_awaits_player_roll(turn) or _resolved_player_roll_should_defer_enemy(turn)),
         player_resolved_action=player_resolved_action,
         enemy_deferred_reason=enemy_deferred_reason,
         turn_id=turn.turn_id,
@@ -1629,6 +1721,7 @@ def pre_dm_pipeline(
         'combatAppliedChanges': applied_combat,
         'combatDebug': combat_prepare.get('debug') if isinstance(combat_prepare.get('debug'), dict) else {},
         'dmContextPacket': dm_context,
+        'openingEnemyTurns': opening_enemy_turns,
         'stateLog': state_log,
         'managedDomains': MANAGED_STATE_DOMAINS,
     }
@@ -2023,6 +2116,23 @@ def post_dm_pipeline(
         post_apply = apply_state_changes(state_before_dm, post_changes)
         final_state = post_apply['nextState']
         applied_post = post_apply['appliedChanges']
+        opening_enemy_turns = pipeline.get('openingEnemyTurns') is True
+        if not opening_enemy_turns and _opens_with_enemy_turns(final_state, applied_post):
+            # Narration set off the trigger: the enemies' opening turns resolve
+            # now, without narration, so the turn still ends with a player.
+            opening_changes = _opening_enemy_turn_changes(
+                final_state,
+                turn_id=turn.turn_id,
+                actor_id=actor_id,
+                already_applied=[*already_applied, *applied_post],
+            )
+            opening_validation = validate_state_changes(state=final_state, changes=opening_changes)
+            opening_apply = apply_state_changes(final_state, validated_changes_for_application(opening_validation))
+            final_state = opening_apply['nextState']
+            applied_post = [*applied_post, *opening_apply['appliedChanges']]
+            post_validation = _merge_validation_results(post_validation, opening_validation)
+            trusted_damage_changes = [*trusted_damage_changes, *opening_changes]
+            opening_enemy_turns = True
         final_combat = final_state.get('combat') if isinstance(final_state.get('combat'), dict) else {}
         engine_end_reason = (
             check_combat_end(final_combat)
@@ -2049,7 +2159,12 @@ def post_dm_pipeline(
                 if 'engine_combat_end' not in notes:
                     notes.append('engine_combat_end')
                 post_extraction['notes'] = notes
-        turn_advance_change = combat_turn_advance_change(state=final_state, turn=turn, actor_id=actor_id)
+        turn_advance_change = combat_turn_advance_change(
+            state=final_state,
+            turn=turn,
+            actor_id=actor_id,
+            opening_enemy_turns=opening_enemy_turns,
+        )
         if turn_advance_change:
             advance_validation = validate_state_changes(state=final_state, changes=[turn_advance_change], expected_actor_id=actor_id)
             advance_changes = validated_changes_for_application(advance_validation)

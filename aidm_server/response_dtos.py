@@ -688,6 +688,7 @@ def player_derived_payload(player: Player) -> dict:
         'languages': list(character_state.get('languages') or []),
         'hitDie': character_state.get('hit_die'),
         'proficiencyBonus': character_state.get('proficiency_bonus'),
+        'savingThrowProficiencies': list(character_state.get('saving_throw_proficiencies') or []),
     }
 
 

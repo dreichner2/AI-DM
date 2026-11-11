@@ -355,3 +355,103 @@ def test_linter_reports_unknown_ids_in_triggers():
         ('invalid_encounter_trigger', 'encounters[3].trigger.type'),
         ('invalid_encounter_trigger', 'encounters[4].trigger.flagKey'),
     }
+
+
+@pytest.fixture()
+def play_now_table(app, client, socketio, monkeypatch):
+    from tests.test_flagship_adventure import Table
+
+    def fail_network(*_args, **_kwargs):
+        raise AssertionError('Safe Mode must not call a network or CLI model')
+
+    monkeypatch.setattr('requests.Session.request', fail_network)
+    monkeypatch.setattr('aidm_server.llm_providers.http_post', fail_network)
+    monkeypatch.setattr('aidm_server.llm_providers.subprocess.Popen', fail_network)
+    app.config.update(AIDM_LLM_PROVIDER='fallback', AIDM_LLM_MODEL='deterministic-v1')
+    response = client.post('/api/onboarding/play-now', json={})
+    assert response.status_code == 201, response.get_data(as_text=True)
+    ids = {key: response.get_json()[key] for key in ('session_id', 'campaign_id', 'player_id', 'workspace_id')}
+    socket_client = socketio.test_client(app, flask_test_client=app.test_client())
+    socket_client.emit(
+        'join_session',
+        {'session_id': ids['session_id'], 'player_id': ids['player_id'], 'workspace_id': ids['workspace_id']},
+    )
+    socket_client.get_received()
+    yield Table(app, client, socket_client, ids)
+    socket_client.disconnect()
+
+
+def test_a_self_started_fight_runs_the_enemies_opening_turns_up_to_the_hero(play_now_table, monkeypatch):
+    table = play_now_table
+    # The enemies win initiative; every enemy attack roll is a 1 and misses.
+    monkeypatch.setattr(
+        'aidm_server.combat.state._deterministic_initiative_roll',
+        lambda _seed, actor_id: 1 if actor_id.startswith('player_') else 20,
+    )
+    monkeypatch.setattr('aidm_server.game_state.orchestration.combat_resolution._random_roll', lambda _sides: 1)
+    hero_id = f"player_{table.ids['player_id']}"
+
+    road = table.travel('loc_old_north_road', 'The Old North Road')
+    combat = road.snapshot['combat']
+
+    assert road.encounter == 'enc_pale_lantern_detour'
+    assert combat['status'] == 'active'
+    assert combat['initiative'][-1]['participantId'] == hero_id
+    assert (combat['flags']['activeActorId'], combat['round']) == (hero_id, 1)
+    with table.app.app_context():
+        turn = DmTurn.query.filter_by(session_id=table.ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
+        resolved = safe_json_loads(turn.metadata_json, {})['state_pipeline']['dmContextPacket']['combatState']['enemyResolvedActions']
+    enemy_ids = [participant['id'] for participant in combat['participants'] if participant['team'] == 'enemy']
+    assert sorted(action['enemyId'] for action in resolved) == sorted(enemy_ids)
+    assert table._hud_action('combat.end_turn') is not None
+
+
+def test_a_fight_narration_sets_off_still_ends_the_turn_with_the_hero(client, app, monkeypatch):
+    response = client.post('/api/campaigns/import-pack', json={'pack': _travel_pack()})
+    assert response.status_code == 201, response.get_json()
+    payload = response.get_json()
+    monkeypatch.setattr(turn_pipeline_module, 'recent_timeline_for_session', lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        'aidm_server.combat.state._deterministic_initiative_roll',
+        lambda _seed, actor_id: 1 if actor_id.startswith('player_') else 20,
+    )
+    monkeypatch.setattr('aidm_server.game_state.orchestration.combat_resolution._random_roll', lambda _sides: 1)
+
+    def narrated_arrival(**kwargs):
+        return {
+            'proposedChanges': [
+                {'id': 'narrated_move', 'turnId': kwargs['turn_id'], 'type': 'scene.move_location', 'source': 'post_dm',
+                 'actorId': kwargs['actor_id'], 'locationId': 'bridge', 'name': 'Bridge'},
+            ],
+            'uncertainChanges': [],
+            'notes': [],
+            'debug': {},
+        }
+
+    monkeypatch.setattr(turn_pipeline_module, 'extract_post_dm_outcomes', narrated_arrival)
+
+    with app.app_context():
+        campaign = db.session.get(Campaign, payload['campaign_id'])
+        session_obj = db.session.get(Session, payload['session_id'])
+        player = Player(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id, name='Alice',
+                        character_name='Seraphina', class_='Fighter', level=1,
+                        stats=safe_json_dumps({'ability_scores': {'strength': 15, 'dexterity': 12, 'constitution': 14}}, {}))
+        db.session.add(player)
+        db.session.flush()
+        turn = DmTurn(session_id=session_obj.session_id, campaign_id=campaign.campaign_id, player_id=player.player_id,
+                      player_input='We follow the river.', dm_output='The path bends and the bridge looms ahead.')
+        db.session.add(turn)
+        db.session.flush()
+        turn_pipeline_module.pre_dm_pipeline(
+            turn=turn, session_obj=session_obj, campaign=campaign, player=player, player_message=turn.player_input,
+        )
+        result = turn_pipeline_module.post_dm_pipeline(
+            turn=turn, session_obj=session_obj, campaign=campaign, player=player, dm_response_text=turn.dm_output,
+        )
+        persisted = safe_json_loads(session_obj.state_snapshot, {})
+
+    applied_types = [change['type'] for change in result['postAppliedChanges']]
+    combat = persisted['combat']
+    assert applied_types[:2] == ['scene.move_location', 'combat.start']
+    assert 'combat.ability.mark_used' in applied_types or 'combat.move' in applied_types
+    assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', f'player_{player.player_id}', 1)

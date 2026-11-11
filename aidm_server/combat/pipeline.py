@@ -347,7 +347,7 @@ def _reload_validated_combat_orm(
     return loaded_session, loaded_campaign, loaded_turn
 
 
-def _deterministic_enemy_intent_plan(combat: dict[str, Any]) -> dict[str, Any]:
+def deterministic_enemy_intent_plan(combat: dict[str, Any]) -> dict[str, Any]:
     deterministic_combat = deepcopy(combat)
     flags = (
         dict(deterministic_combat.get('flags'))
@@ -414,7 +414,7 @@ def _plan_enemy_intents_at_provider_boundary(
             except Exception as exc:
                 planning_error = f'Enemy intent planning failed: {exc}'
                 try:
-                    intent_plan = _deterministic_enemy_intent_plan(combat)
+                    intent_plan = deterministic_enemy_intent_plan(combat)
                     deterministic_fallback_used = True
                 except Exception as fallback_exc:
                     planning_error = (
@@ -1049,23 +1049,46 @@ def death_saves_due(combat: Any, *, turn_id: Any) -> list[dict[str, Any]]:
     return results
 
 
-def combat_turn_advance_change(*, state: dict[str, Any], turn: DmTurn, actor_id: str | None = None) -> dict[str, Any] | None:
+def combat_turn_advance_change(
+    *,
+    state: dict[str, Any],
+    turn: DmTurn,
+    actor_id: str | None = None,
+    opening_enemy_turns: bool = False,
+) -> dict[str, Any] | None:
+    """The roster advance after a resolved turn.
+
+    ``opening_enemy_turns`` marks the turn in which a triggered fight started
+    with enemies first: their opening block was resolved with the narration,
+    so initiative passes to the first player character.
+    """
+
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if not _combat_is_active(combat):
         return None
-    combat_action = _turn_combat_action(turn)
-    # Only a server-issued action belonging to the eligible active actor may
-    # hand initiative to the enemy block.  Chat, item/interact intents, and
-    # other narration-bearing turns must never implicitly end combat turns.
-    if combat_action is None:
-        return None
-    action_economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
-    if action_economy.get('endsTurn') is not True:
-        return None
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
-    submitted_actor_id = str(flags.get('submittedActorId') or actor_id or display_actor_id(turn.player_id)).strip()
     active_actor_id = str(flags.get('activeActorId') or '').strip()
-    if flags.get('offTurnSubmission') and submitted_actor_id and active_actor_id and submitted_actor_id != active_actor_id:
+    if opening_enemy_turns:
+        if (combat_turn_context(combat).get('currentActor') or {}).get('team') != 'enemy':
+            return None
+    else:
+        combat_action = _turn_combat_action(turn)
+        # Only a server-issued action belonging to the eligible active actor may
+        # hand initiative to the enemy block.  Chat, item/interact intents, and
+        # other narration-bearing turns must never implicitly end combat turns.
+        if combat_action is None:
+            return None
+        action_economy = combat_action.get('economy') if isinstance(combat_action.get('economy'), dict) else {}
+        if action_economy.get('endsTurn') is not True:
+            return None
+    submitted_actor_id = str(flags.get('submittedActorId') or actor_id or display_actor_id(turn.player_id)).strip()
+    if (
+        not opening_enemy_turns
+        and flags.get('offTurnSubmission')
+        and submitted_actor_id
+        and active_actor_id
+        and submitted_actor_id != active_actor_id
+    ):
         names = _actor_name_by_id(combat)
         return {
             'id': stable_change_id(turn.turn_id, 'combat.turn.off_turn', submitted_actor_id, active_actor_id),
@@ -1126,13 +1149,8 @@ def _should_start_combat(state: dict[str, Any], player_message: str) -> bool:
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if _combat_is_active(combat):
         return False
-    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
-    combat_state = str(scene.get('combatState') or '').lower()
-    if combat_state in {'pending', 'active'}:
-        return bool(DIRECT_HOSTILE_ACTION_PATTERN.search(player_message or ''))
-    if combat_state in {'resolved', 'ended'}:
-        return bool(DIRECT_HOSTILE_ACTION_PATTERN.search(player_message or ''))
-    return bool(DIRECT_HOSTILE_ACTION_PATTERN.search(player_message or ''))
+    # Striking an object ("I kick the door") is an ordinary action.
+    return hostile_action_targets_creature(player_message)
 
 
 def _should_start_combat_from_dm_response(state: dict[str, Any], dm_response: str) -> bool:

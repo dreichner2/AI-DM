@@ -484,3 +484,11 @@ def test_checkpoint_completes_when_all_flags_match(client, app):
     assert matched.changed is True
     assert matched.reason == 'checkpoint_flags_matched'
     assert matched.active_checkpoint_id == 'cp_end'
+
+
+def test_the_imported_scene_is_authoritative_from_turn_zero(client, app):
+    payload = _import(client, _pack())
+    with app.app_context():
+        snapshot = safe_json_loads(db.session.get(Session, payload['session_id']).state_snapshot, {})
+
+    assert (snapshot['currentScene']['locationId'], snapshot['currentScene']['updatedAtTurn']) == ('gatehouse', 0)

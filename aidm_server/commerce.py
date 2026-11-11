@@ -75,6 +75,8 @@ def stock_entry(raw: Mapping[str, Any]) -> dict[str, Any] | None:
         normalized['effectId'] = _text(entry['effectId'])
     if isinstance(entry.get('metadata'), dict) and entry['metadata']:
         normalized['metadata'] = deepcopy(entry['metadata'])
+    if _text(entry.get('itemId')):
+        normalized['itemId'] = _text(entry['itemId'])
     return normalized
 
 
@@ -220,11 +222,12 @@ def _purchased_item(actor: Mapping[str, Any], entry: Mapping[str, Any], quantity
             if price_key(item.get('name')) == price_key(entry['name'])
             and not item.get('equipped')
             and item_effect_id(item) == (entry.get('effectId') or item_effect_id({'name': entry['name']}))
+            and (not entry.get('itemId') or _text(item.get('id')) == entry['itemId'])
         ),
         None,
     )
     item = {
-        'id': _text(stack.get('id')) if stack else stable_item_id(entry['name']),
+        'id': _text(stack.get('id')) if stack else entry.get('itemId') or stable_item_id(entry['name']),
         'name': entry['name'],
         'type': entry['type'],
         'quantity': quantity,

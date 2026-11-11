@@ -37,6 +37,12 @@ OPTIONAL_OBJECTIVES = {
     'obj_learn_ward_choices',
 }
 ENGINE_DIRECTOR_RULES = {'mainQuestGeneration', 'sideQuestGeneration', 'newNpcs', 'newLocations', 'offTrackPolicy', 'checkpointStyle'}
+FINAL_CHECKPOINT = next(checkpoint for checkpoint in PACK['checkpoints'] if checkpoint.get('terminal'))
+ENDING = {
+    'checkpointId': FINAL_CHECKPOINT['id'],
+    'title': FINAL_CHECKPOINT['playerTitle'],
+    'summary': FINAL_CHECKPOINT['playerSummary'],
+}
 
 
 @dataclass
@@ -140,10 +146,9 @@ class Table:
         return self._changed()
 
     def act(self, target: str, action: str, name: str) -> Change:
-        # The roll classifier still reads an object action's text, so the text
-        # names the action without a skill verb; the object rolls its own check.
+        # The client's own wording; the object rolls its own check on the server.
         intent = {'kind': 'object', 'source': 'scene_panel', 'object': {'id': target, 'action': action}}
-        return self.send(f'{action.title()}: {name}.', intent)
+        return self.send(f'Arden Vale attempts to {action} {name}.', intent)
 
     def travel(self, location_id: str, name: str) -> Change:
         intent = {'kind': 'travel', 'source': 'scene_panel', 'location': {'id': location_id, 'name': name}}
@@ -237,18 +242,11 @@ def table(app, client, socketio, monkeypatch):
     monkeypatch.setenv('AIDM_HELPER_LLM_PROVIDER', 'deepseek')
     monkeypatch.setenv('AIDM_DEEPSEEK_API_KEY', 'deepseek-test-key')
     app.config.update(AIDM_LLM_PROVIDER='fallback', AIDM_LLM_MODEL='deterministic-v1', AIDM_STATE_PIPELINE_HELPER_IN_TESTS=True)
-    # Seeded rollers: object checks roll 15, the hero rolls 15 to hit and wins
-    # initiative, and enemies roll 1.
+    # Seeded rollers: object checks roll 15, the hero rolls 15 to hit, and
+    # enemies roll 1. Initiative is the server's own.
     monkeypatch.setattr('aidm_server.interactables.deterministic_roller', lambda _seed: lambda _sides: 15)
     monkeypatch.setattr('aidm_server.player_rolls.secrets.randbelow', lambda sides: 14 if sides == 20 else sides - 1)
-    monkeypatch.setattr(
-        'aidm_server.combat.state._deterministic_initiative_roll',
-        lambda _seed, actor_id: 20 if actor_id.startswith('player_') else 1,
-    )
     monkeypatch.setattr('aidm_server.game_state.orchestration.combat_resolution._random_roll', lambda _sides: 1)
-    # Narration may not move the party: the canon heuristic reads "Within reach
-    # are Mara Reedwake" as arrival at a place called "are Mara Reedwake".
-    monkeypatch.setattr('aidm_server.emergent_memory.infer_location_update', lambda *_args: None)
 
     response = client.post('/api/onboarding/play-now', json={})
     assert response.status_code == 201, response.get_data(as_text=True)
@@ -291,6 +289,14 @@ def _quest_status(snapshot: dict) -> str:
     return next(quest for quest in snapshot['quests'] if quest['id'] == QUEST)['status']
 
 
+def _ending(snapshot: dict) -> dict | None:
+    return filter_session_snapshot_for_player(snapshot)['campaignPack'].get('ending')
+
+
+def _scene_items(change: Change) -> list[str]:
+    return [item['id'] for item in change.snapshot['currentScene']['items']]
+
+
 def test_the_pack_lints_strictly_clean_and_keeps_only_engine_director_rules(app):
     with app.app_context():
         result = lint_campaign_pack_file(PACK_PATH, workspace_id='owner')
@@ -329,6 +335,7 @@ def test_the_careful_route_renews_the_ward(table):
     start = table.last
     assert _hero(start)['inventory']['currency']['gp'] == 25
     assert _flags(start) == {key: False for key in PACK['startingState']['flags']}
+    assert (start['currentScene']['locationId'], start['currentScene']['updatedAtTurn']) == ('loc_lantern_post_inn', 0)
     assert start['currentScene']['restPolicy'] == 'safe'
     assert _visible_objects(start) == ['inn_caravan_ledger', 'inn_drivers_bench', 'inn_lead_wagon', 'inn_wagon_bell']
     assert [flag['key'] for flag in start['campaignPack']['storyFlags']] == [flag['key'] for flag in PACK['storyFlags']]
@@ -362,15 +369,25 @@ def test_the_careful_route_renews_the_ward(table):
     strongbox = table.act('inn_wagon_strongbox', 'search', 'Wagon Strongbox')
     assert strongbox.flags == {'stone_fragment_recovered': True}
     assert strongbox.clues == {'clue_road_stone_fragment'}
+    assert _scene_items(strongbox) == ['road_stone_fragment', 'inn_wagon_strongbox_coins']
+    assert (strongbox.gp, strongbox.items) == (0, Counter())
     assert strongbox.encounter == 'enc_empty_caravan_pressure'
-    assert strongbox.snapshot['combat']['status'] == 'active'
     assert _enemies(strongbox.snapshot) == ['enemy_ashmarked_cutthroats']
+    # The cutthroat wins initiative and takes its opening turn in the same turn:
+    # the hero is the one acting when the fight is handed over.
+    combat = strongbox.snapshot['combat']
+    assert combat['status'] == 'active'
+    assert combat['initiative'][0]['participantId'].startswith('enemy_')
+    assert combat['flags']['activeActorId'] == _hero(strongbox.snapshot)['id']
 
     fight = table.fight()
     assert fight.snapshot['combat']['status'] == 'ended'
-    assert _rewards(fight.snapshot) == [('enc_empty_caravan_pressure', 'victory')]
+    # Wounded and alone, the cutthroat yields: a successful outcome, rewarded once.
+    assert _rewards(fight.snapshot) == [('enc_empty_caravan_pressure', 'negotiation')]
     assert (fight.gp, fight.xp, fight.items['Ash-Marked Token']) == (25, 100, 1)
     assert table.take('road_stone_fragment', 'Pale Road-Stone Fragment').items['Pale Road-Stone Fragment'] == 1
+    coins = table.take('inn_wagon_strongbox_coins', '15 gp')
+    assert (coins.gp, coins.items) == (15, Counter())
     assert table.act('inn_wagon_bell', 'use', 'Wagon Bell').clues == {'clue_pale_lantern_bell'}
 
     potion = table.buy('merchant_mara_counter', 'merchant_mara_counter_0', 'a Potion of Healing')
@@ -392,6 +409,10 @@ def test_the_careful_route_renews_the_ward(table):
     assert road.snapshot['currentScene']['restPolicy'] == 'risky'
     lanterns = table.end_combat('all_enemies_defeated')
     assert (lanterns.gp, lanterns.xp) == (20, 150)
+    assert table.end_combat('all_enemies_defeated').gp == 0
+    cart = table.act('road_abandoned_cart', 'search', 'Abandoned Handcart')
+    assert _scene_items(cart) == ['road_cart_torch', 'road_abandoned_cart_coins']
+    assert table.take('road_abandoned_cart_coins', '8 gp').gp == 8
 
     waystation = table.travel('loc_waystation_scratched_names', 'Waystation of Scratched Names')
     assert waystation.objectives == {'obj_follow_changing_road': 'completed'}
@@ -412,29 +433,33 @@ def test_the_careful_route_renews_the_ward(table):
     ambush = table.end_combat('all_enemies_defeated')
     assert ambush.flags == {'valley_route_known': True}
     assert ambush.places == {'loc_valley_last_road_stone': 'discovered'}
+    assert ambush.clues == {'clue_final_valley_map'}
     assert (ambush.gp, ambush.xp, ambush.items['Ashmarked Orders']) == (40, 250, 1)
 
     hearth = table.act('ws_cold_hearth', 'search', 'Cold Hearth')
     assert hearth.flags == {'oath_learned': True}
     assert hearth.clues == {'clue_original_road_oath'}
+    assert (_scene_items(hearth), hearth.items) == (['rusted_waystation_key'], Counter())
     table.take('rusted_waystation_key', 'Rusted Waystation Key')
     table.act('ws_lockbox', 'unlock', "Wardens' Lockbox")
     table.act('ws_lockbox', 'open', "Wardens' Lockbox")
     lockbox = table.act('ws_lockbox', 'search', "Wardens' Lockbox")
     assert lockbox.flags == {'true_name_known': True}
     assert lockbox.clues == {'clue_cinder_scribe_true_name'}
-    assert [item['id'] for item in lockbox.snapshot['currentScene']['items']] == ['ws_lockbox_potion_of_healing']
+    assert _scene_items(lockbox) == ['ws_lockbox_potion_of_healing', 'ws_lockbox_coins']
+    assert lockbox.gp == 0
+    assert table.take('ws_lockbox_coins', '20 gp').gp == 20
 
     yard = table.travel('loc_old_masons_yard', "Old Mason's Yard")
     assert yard.snapshot['currentScene']['restPolicy'] == 'safe'
     assert _active_checkpoint(yard.snapshot) == 'cp_05_stonewright_warning'
     rubbings = table.act('yard_rubbing_table', 'inspect', 'Rubbing Table')
     assert rubbings.flags == {'ward_choices_known': True}
-    assert rubbings.clues == {'clue_final_valley_map'}
     assert rubbings.objectives == {'obj_learn_ward_choices': 'completed'}
     assert _active_checkpoint(rubbings.snapshot) == 'cp_06_final_valley'
     hammer = table.buy('merchant_brokk_tool_rack', 'merchant_brokk_tool_rack_0', "a Mason's Hammer")
     assert (hammer.gp, hammer.items["Mason's Hammer"]) == (-8, 1)
+    assert 'masons_hammer' in {item['id'] for item in _hero(hammer.snapshot)['inventory']['items']}
 
     cairns = table.travel('loc_cairns_roadwardens', 'Cairns of the Roadwardens')
     assert cairns.snapshot['flags']['roadwardens_appeased'] is False
@@ -449,7 +474,9 @@ def test_the_careful_route_renews_the_ward(table):
     assert valley.objectives == {'obj_reach_final_valley': 'completed'}
     assert (valley.encounter, valley.snapshot['combat']['status']) == (None, 'none')
     assert _active_checkpoint(valley.snapshot) == 'cp_06_final_valley'
-    assert table.offers('valley_last_road_stone') == {'break': False, 'inspect': True, 'lock': False, 'use': False}
+    assert table.offers('valley_last_road_stone') == {
+        'break': False, 'inspect': True, 'lock': False, 'trigger': False, 'use': False,
+    }
 
     binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
     assert binding.encounter == 'enc_final_binding'
@@ -461,22 +488,38 @@ def test_the_careful_route_renews_the_ward(table):
     ]
     victory = table.end_combat('all_enemies_defeated')
     assert victory.flags == {'cinder_scribe_resolved': True}
+    assert victory.clues == {'clue_binding_quill'}
     assert (victory.gp, victory.xp, victory.items['Ash-Ink Binding Quill']) == (150, 1100, 1)
-    assert table.offers('valley_last_road_stone') == {'break': True, 'inspect': True, 'lock': True, 'use': True}
+    assert table.offers('valley_last_road_stone') == {
+        'break': True, 'inspect': True, 'lock': True, 'trigger': True, 'use': True,
+    }
 
     renewal = table.act('valley_last_road_stone', 'use', 'The Last Road-Stone')
     assert renewal.flags == {'ward_renewed': True, 'travelers_freed': True, 'quest_road_complete': True}
     assert renewal.objectives == {'obj_decide_ward_fate': 'completed'}
     assert _quest_status(renewal.snapshot) == 'completed'
     assert (renewal.gp, renewal.xp, renewal.items["Roadwarden's Token"]) == (60, 900, 1)
-    assert _completed_checkpoints(renewal.snapshot)[-2:] == ['cp_06_final_valley', 'cp_07_road_remembers']
+    assert _completed_checkpoints(renewal.snapshot)[-1] == 'cp_06_final_valley'
+    assert _active_checkpoint(renewal.snapshot) == FINAL_CHECKPOINT['id']
+    assert _ending(renewal.snapshot) == ENDING
     assert _rewards(renewal.snapshot) == [
-        ('enc_empty_caravan_pressure', 'victory'),
+        ('enc_empty_caravan_pressure', 'negotiation'),
         ('enc_final_binding', 'victory'),
         ('enc_pale_lantern_detour', 'victory'),
         ('enc_roadwarden_judgment', 'negotiation'),
         ('enc_waystation_ambush', 'victory'),
     ]
+    # Narration added nothing: every item came from a pickup, a purchase or a reward.
+    assert set(_item_counts(renewal.snapshot)) == set(_item_counts(start)) | {
+        'Caravan Strongbox Key',
+        'Pale Road-Stone Fragment',
+        'Ash-Marked Token',
+        'Ashmarked Orders',
+        'Rusted Waystation Key',
+        "Mason's Hammer",
+        'Ash-Ink Binding Quill',
+        "Roadwarden's Token",
+    }
 
 
 def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
@@ -510,10 +553,20 @@ def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
 
     binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
     assert binding.encounter == 'enc_final_binding'
-    bound = table.end_combat('objective_failed')
-    assert bound.flags == {'ward_claimed': True, 'quest_road_complete': True}
-    assert bound.objectives == {'obj_decide_ward_fate': 'completed'}
-    assert (bound.gp, bound.xp, bound.items["Roadwarden's Token"]) == (60, 900, 1)
-    assert _quest_status(bound.snapshot) == 'completed'
-    assert {key: _objectives(bound.snapshot)[key] for key in OPTIONAL_OBJECTIVES} == {key: 'open' for key in OPTIONAL_OBJECTIVES}
-    assert table.offers('valley_last_road_stone') == {'break': False, 'inspect': True, 'lock': False, 'use': False}
+    victory = table.end_combat('all_enemies_defeated')
+    assert victory.flags == {'cinder_scribe_resolved': True}
+    assert victory.clues == {'clue_binding_quill'}
+    assert table.offers('valley_last_road_stone') == {
+        'break': False, 'inspect': True, 'lock': False, 'trigger': True, 'use': False,
+    }
+
+    claim = table.act('valley_last_road_stone', 'trigger', 'The Last Road-Stone')
+    assert claim.flags == {'ward_claimed': True, 'quest_road_complete': True}
+    assert claim.objectives == {'obj_decide_ward_fate': 'completed'}
+    assert (claim.gp, claim.xp, claim.items["Roadwarden's Token"]) == (60, 900, 1)
+    assert _quest_status(claim.snapshot) == 'completed'
+    assert {key: _objectives(claim.snapshot)[key] for key in OPTIONAL_OBJECTIVES} == {key: 'open' for key in OPTIONAL_OBJECTIVES}
+    assert _ending(claim.snapshot) == ENDING
+    assert table.offers('valley_last_road_stone') == {
+        'break': False, 'inspect': True, 'lock': False, 'trigger': False, 'use': False,
+    }

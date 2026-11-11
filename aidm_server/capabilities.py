@@ -141,6 +141,7 @@ HTTP_ENDPOINT_CAPABILITIES: dict[tuple[str, str], Capability] = {
     ('races.create_custom_race', 'POST'): 'player_action',
     ('races.update_custom_race', 'PATCH'): 'player_action',
     ('races.delete_custom_race', 'DELETE'): 'player_action',
+    ('rules.get_creation_options', 'GET'): 'player_read',
     # Player onboarding, narration, and feedback.
     ('onboarding.list_pregenerated_characters', 'GET'): 'player_read',
     ('onboarding.play_now', 'POST'): 'player_action',

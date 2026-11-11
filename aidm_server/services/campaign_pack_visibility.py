@@ -7,12 +7,12 @@ from aidm_server.combat.state import normalize_battlefield, normalize_position
 from aidm_server.commerce import open_merchant_projections
 from aidm_server.game_clock import public_clock, scene_rest_policy
 from aidm_server.interactables import project_scene_interactables
-from aidm_server.services.campaign_pack_graph import hidden_to_players
+from aidm_server.services.campaign_pack_graph import hidden_to_players, is_terminal_checkpoint
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
 from aidm_server.world_map import project_world_map
 
 
-PLAYER_REVEALED_CHECKPOINT_STATUSES = frozenset({'active', 'completed', 'skipped', 'failed'})
+PLAYER_REVEALED_CHECKPOINT_STATUSES = frozenset({'active', 'reached', 'completed', 'skipped', 'failed'})
 
 PUBLIC_PLAYER_CHARACTER_KEYS = (
     'id',
@@ -44,6 +44,9 @@ PUBLIC_PLAYER_COMBAT_KEYS = (
     'isAlive',
     'isConscious',
 )
+
+# Where another hero stands; engagedWith is narrowed to visible participants.
+PUBLIC_PLAYER_POSITION_KEYS = ('rangeBand', 'engagedWith')
 
 PUBLIC_NON_PLAYER_COMBAT_KEYS = (
     'id',
@@ -164,6 +167,9 @@ PUBLIC_INITIATIVE_KEYS = (
 )
 
 PUBLIC_DOMAIN_COLLECTIONS = ('clues', 'factions', 'maps', 'handouts', 'lore')
+# Handouts and lore are read in full once the party has them.
+READABLE_DOMAIN_COLLECTIONS = frozenset({'handouts', 'lore'})
+READABLE_DOMAIN_STATUSES = frozenset({'revealed', 'unlocked'})
 
 COMBAT_SINGLE_PARTICIPANT_REFERENCE_KEYS = frozenset(
     {
@@ -305,6 +311,7 @@ def filter_session_snapshot_for_player(
             filtered[key] = [
                 _domain_record_for_viewer(
                     record,
+                    collection=key,
                     visible_location_ids=visible_location_ids,
                     visible_npc_ids=visible_npc_ids,
                     visible_quest_ids=visible_quest_ids,
@@ -512,7 +519,7 @@ def _public_objectives(value: Any) -> list[dict]:
     for record in value:
         if not isinstance(record, dict) or not _record_player_visible(record):
             continue
-        payload = _public_scalar_fields(record, ('id', 'status', 'title', 'name'))
+        payload = _public_scalar_fields(record, ('id', 'status', 'title', 'name', 'optional'))
         _set_public_text(
             payload,
             'description',
@@ -566,6 +573,7 @@ def _quest_for_viewer(
 def _domain_record_for_viewer(
     record: dict,
     *,
+    collection: str,
     visible_location_ids: set[str],
     visible_npc_ids: set[str],
     visible_quest_ids: set[str],
@@ -603,6 +611,8 @@ def _domain_record_for_viewer(
         'public_description',
         'description',
     )
+    if collection in READABLE_DOMAIN_COLLECTIONS and _text(record.get('status')).lower() in READABLE_DOMAIN_STATUSES:
+        _set_public_text(payload, 'text', record, 'playerText', 'player_text', 'text')
     payload['locationIds'] = _visible_reference_ids(record.get('locationIds'), visible_location_ids)
     payload['npcIds'] = _visible_reference_ids(record.get('npcIds'), visible_npc_ids)
     payload['questIds'] = _visible_reference_ids(record.get('questIds'), visible_quest_ids)
@@ -782,6 +792,9 @@ def _combat_participant_for_viewer(record: dict, private_player_ids: frozenset[i
     public_hp.pop('tempHp', None)
     if public_hp:
         payload['hp'] = public_hp
+    if isinstance(record.get('position'), dict):
+        position = normalize_position(record.get('position'))
+        payload['position'] = {key: position[key] for key in PUBLIC_PLAYER_POSITION_KEYS if key in position}
     if isinstance(record.get('conditions'), list):
         payload['conditions'] = _public_string_list(record.get('conditions'))
     death_saves = _public_death_saves(record.get('deathSaves'))
@@ -1022,6 +1035,13 @@ def _filter_combat_for_player(
         current_intent = participant.get('currentIntent')
         if isinstance(current_intent, dict):
             _filter_combat_reference_record(current_intent, visible_ids)
+        position = participant.get('position')
+        if _is_player_combat_participant(participant) and isinstance(position, dict) and 'engagedWith' in position:
+            engaged = _visible_reference_ids(position['engagedWith'], visible_ids)
+            if engaged:
+                position['engagedWith'] = engaged
+            else:
+                position.pop('engagedWith')
     payload = _public_scalar_fields(combat, ('status', 'round', 'turnIndex', 'lastRoundSummary'))
     payload['participants'] = participants
     payload['battlefield'] = _battlefield_for_player(combat.get('battlefield'), scene=scene)
@@ -1100,6 +1120,7 @@ def _player_pack_snapshot(pack: dict, flags: dict) -> dict:
         'failedCheckpointIds': visible_failed_ids,
         'checkpointStatuses': visible_statuses,
         'checkpoints': visible_checkpoints,
+        'ending': player_ending(visible_checkpoints),
     }
     return {key: value for key, value in result.items() if value not in ('', None)}
 
@@ -1137,6 +1158,7 @@ def player_visible_checkpoint_payloads(value: Any, checkpoint_statuses: dict[str
         payload = {
             'id': checkpoint_id,
             'status': status,
+            'terminal': is_terminal_checkpoint(checkpoint),
         }
         title = player_title or ('' if hidden else _text(_first(checkpoint, 'title', 'name')))
         if title:
@@ -1152,6 +1174,19 @@ def player_visible_checkpoint_payloads(value: Any, checkpoint_statuses: dict[str
             payload['optional'] = True
         visible.append(payload)
     return visible
+
+
+def player_ending(visible_checkpoints: list[dict]) -> dict | None:
+    """The reached terminal checkpoint as the story's ending, in its player-safe words."""
+
+    reached = next((checkpoint for checkpoint in visible_checkpoints if checkpoint.get('status') == 'reached'), None)
+    if reached is None:
+        return None
+    return {
+        'checkpointId': reached['id'],
+        'title': reached.get('title') or '',
+        'summary': reached.get('summary') or '',
+    }
 
 
 def _checkpoint_player_hidden(checkpoint: dict) -> bool:
@@ -1250,7 +1285,7 @@ def _checkpoint_statuses(
             continue
         key = _id_key(checkpoint_id)
         if key == active_key:
-            statuses[checkpoint_id] = 'active'
+            statuses[checkpoint_id] = 'reached' if is_terminal_checkpoint(checkpoint) else 'active'
         elif key in failed_keys:
             statuses[checkpoint_id] = 'failed'
         elif key in skipped_keys:

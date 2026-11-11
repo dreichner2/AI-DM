@@ -180,7 +180,7 @@
           "open": false,
           "breakable": true,
           "revealsContentsOnOpen": false,
-          "description": "A squat strongbox of iron-strapped oak, bolted beneath the lead wagon's floor where only someone who knew would look. Its lock is stamped with the same wheel as the key under the driver's bench. Inside, packed in straw, lies a palm-sized fragment of white road-stone cut with half a name-rune.",
+          "description": "A squat strongbox of iron-strapped oak, bolted beneath the lead wagon's floor where only someone who knew would look. Its lock is stamped with the same wheel as the key under the driver's bench. Inside, packed in straw, lie a palm-sized fragment of white road-stone cut with half a name-rune and a drover's purse of fifteen gold pieces.",
           "playerDescription": "An iron-strapped strongbox bolted under the lead wagon's floor. Its lock is stamped with a wheel.",
           "requirements": {
             "unlock": {
@@ -203,6 +203,11 @@
               "type": "quest",
               "quantity": 1,
               "description": "A palm-sized chip of white road-stone, cool as river water, cut with half a name-rune and fine lines like a map of roads."
+            },
+            {
+              "currency": {
+                "gp": 15
+              }
             }
           ],
           "setsFlags": {
@@ -290,7 +295,7 @@
           "name": "Abandoned Handcart",
           "kind": "container",
           "open": true,
-          "description": "A two-wheeled handcart tipped into the ditch, its shafts snapped and its kindling spilled into the water. Whoever pulled it left in a hurry and did not come back for it. A tarred torch is still wedged under the tailboard.",
+          "description": "A two-wheeled handcart tipped into the ditch, its shafts snapped and its kindling spilled into the water. Whoever pulled it left in a hurry and did not come back for it. A tarred torch is still wedged under the tailboard, and eight gold pieces lie scattered in the straw of its bed.",
           "playerDescription": "A handcart tipped into the ditch, its shafts snapped and its kindling spilled into the water.",
           "contents": [
             {
@@ -299,6 +304,11 @@
               "type": "gear",
               "quantity": 1,
               "description": "A tarred torch, still dry where it was wedged under the tailboard."
+            },
+            {
+              "currency": {
+                "gp": 8
+              }
             }
           ]
         }
@@ -407,7 +417,7 @@
           "locked": true,
           "open": false,
           "revealsContentsOnOpen": false,
-          "description": "A soot-black iron lockbox chained to a beam in the collapsed stable, where the last wardens kept their stores. Its rusted lock takes the waystation key. Inside lie a stoppered healing draught and a folded page of the station record naming an oath-keeper, Maedran Voss, who gave his records to shadow and walked away alive.",
+          "description": "A soot-black iron lockbox chained to a beam in the collapsed stable, where the last wardens kept their stores. Its rusted lock takes the waystation key. Inside lie a stoppered healing draught, twenty gold pieces of road toll, and a folded page of the station record naming an oath-keeper, Maedran Voss, who gave his records to shadow and walked away alive.",
           "playerDescription": "A soot-black iron lockbox chained to a beam in the collapsed stable. Its lock is rusted orange.",
           "requirements": {
             "unlock": {
@@ -423,6 +433,11 @@
               "type": "potion",
               "quantity": 1,
               "description": "A stoppered clay vial of red draught, sealed with the wardens' wax."
+            },
+            {
+              "currency": {
+                "gp": 20
+              }
             }
           ],
           "setsFlags": {
@@ -680,10 +695,11 @@
             "inspect",
             "use",
             "break",
-            "lock"
+            "lock",
+            "trigger"
           ],
-          "description": "A white road-stone taller than a rider, standing where the forgotten roads meet beneath pale trees. Names surface across its face, blur into ash, and return as whispers in the fog. While the Cinder Scribe's binding holds, nothing can be done with it. Once the binding is broken, the stone can be renewed with the fragment and the recovered names, broken with a stonewright's hammer, or hidden again by someone who knows the oath.",
-          "playerDescription": "A white road-stone taller than a rider; names surface on its face and fade into ash. Once the Scribe's binding is broken it can be renewed (Use: the road-stone fragment and the recovered names), broken (Break: a mason's hammer) or hidden again (Lock: the road oath).",
+          "description": "A white road-stone taller than a rider, standing where the forgotten roads meet beneath pale trees. Names surface across its face, blur into ash, and return as whispers in the fog. While the Cinder Scribe's binding holds, nothing can be done with it. Once the binding is broken, the stone can be renewed with the fragment and the recovered names, broken with a stonewright's hammer, hidden again by someone who knows the oath, or claimed by whoever lays a hand on it and takes the ward for their own.",
+          "playerDescription": "A white road-stone taller than a rider; names surface on its face and fade into ash. Once the Scribe's binding is broken it can be renewed (Use: the road-stone fragment and the recovered names), broken (Break: a mason's hammer), hidden again (Lock: the road oath) or claimed (Trigger).",
           "requirements": {
             "use": {
               "flags": {
@@ -710,13 +726,18 @@
                 "cinder_scribe_resolved": true
               },
               "anyToolIds": [
-                "itm_mason_s_hammer_7f8dc6fd"
+                "masons_hammer"
               ]
             },
             "lock": {
               "flags": {
                 "cinder_scribe_resolved": true,
                 "oath_learned": true
+              }
+            },
+            "trigger": {
+              "flags": {
+                "cinder_scribe_resolved": true
               }
             }
           },
@@ -731,8 +752,12 @@
             },
             "lock": {
               "ward_hidden": true
+            },
+            "trigger": {
+              "ward_claimed": true
             }
-          }
+          },
+          "triggerable": true
         },
         {
           "id": "valley_false_refuge",
@@ -2564,6 +2589,40 @@
             "quantity": 1
           }
         ]
+      },
+      "outcomes": {
+        "victory": {
+          "consequences": [
+            {
+              "type": "clue.discover",
+              "clueId": "clue_ash_marks"
+            }
+          ]
+        },
+        "surrender": {
+          "consequences": [
+            {
+              "type": "clue.discover",
+              "clueId": "clue_ash_marks"
+            }
+          ]
+        },
+        "negotiation": {
+          "consequences": [
+            {
+              "type": "clue.discover",
+              "clueId": "clue_ash_marks"
+            }
+          ]
+        },
+        "objective_completion": {
+          "consequences": [
+            {
+              "type": "clue.discover",
+              "clueId": "clue_ash_marks"
+            }
+          ]
+        }
       }
     },
     {
@@ -2689,6 +2748,10 @@
             {
               "type": "location.update",
               "locationId": "loc_valley_last_road_stone"
+            },
+            {
+              "type": "clue.discover",
+              "clueId": "clue_final_valley_map"
             }
           ]
         },
@@ -2702,6 +2765,10 @@
             {
               "type": "location.update",
               "locationId": "loc_valley_last_road_stone"
+            },
+            {
+              "type": "clue.discover",
+              "clueId": "clue_final_valley_map"
             }
           ]
         },
@@ -2715,6 +2782,10 @@
             {
               "type": "location.update",
               "locationId": "loc_valley_last_road_stone"
+            },
+            {
+              "type": "clue.discover",
+              "clueId": "clue_final_valley_map"
             }
           ]
         },
@@ -2728,6 +2799,10 @@
             {
               "type": "location.update",
               "locationId": "loc_valley_last_road_stone"
+            },
+            {
+              "type": "clue.discover",
+              "clueId": "clue_final_valley_map"
             }
           ]
         }
@@ -2982,6 +3057,10 @@
               "type": "flag.set",
               "flagKey": "cinder_scribe_resolved",
               "flagValue": true
+            },
+            {
+              "type": "clue.discover",
+              "clueId": "clue_binding_quill"
             }
           ]
         },
@@ -2991,6 +3070,10 @@
               "type": "flag.set",
               "flagKey": "cinder_scribe_resolved",
               "flagValue": true
+            },
+            {
+              "type": "clue.discover",
+              "clueId": "clue_binding_quill"
             }
           ]
         },
@@ -3000,6 +3083,10 @@
               "type": "flag.set",
               "flagKey": "cinder_scribe_resolved",
               "flagValue": true
+            },
+            {
+              "type": "clue.discover",
+              "clueId": "clue_binding_quill"
             }
           ]
         },
@@ -3008,6 +3095,15 @@
             {
               "type": "flag.set",
               "flagKey": "ward_claimed",
+              "flagValue": true
+            }
+          ]
+        },
+        "surrender": {
+          "consequences": [
+            {
+              "type": "flag.set",
+              "flagKey": "cinder_scribe_resolved",
               "flagValue": true
             }
           ]
@@ -3987,7 +4083,8 @@
           "type": "tool",
           "price": {
             "gp": 8
-          }
+          },
+          "itemId": "masons_hammer"
         },
         {
           "name": "Charcoal and Chalk",

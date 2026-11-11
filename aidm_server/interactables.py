@@ -57,6 +57,7 @@ from aidm_server.damage_dice import deterministic_roller, normalize_damage_dice_
 from aidm_server.database import db
 from aidm_server.game_state.models import actor_items, stable_change_id
 from aidm_server.models import Player
+from aidm_server.price_list import COIN_VALUES_CP, normalize_price
 
 
 __all__ = [
@@ -876,8 +877,9 @@ def _candidate_actions(target: dict[str, Any], collection: str) -> set[str]:
         actions.add("break")
     if target.get("usable") is True:
         actions.add("use")
-    if kind == "hazard":
+    if kind == "hazard" or target.get("triggerable") is True:
         actions.add("trigger")
+    if kind == "hazard":
         if target.get("disarmable") is True:
             actions.add("disarm")
         if target.get("resettable") is True:
@@ -1044,10 +1046,14 @@ def _action_legality(
                 "The hazard cannot be disarmed in its current state.",
             )
     if action == "trigger":
-        if target.get("disarmed") is True or target.get("active") is not True:
+        is_hazard = _entry_kind(target, collection) == "hazard"
+        if is_hazard and (target.get("disarmed") is True or target.get("active") is not True):
             return _failure("invalid_transition", "The hazard is not active.")
         if target.get("triggered") is True and target.get("repeatable") is not True:
-            return _failure("invalid_transition", "The hazard has already triggered.")
+            return _failure(
+                "invalid_transition",
+                "The hazard has already triggered." if is_hazard else "The interactable has already been triggered.",
+            )
     if action == "reset":
         if (
             target.get("active") is True
@@ -1714,6 +1720,8 @@ def _move_revealed_contents(
     moved: list[dict[str, Any]] = []
     kept: list[Any] = []
     for item in contents:
+        if isinstance(item, dict) and not _text(item.get("id")) and normalize_price(item.get("currency")):
+            item = _coin_pile(item, _text(target.get("id")), taken_ids)
         item_id = _text(item.get("id")) if isinstance(item, dict) else ""
         if (
             not item_id
@@ -1736,6 +1744,25 @@ def _move_revealed_contents(
     target["contents"] = kept
     scene_items.extend(deepcopy(moved))
     return moved
+
+
+def _coin_pile(entry: dict[str, Any], container_id: str, taken_ids: set[str]) -> dict[str, Any]:
+    """A ``{"currency": {...}}`` contents entry as a scene item a pickup pays into the taker's purse."""
+
+    currency = normalize_price(entry.get("currency"))
+    pile_id = f"{container_id}_coins"
+    suffix = 2
+    while pile_id in taken_ids:
+        pile_id = f"{container_id}_coins_{suffix}"
+        suffix += 1
+    return {
+        **entry,
+        "id": pile_id,
+        "name": _text(entry.get("name")) or ", ".join(f"{currency[code]} {code}" for code in COIN_VALUES_CP if code in currency),
+        "type": "currency",
+        "quantity": 1,
+        "currency": currency,
+    }
 
 
 def _party_actor_ids(state: Mapping[str, Any]) -> list[str]:

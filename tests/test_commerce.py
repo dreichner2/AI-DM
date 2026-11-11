@@ -343,3 +343,16 @@ def test_narration_does_not_repeat_a_server_settled_trade() -> None:
         metadata_json=json.dumps({'action_intent': {'kind': 'item', 'inventory_action': 'use', 'item': {'name': 'Potion of Healing'}}})
     )
     assert inventory_change_from_intent_outcome(potion_turn, 'You drink the Potion of Healing.') is None
+
+
+def test_a_purchase_keeps_the_item_id_its_stock_entry_names() -> None:
+    state = _state(currency={'gp': 20})
+    hammer = {'stockId': 'mara_3', 'name': "Mason's Hammer", 'type': 'tool', 'price': {'gp': 8}, 'itemId': 'masons_hammer'}
+    state['merchants']['mara_shop']['stock'].append(deepcopy(hammer))
+
+    _declared, _validation, bought = _buy(state, 'mara_3')
+    _declared, _validation, again = _buy(bought['nextState'], 'mara_3', turn_id=4)
+
+    assert _items(bought['nextState'])['masons_hammer']['name'] == "Mason's Hammer"
+    assert _items(again['nextState'])['masons_hammer']['quantity'] == 2
+    assert _purse(again['nextState'])['gp'] == 4

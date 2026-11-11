@@ -464,15 +464,16 @@ def refresh_session_projection(session_id: int, campaign: Campaign, triggered_se
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
     scene_location = _text(scene.get('name') or scene.get('locationId'))
-    scene_turn_id = _int(scene.get('updatedAtTurn') or scene.get('updated_at_turn'))
+    scene_turn_id = scene.get('updatedAtTurn', scene.get('updated_at_turn'))
     # Structured live scene state is authoritative. Canon is a projection of
-    # remembered narrative and may only initialize/repair location state, or
-    # supply a genuinely newer legacy location fact. It must never move a
-    # party backward after a validated travel action.
+    # remembered narrative and may only initialize or repair a scene that does
+    # not name its location; it never moves a party whose scene has a
+    # locationId or a turn stamp (an import or Play Now starts at turn 0).
+    scene_is_structured = bool(_text(scene.get('locationId'))) or scene_turn_id is not None
     fact_can_update_scene = bool(
         location_fact
         and location_fact.value_text
-        and (not _valid_location_label(scene_location) or not scene_turn_id)
+        and (not _valid_location_label(scene_location) or not scene_is_structured)
     )
     if fact_can_update_scene:
         state.current_location = location_fact.value_text

@@ -779,6 +779,65 @@ def test_server_item_and_trade_results_are_applied_before_narration_and_not_repe
     assert turn_pipeline_module._without_applied_immediate_overlaps(proposals, [item, trade]) == [proposals[2]]
 
 
+def test_narration_mints_no_item_beside_a_typed_object_action():
+    def narrated(change_id: str, name: str) -> dict:
+        return {
+            'id': change_id,
+            'type': 'inventory.add',
+            'source': 'post_dm',
+            'actorId': 'player_1',
+            'itemName': name,
+            'item': {'name': name, 'quantity': 1, 'type': 'misc'},
+        }
+
+    junk = narrated('junk', 'step forward')
+    torch = narrated('torch', 'Torch')
+    lantern = narrated('lantern', 'Brass Lantern Hook')
+    grounded_removal = {
+        'id': 'lift_hook', 'type': 'scene.item.remove', 'source': 'post_dm', 'actorId': 'player_1',
+        'itemName': 'Brass Lantern Hook',
+    }
+    object_intent = {'kind': 'object', 'object': {'id': 'inn_caravan_ledger', 'action': 'inspect'}}
+
+    kept = turn_pipeline_module._without_applied_immediate_overlaps(
+        [junk, torch, lantern, grounded_removal],
+        [],
+        action_intent=object_intent,
+    )
+
+    assert [change['id'] for change in kept] == ['torch', 'lantern', 'lift_hook']
+
+
+def test_narration_cannot_take_what_an_object_action_just_revealed():
+    search = {
+        'id': 'search_hearth', 'type': 'scene.interactable.action', 'actorId': 'player_1', 'targetId': 'ws_cold_hearth',
+        'objectAction': 'search',
+        'event': {
+            'type': 'interactable.searched',
+            'revealedItems': [
+                {'id': 'rusted_waystation_key', 'name': 'Rusted Waystation Key', 'containerId': 'ws_cold_hearth'},
+                {'id': 'ws_cold_hearth_coins', 'name': '20 gp', 'type': 'currency', 'currency': {'gp': 20}},
+            ],
+        },
+    }
+    narrated = [
+        {'id': 'lift_key', 'type': 'scene.item.remove', 'source': 'post_dm', 'actorId': 'player_1',
+         'itemId': 'rusted_waystation_key', 'itemName': 'Rusted Waystation Key'},
+        {'id': 'carry_key', 'type': 'inventory.add', 'source': 'post_dm', 'actorId': 'player_1',
+         'itemName': 'Rusted Waystation Key', 'item': {'name': 'Rusted Waystation Key', 'quantity': 1}},
+        {'id': 'pocket_coins', 'type': 'currency.add', 'source': 'post_dm', 'actorId': 'player_1', 'currency': 'gp', 'amount': 20},
+        {'id': 'other_coins', 'type': 'currency.add', 'source': 'post_dm', 'actorId': 'player_1', 'currency': 'sp', 'amount': 3},
+    ]
+
+    kept = turn_pipeline_module._without_applied_immediate_overlaps(
+        narrated,
+        [search],
+        action_intent={'kind': 'object', 'object': {'id': 'ws_cold_hearth', 'action': 'search'}},
+    )
+
+    assert [change['id'] for change in kept] == ['other_coins']
+
+
 def test_legacy_trade_does_not_create_currency_from_client_price():
     turn = DmTurn(
         turn_id=78,
