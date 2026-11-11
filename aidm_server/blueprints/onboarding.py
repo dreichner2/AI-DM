@@ -7,7 +7,11 @@ from flask import Blueprint, jsonify, request
 from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.services.campaign_pack import CampaignPackImportError
-from aidm_server.services.play_now import PlayNowOnboardingError, ensure_play_now_adventure
+from aidm_server.services.play_now import (
+    PlayNowOnboardingError,
+    ensure_play_now_adventure,
+    play_now_fresh_flag,
+)
 from aidm_server.services.pregen_characters import (
     default_pregenerated_character_id,
     list_pregenerated_character_payloads,
@@ -57,6 +61,7 @@ def play_now():
             account_id=current_account_id(),
             character_id=character_id,
             example_pack_id=example_pack_id,
+            fresh=play_now_fresh_flag(payload),
         )
         db.session.commit()
         return jsonify(result.payload), result.status_code

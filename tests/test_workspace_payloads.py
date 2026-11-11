@@ -25,6 +25,7 @@ SUMMARY_FIELDS = {
     'turn_count',
     'scene_title',
     'summary_excerpt',
+    'continue_line',
     'imported',
     'play_now',
 }

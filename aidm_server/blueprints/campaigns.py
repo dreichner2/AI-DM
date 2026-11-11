@@ -27,10 +27,12 @@ from aidm_server.models import (
 )
 from aidm_server.pagination import InvalidCursorError, decode_cursor, encode_cursor, limited_page, page_limit
 from aidm_server.response_dtos import (
+    ViewerProjectionError,
     campaign_is_archived,
     campaign_payload,
     campaign_payloads,
     isoformat,
+    viewer_projection,
 )
 from aidm_server.services.campaign_pack import CampaignPackImportError, import_campaign_pack
 from aidm_server.services.campaign_pack_examples import (
@@ -894,8 +896,17 @@ def get_campaign_workspace(campaign_id):
 
     try:
         sessions_cursor = decode_session_cursor(request.args.get('sessions_cursor'))
+        projection = viewer_projection(
+            campaign_id=campaign.campaign_id,
+            operator=_include_hidden_session_state(),
+            view=request.args.get('view'),
+            player_id=request.args.get('player_id'),
+            account_id=current_account_id(),
+        )
     except InvalidCursorError as exc:
         return error_response('validation_error', str(exc), 400)
+    except ViewerProjectionError as exc:
+        return error_response(exc.error_code, exc.public_message, exc.status_code)
 
     return jsonify(
         campaign_workspace_payload(
@@ -910,7 +921,7 @@ def get_campaign_workspace(campaign_id):
             player_limit=_optional_limit_arg('player_limit'),
             map_limit=_optional_limit_arg('map_limit'),
             segment_limit=_optional_limit_arg('segment_limit'),
-            include_hidden_state=_include_hidden_session_state(),
+            include_hidden_state=projection.include_hidden_state,
         )
     )
 

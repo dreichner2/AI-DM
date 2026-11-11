@@ -40,7 +40,11 @@ from aidm_server.database import db
 from aidm_server.errors import error_response
 from aidm_server.rate_limiter import FixedWindowRateLimiter, privacy_safe_preauth_bucket
 from aidm_server.services.campaign_pack import CampaignPackImportError
-from aidm_server.services.play_now import PlayNowOnboardingError, ensure_play_now_adventure
+from aidm_server.services.play_now import (
+    PlayNowOnboardingError,
+    ensure_play_now_adventure,
+    play_now_fresh_flag,
+)
 from aidm_server.telemetry import telemetry_event
 from aidm_server.models import (
     Account,
@@ -668,6 +672,7 @@ def play_now_account():
             account_id=account.account_id,
             character_id=character_id,
             example_pack_id=example_pack_id,
+            fresh=play_now_fresh_flag(payload),
         )
         db.session.commit()
         db.session.expire(account, ['workspace_memberships'])

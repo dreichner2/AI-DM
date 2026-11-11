@@ -80,6 +80,7 @@ def test_play_now_uses_existing_workspace_auth_when_auth_required(client, app, m
             'account_id': None,
             'character_id': None,
             'example_pack_id': None,
+            'fresh': False,
         }
     ]
 
@@ -153,12 +154,14 @@ def test_account_play_now_provisions_isolated_nonrecoverable_guests(client, app,
             'account_id': first_account_id,
             'character_id': None,
             'example_pack_id': None,
+            'fresh': False,
         },
         {
             'workspace_id': second_workspace_id,
             'account_id': second_account_id,
             'character_id': None,
             'example_pack_id': None,
+            'fresh': False,
         },
     ]
 
@@ -242,6 +245,7 @@ def test_account_play_now_cookie_csrf_replay_preserves_guest_account_and_scope(c
         'account_id': account_id,
         'character_id': 'liora-quill',
         'example_pack_id': 'example.featured',
+        'fresh': False,
     }
 
 
@@ -345,12 +349,14 @@ def test_account_play_now_uses_only_an_authenticated_accounts_saved_workspace(cl
             'account_id': account_id,
             'character_id': None,
             'example_pack_id': None,
+            'fresh': False,
         },
         {
             'workspace_id': private_payload['workspace_id'],
             'account_id': account_id,
             'character_id': None,
             'example_pack_id': None,
+            'fresh': False,
         },
     ]
 

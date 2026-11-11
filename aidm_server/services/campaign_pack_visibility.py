@@ -6,7 +6,7 @@ from typing import Any
 from aidm_server.combat.state import normalize_battlefield, normalize_position
 from aidm_server.commerce import open_merchant_projections
 from aidm_server.game_clock import public_clock, scene_rest_policy
-from aidm_server.interactables import project_scene_interactables
+from aidm_server.interactables import offered_scene_actions, project_scene_interactables, take_label
 from aidm_server.services.campaign_pack_graph import hidden_to_players, is_terminal_checkpoint
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
 from aidm_server.world_map import project_world_map
@@ -209,7 +209,19 @@ def filter_session_snapshot_for_player(
     snapshot: Any,
     *,
     private_player_ids: set[int] | frozenset[int] | None = None,
+    acting_player_id: int | None = None,
+    enemy_hit_points: bool = False,
 ) -> Any:
+    """The player-safe projection of a session snapshot.
+
+    ``private_player_ids`` names the heroes whose own records are included in
+    full. Scene objects carry ``offeredActions`` for the acting hero: the one
+    ``acting_player_id`` names, else the first present hero. Enemies show a
+    ``health`` word instead of their hit points; ``enemy_hit_points`` keeps the
+    numbers for server-side rules that judge the projection, which then call
+    :func:`hide_enemy_hit_points`.
+    """
+
     if not isinstance(snapshot, dict):
         return snapshot
 
@@ -358,12 +370,76 @@ def filter_session_snapshot_for_player(
         filtered['currentScene'].update(
             project_scene_interactables(migrated, {'isGm': False})
         )
+        offers = offered_scene_actions(migrated, acting_hero(migrated, acting_player_id))
+        for collection in ('interactables', 'hazards'):
+            for entry in filtered['currentScene'][collection]:
+                entry['offeredActions'] = offers.get(_text(entry.get('id')), [])
         # Trade and rest: only open merchants, and the rest policy in effect here.
         filtered['currentScene']['merchants'] = open_merchant_projections(migrated)
         filtered['currentScene']['restPolicy'] = scene_rest_policy(raw_scene)
 
     filtered['clock'] = public_clock(migrated.get('clock'))
-    return filtered
+    if pack:
+        filtered['journal'] = _journal(migrated, filtered)
+    return filtered if enemy_hit_points else hide_enemy_hit_points(filtered)
+
+
+def hide_enemy_hit_points(snapshot: Any) -> Any:
+    """Players judge an enemy by how it looks: its ``hp`` becomes a ``health`` word."""
+
+    combat = snapshot.get('combat') if isinstance(snapshot, dict) else None
+    if not isinstance(combat, dict):
+        return snapshot
+    for participant in combat.get('participants') or []:
+        if isinstance(participant, dict) and _text(participant.get('team')).lower() == 'enemy':
+            health = _health_word(_public_hp(participant.pop('hp', None)))
+            if health:
+                participant['health'] = health
+    return snapshot
+
+
+def acting_hero(snapshot: dict, acting_player_id: int | None = None) -> dict | None:
+    """The hero scene-object legality is computed for.
+
+    The hero ``acting_player_id`` names, else the first present hero (every
+    hero counts as present when none is marked).
+    """
+
+    heroes = [record for record in (snapshot.get('playerCharacters') or []) if isinstance(record, dict)]
+    if acting_player_id is not None:
+        named = next((hero for hero in heroes if _record_player_id(hero) == acting_player_id), None)
+        if named is not None:
+            return named
+    active_ids = {
+        player_id
+        for value in (snapshot.get('activePlayerIds') or [])
+        if (player_id := _positive_int(value)) is not None
+    }
+    present = [hero for hero in heroes if not active_ids or _record_player_id(hero) in active_ids]
+    return present[0] if present else None
+
+
+def with_scene_offers(snapshot: Any, *, acting_player_id: int | None = None) -> Any:
+    """The full snapshot with the scene's ``offeredActions`` and items' ``takeLabel``.
+
+    Derived on read for the operator view; the persisted snapshot is untouched.
+    Objects the acting hero cannot see carry no ``offeredActions``.
+    """
+
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get('currentScene'), dict):
+        return snapshot
+    payload = dict(snapshot)
+    scene = deepcopy(snapshot['currentScene'])
+    offers = offered_scene_actions(snapshot, acting_hero(snapshot, acting_player_id))
+    for collection in ('interactables', 'hazards'):
+        for entry in scene.get(collection) or []:
+            if isinstance(entry, dict) and _text(entry.get('id')) in offers:
+                entry['offeredActions'] = offers[_text(entry.get('id'))]
+    for item in scene.get('items') or []:
+        if isinstance(item, dict):
+            item['takeLabel'] = take_label(item)
+    payload['currentScene'] = scene
+    return payload
 
 
 def _normalized_player_ids(values: set[int] | frozenset[int] | None) -> frozenset[int]:
@@ -629,6 +705,7 @@ def _domain_record_for_viewer(
 
 def _scene_item_for_viewer(record: dict) -> dict:
     payload = _public_scalar_fields(record, PUBLIC_SCENE_ITEM_KEYS)
+    payload['takeLabel'] = take_label(record)
     _set_public_text(
         payload,
         'description',
@@ -759,6 +836,21 @@ def _player_character_for_viewer(record: dict, private_player_ids: frozenset[int
 def _public_hp(value: Any) -> dict:
     hp = value if isinstance(value, dict) else {}
     return _public_scalar_fields(hp, ('current', 'max', 'temp', 'currentHp', 'maxHp', 'tempHp'))
+
+
+def _health_word(hp: dict) -> str:
+    current = _positive_int(_first(hp, 'current', 'currentHp'))
+    maximum = _positive_int(_first(hp, 'max', 'maxHp'))
+    if current is None or not maximum:
+        return ''
+    if current <= 0:
+        return 'Down'
+    if current >= maximum:
+        return 'Unhurt'
+    ratio = current / maximum
+    if ratio <= 0.25:
+        return 'Critical'
+    return 'Wounded' if ratio <= 0.6 else 'Hurt'
 
 
 def _public_death_saves(value: Any) -> dict | None:
@@ -1186,6 +1278,119 @@ def player_ending(visible_checkpoints: list[dict]) -> dict | None:
         'checkpointId': reached['id'],
         'title': reached.get('title') or '',
         'summary': reached.get('summary') or '',
+    }
+
+
+TERMINAL_OBJECTIVE_STATUSES = frozenset({'completed', 'failed'})
+JOURNAL_PLACE_STATES = {'current': 'current', 'visited': 'visited', 'known': 'discovered'}
+
+
+def _journal(snapshot: dict, filtered: dict) -> dict:
+    """What the party knows of its story, in player-safe words.
+
+    The quest and stage come from the active checkpoint; objectives are every
+    completed one, then the open ones of the active checkpoint (later ones are
+    spoilers); clues, people and places are only those the party knows.
+    """
+
+    pack = snapshot['campaignPack']
+    checkpoints = {
+        _checkpoint_id(checkpoint): checkpoint
+        for checkpoint in (pack.get('checkpoints') or [])
+        if isinstance(checkpoint, dict) and _checkpoint_id(checkpoint)
+    }
+    active_id = _text((filtered.get('campaignPack') or {}).get('activeCheckpointId'))
+    active = checkpoints.get(active_id) or {}
+    hidden_stage = _checkpoint_player_hidden(active) if active else True
+    quests = _visible_records(snapshot.get('quests'))
+    quests_by_id = {_record_id(quest): quest for quest in quests}
+    quest = next(
+        (
+            quests_by_id[_id_key(quest_id)]
+            for quest_id in [
+                *_ids_from(active, 'questIds', 'quest_ids'),
+                _text(_first(pack, 'startingQuestId', 'starting_quest_id')),
+            ]
+            if _id_key(quest_id) in quests_by_id
+        ),
+        next((record for record in quests if _text(record.get('status')).lower() == 'active'), None),
+    )
+    stage_title = _text(_first(active, 'playerTitle', 'player_title')) or (
+        '' if hidden_stage else _text(_first(active, 'title', 'name'))
+    )
+    stage_objective_ids = {_id_key(value) for value in _ids_from(active, 'objectiveIds', 'objective_ids')}
+    completed: list[dict] = []
+    open_now: list[dict] = []
+    for record in quests:
+        for objective in record.get('objectives') or []:
+            if not isinstance(objective, dict) or not _record_player_visible(objective) or not _record_id(objective):
+                continue
+            status = _text(objective.get('status')).lower()
+            if status == 'completed':
+                completed.append(_journal_objective(objective, 'completed'))
+            elif status not in TERMINAL_OBJECTIVE_STATUSES and _record_id(objective) in stage_objective_ids:
+                open_now.append(_journal_objective(objective, 'active'))
+    return {
+        'quest': (
+            {
+                'id': _text(quest.get('id')),
+                'title': _text(_first(quest, 'title', 'name')),
+                'summary': _public_alias_text(quest, 'playerSummary', 'player_summary'),
+                'status': _text(quest.get('status')) or 'active',
+                'stageTitle': stage_title,
+                'stageSummary': _public_alias_text(active, 'playerSummary', 'player_summary'),
+            }
+            if quest is not None
+            else None
+        ),
+        'objectives': [*completed, *open_now],
+        'clues': [
+            {
+                'id': _text(clue.get('id')),
+                'title': _text(_first(clue, 'title', 'name')),
+                'text': _public_alias_text(
+                    clue,
+                    'playerText',
+                    'player_text',
+                    'playerDescription',
+                    'player_description',
+                    'description',
+                    'playerSummary',
+                    'player_summary',
+                    'summary',
+                ),
+            }
+            for clue in _visible_records(snapshot.get('clues'))
+            if _text(clue.get('id'))
+        ],
+        'people': [
+            {
+                'id': _text(npc.get('id')),
+                'name': _text(npc.get('name')),
+                'role': ' '.join(_text(npc.get('role')).replace('_', ' ').split()),
+                'summary': _public_alias_text(npc, 'playerSummary', 'player_summary'),
+                'met': True,
+            }
+            for npc in {
+                _record_id(record): record
+                for record in [*_visible_records(snapshot.get('knownNpcs')), *_visible_records(snapshot.get('partyNpcs'))]
+                if _record_id(record)
+            }.values()
+        ],
+        'places': [
+            {'id': node['id'], 'name': node['name'], 'state': JOURNAL_PLACE_STATES[node['state']]}
+            for node in ((filtered.get('worldMap') or {}).get('nodes') or [])
+            if node.get('state') in JOURNAL_PLACE_STATES
+        ],
+    }
+
+
+def _journal_objective(objective: dict, status: str) -> dict:
+    return {
+        'id': _text(objective.get('id')),
+        'title': _text(_first(objective, 'title', 'name')) or _text(objective.get('description')),
+        'optional': _truthy(_first(objective, 'optional', 'isOptional', 'is_optional')),
+        'status': status,
     }
 
 

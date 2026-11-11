@@ -12,6 +12,7 @@ from typing import Any
 
 from aidm_server.creatures.repository import save_bestiary_entry
 from aidm_server.database import db
+from aidm_server.game_clock import normalize_clock
 from aidm_server.game_state.application.applier import apply_state_changes
 from aidm_server.game_state.campaign_pack_encounters import REST_POLICIES, location_entry_changes
 from aidm_server.game_state.models import stable_slug
@@ -1603,6 +1604,10 @@ def _initial_snapshot(
         'stateChangeLedger': [],
         'lastUpdatedAt': imported_at,
     }
+    # Without an authored start the clock stays absent: day 1, morning.
+    starting_clock = _first(starting_state, 'clock')
+    if isinstance(starting_clock, dict):
+        snapshot['clock'] = normalize_clock(starting_clock)
     # The party arrives at the starting location when the campaign begins.
     arrival = location_entry_changes(snapshot, scene_location_id, turn_id=None)
     return apply_state_changes(snapshot, arrival)['nextState'] if arrival else snapshot

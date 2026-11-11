@@ -426,3 +426,38 @@ def test_campaign_pack_lint_cli_exit_codes(tmp_path, app, mutate, arguments, exp
     )
 
     assert result.returncode == expected_returncode, result.stdout
+
+
+def test_wording_for_an_action_the_object_does_not_support_is_a_warning(app):
+    pack = _engine_clean_pack()
+    pack['locations'][0]['interactables'] = [
+        {
+            'id': 'ledger',
+            'name': 'Ledger',
+            'kind': 'object',
+            'actionLabels': {'inspect': 'Read the ledger', 'use': 'Use the ledger'},
+            'actionText': {'inspect': 'Every name is struck through.', 'search': 'Nothing hides in it.'},
+        },
+        {
+            'id': 'chest',
+            'name': 'Chest',
+            'kind': 'container',
+            'allowedActions': ['search'],
+            'actionLabels': {'search': 'Search the chest', 'open': 'Open the chest'},
+        },
+    ]
+
+    with app.app_context():
+        result = lint_campaign_pack_manifest(pack, workspace_id='owner')
+
+    wording = [
+        (issue['severity'], issue['code'], issue['path'])
+        for issue in result['issues']
+        if issue['code'].startswith('action_')
+    ]
+    assert wording == [
+        ('warning', 'action_label_for_unsupported_action', 'locations[0].interactables[0].actionLabels.use'),
+        ('warning', 'action_text_for_unsupported_action', 'locations[0].interactables[0].actionText.search'),
+        ('warning', 'action_label_for_unsupported_action', 'locations[0].interactables[1].actionLabels.open'),
+    ]
+    assert result['ok'] is True

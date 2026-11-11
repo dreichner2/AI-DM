@@ -2414,7 +2414,9 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
     ] == [ids['attacker_player_id']]
     assert snapshot['currentScene']['activeNpcIds'] == ['npc_visible_guide']
     assert snapshot['currentScene']['activeQuestIds'] == ['quest_visible_patrol']
-    assert snapshot['currentScene']['items'] == [{'id': 'visible_torch', 'name': 'Visible Torch'}]
+    assert snapshot['currentScene']['items'] == [
+        {'id': 'visible_torch', 'name': 'Visible Torch', 'takeLabel': 'Take the Visible Torch'}
+    ]
     assert snapshot['currentScene']['playerPositions'] == {
         f"player_{ids['attacker_player_id']}": {
             'rangeBand': 'near',
@@ -2451,7 +2453,7 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
         'name',
         'team',
         'kind',
-        'hp',
+        'health',
         'armorClass',
         'conditions',
         'position',
@@ -2459,6 +2461,7 @@ def test_non_admin_session_state_keeps_own_detail_and_redacts_other_players(tmp_
         'isConscious',
         'currentIntent',
     }
+    assert visible_enemy['health'] == 'Unhurt'
     assert visible_enemy['currentIntent'] == {'visibleTelegraph': 'The raider raises an axe.'}
     assert snapshot['combat']['flags']['turnOrder'] == [
         f"player_{ids['attacker_player_id']}",

@@ -492,3 +492,52 @@ def test_the_imported_scene_is_authoritative_from_turn_zero(client, app):
         snapshot = safe_json_loads(db.session.get(Session, payload['session_id']).state_snapshot, {})
 
     assert (snapshot['currentScene']['locationId'], snapshot['currentScene']['updatedAtTurn']) == ('gatehouse', 0)
+
+
+def test_action_wording_and_enemy_names_are_carried_into_state_but_dm_text_never_reaches_players(client, app):
+    door = {
+        **LOCKED_DOOR,
+        'description': 'An iron gate, its lock stamped with a crown.',
+        'actionLabels': {'unlock': 'Unlock the iron gate'},
+        'actionText': {'unlock': 'SECRET_ACTION_TEXT the lock turns with a cough of rust.'},
+    }
+    pack = _pack(
+        enemies=[
+            {'id': 'enemy_raider', 'name': 'Raiders', 'singularName': 'Raider'},
+            {'id': 'enemy_marshal', 'name': 'The Hollow Marshal', 'proper': True},
+        ]
+    )
+    pack['locations'][0]['sceneState']['interactables'] = [door]
+
+    payload = _import(client, pack)
+    snapshot = _snapshot(app, payload['session_id'])
+
+    scene_door = snapshot['currentScene']['interactables'][0]
+    assert {key: scene_door[key] for key in ('description', 'actionLabels', 'actionText')} == {
+        key: door[key] for key in ('description', 'actionLabels', 'actionText')
+    }
+    assert [
+        (enemy['id'], enemy.get('singularName'), enemy.get('proper'))
+        for enemy in snapshot['campaignPack']['catalog']['enemies']
+    ] == [('enemy_raider', 'Raider', None), ('enemy_marshal', None, True)]
+    projected = filter_session_snapshot_for_player(snapshot)
+    assert 'SECRET_ACTION_TEXT' not in json.dumps(projected)
+    assert projected['currentScene']['interactables'][0]['offeredActions'][1] == {
+        'action': 'unlock',
+        'label': 'Unlock the iron gate',
+        'authored': True,
+        'legal': False,
+        'done': False,
+        'reason': 'It is locked, and you carry no key that fits.',
+    }
+
+
+def test_an_action_label_longer_than_48_characters_is_rejected_on_import(client, app):
+    pack = _pack()
+    pack['locations'][0]['sceneState']['interactables'] = [{**LOCKED_DOOR, 'actionLabels': {'unlock': 'x' * 49}}]
+
+    response = client.post('/api/campaigns/import-pack', json={'pack': pack})
+
+    assert response.status_code == 400
+    assert response.get_json()['error_code'] == 'invalid_campaign_pack_schema'
+    assert 'actionLabels.unlock' in response.get_json()['error']

@@ -218,6 +218,7 @@ export type SessionSummary = {
   turn_count: number
   scene_title: string | null
   summary_excerpt: string
+  continue_line?: string | null
   imported: boolean
   play_now: boolean
 }

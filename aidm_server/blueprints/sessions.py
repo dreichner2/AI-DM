@@ -25,6 +25,8 @@ from aidm_server.models import (
 )
 from aidm_server.pagination import InvalidCursorError, page_limit
 from aidm_server.response_dtos import (
+    ViewerProjection,
+    ViewerProjectionError,
     account_player_ids_by_campaign,
     isoformat,
     player_detail_payload,
@@ -33,6 +35,7 @@ from aidm_server.response_dtos import (
     session_start_payload,
     session_state_payload,
     turn_event_payload,
+    viewer_projection,
 )
 from aidm_server.provider_priority import foreground_provider_reservation
 from aidm_server.services.session_chapters import (
@@ -200,6 +203,35 @@ def _campaign_pack_operator_view() -> bool:
     return current_actor_has_capability('dm_runtime_control')
 
 
+def _viewer_projection(session_obj: Session) -> tuple[ViewerProjection | None, tuple | None]:
+    """The projection a read returns: ``view=player`` (and ``player_id``) from the query string."""
+
+    try:
+        return (
+            viewer_projection(
+                campaign_id=session_obj.campaign_id,
+                operator=_campaign_pack_operator_view(),
+                view=request.args.get('view'),
+                player_id=request.args.get('player_id'),
+                account_id=current_account_id(),
+            ),
+            None,
+        )
+    except ViewerProjectionError as exc:
+        return None, error_response(exc.error_code, exc.public_message, exc.status_code)
+
+
+def _viewer_player_ids(session_obj: Session, projection: ViewerProjection) -> frozenset[int]:
+    """The named hero, else the caller's own heroes in this campaign."""
+
+    if projection.private_player_ids is not None:
+        return projection.private_player_ids
+    return account_player_ids_by_campaign(
+        [session_obj.campaign_id],
+        current_account_id(),
+    ).get(session_obj.campaign_id, frozenset())
+
+
 def _campaign_pack_progress_actor() -> str:
     if current_actor_has_capability('local_operator_only'):
         return 'operator'
@@ -258,20 +290,27 @@ def _session_save_log(
 def _session_save_document(
     session_obj: Session,
     *,
-    include_hidden_state: bool,
+    projection: ViewerProjection,
     viewer_account_id: int | None,
 ) -> dict:
     """The ``aidm.save`` version 2 document for one session.
 
     Players get exactly what they can read elsewhere: the state endpoint's
-    projected snapshot and only their own characters.
+    projected snapshot and only their own characters (or the one hero the
+    player view names).
     """
 
     campaign = session_obj.campaign
+    include_hidden_state = projection.include_hidden_state
     characters = [
         player
         for player in Player.query.filter_by(campaign_id=campaign.campaign_id).order_by(Player.player_id.asc()).all()
-        if include_hidden_state or (viewer_account_id is not None and player.account_id == viewer_account_id)
+        if include_hidden_state
+        or (
+            player.player_id == projection.player_id
+            if projection.player_id is not None
+            else viewer_account_id is not None and player.account_id == viewer_account_id
+        )
     ]
     own_player_ids = frozenset(player.player_id for player in characters)
     state = session_state_payload(
@@ -280,6 +319,7 @@ def _session_save_document(
         include_hidden_state=include_hidden_state,
         viewer_account_id=viewer_account_id,
         private_player_ids=own_player_ids,
+        acting_player_id=projection.player_id,
     )
     raw_snapshot = _state_snapshot_dict(session_obj.state_snapshot)
     campaign_pack = raw_snapshot.get('campaignPack') if isinstance(raw_snapshot.get('campaignPack'), dict) else {}
@@ -691,7 +731,10 @@ def export_session(session_id):
         telemetry_event('sessions.export.session_not_found', payload={'session_id': session_id}, severity='warning')
         return error_response('session_not_found', 'Session not found.', 404)
 
-    include_hidden_state = _campaign_pack_operator_view()
+    projection, projection_error = _viewer_projection(session_obj)
+    if projection_error:
+        return projection_error
+    include_hidden_state = projection.include_hidden_state
     viewer_account_id = current_account_id()
     # A turn commits its snapshot, log and character rows together; holding the
     # session's turn lock keeps the whole document on one side of that commit.
@@ -703,7 +746,7 @@ def export_session(session_id):
         # Keep the existing player-id privacy boundary for callers that still
         # send it, even though v2 saves contain all of the viewer's characters.
         selected_player_id = coerce_int(request.args.get('player_id'))
-        if selected_player_id is not None and not include_hidden_state:
+        if selected_player_id is not None and not include_hidden_state and projection.player_id is None:
             selected_player = (
                 Player.query.filter_by(
                     player_id=selected_player_id,
@@ -718,7 +761,7 @@ def export_session(session_id):
                 return error_response('player_not_found', 'Player not found.', 404)
         document = _session_save_document(
             session_obj,
-            include_hidden_state=include_hidden_state,
+            projection=projection,
             viewer_account_id=viewer_account_id,
         )
         db.session.rollback()
@@ -1004,6 +1047,9 @@ def get_session_log(session_id):
         telemetry_event('sessions.log.session_not_found', payload={'session_id': session_id}, severity='warning')
         return error_response('session_not_found', 'Session not found.', 404)
 
+    projection, projection_error = _viewer_projection(session_obj)
+    if projection_error:
+        return projection_error
     limit = request.args.get('limit', default=200, type=int)
     limit = max(1, min(limit, 500))
     before_id = coerce_int(request.args.get('before_id'))
@@ -1017,11 +1063,8 @@ def get_session_log(session_id):
     if has_more:
         entries = entries[:limit]
     entries = list(reversed(entries))
-    include_private = _campaign_pack_operator_view()
-    private_player_ids = account_player_ids_by_campaign(
-        [session_obj.campaign_id],
-        current_account_id(),
-    ).get(session_obj.campaign_id, frozenset())
+    include_private = projection.include_hidden_state
+    private_player_ids = _viewer_player_ids(session_obj, projection)
     turn_player_ids = _turn_player_ids_for_log_entries(entries)
     return jsonify(
         {
@@ -1050,12 +1093,15 @@ def get_session_events(session_id):
         telemetry_event('sessions.events.session_not_found', payload={'session_id': session_id}, severity='warning')
         return error_response('session_not_found', 'Session not found.', 404)
 
+    projection, projection_error = _viewer_projection(session_obj)
+    if projection_error:
+        return projection_error
     limit = request.args.get('limit', default=500, type=int)
     limit = max(1, min(limit, 1000))
     before_id = coerce_int(request.args.get('before_id'))
 
     query = TurnEvent.query.filter_by(session_id=session_id)
-    if not _campaign_pack_operator_view():
+    if not projection.include_hidden_state:
         query = query.filter(TurnEvent.event_type != PROGRESS_CHANGED_EVENT)
     if before_id is not None:
         query = query.filter(TurnEvent.event_id < before_id)
@@ -1065,11 +1111,8 @@ def get_session_events(session_id):
     if has_more:
         events = events[:limit]
     events = list(reversed(events))
-    include_private = _campaign_pack_operator_view()
-    private_player_ids = account_player_ids_by_campaign(
-        [session_obj.campaign_id],
-        current_account_id(),
-    ).get(session_obj.campaign_id, frozenset())
+    include_private = projection.include_hidden_state
+    private_player_ids = _viewer_player_ids(session_obj, projection)
     return jsonify(
         {
             'session_id': session_id,
@@ -1096,13 +1139,18 @@ def get_session_state(session_id):
         telemetry_event('sessions.state.session_not_found', payload={'session_id': session_id}, severity='warning')
         return error_response('session_not_found', 'Session not found.', 404)
 
+    projection, projection_error = _viewer_projection(session_obj)
+    if projection_error:
+        return projection_error
     session_state = SessionState.query.filter_by(session_id=session_id).first()
     return jsonify(
         session_state_payload(
             session_obj,
             session_state,
-            include_hidden_state=_campaign_pack_operator_view(),
+            include_hidden_state=projection.include_hidden_state,
             viewer_account_id=current_account_id(),
+            private_player_ids=projection.private_player_ids,
+            acting_player_id=projection.player_id,
         )
     )
 
@@ -1170,8 +1218,11 @@ def get_session_campaign_pack_progress(session_id):
     session_obj = workspace_session(session_id)
     if not session_obj:
         return error_response('session_not_found', 'Session not found.', 404)
+    projection, projection_error = _viewer_projection(session_obj)
+    if projection_error:
+        return projection_error
     try:
-        return jsonify(campaign_pack_progress_payload(session_id=session_id, include_hidden=_campaign_pack_operator_view()))
+        return jsonify(campaign_pack_progress_payload(session_id=session_id, include_hidden=projection.include_hidden_state))
     except CampaignPackProgressError as exc:
         return error_response(exc.error_code, exc.public_message, exc.status_code)
 

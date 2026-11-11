@@ -6,6 +6,9 @@ from each other or from the React client types.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import re
+
 from sqlalchemy import func, or_, select
 
 from aidm_server.armor_class import armor_class_details
@@ -35,7 +38,12 @@ from aidm_server.roll_visibility import (
     public_turn_event_payload as player_visible_turn_event_body,
     public_turn_metadata_payload,
 )
-from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
+from aidm_server.services.campaign_pack_visibility import (
+    filter_session_snapshot_for_player,
+    hide_enemy_hit_points,
+    with_scene_offers,
+)
+from aidm_server.turn_events import DM_RESPONSE_EVENT
 from aidm_server.weapon_proficiency import normalize_weapon_proficiencies
 
 ACTIVE_STATUS = 'active'
@@ -46,6 +54,11 @@ DELETED_STATUS = 'deleted'
 ARCHIVE_NAME_PREFIX = 'Archive — '
 SESSION_SCENE_TITLE_MAX_LENGTH = 120
 SESSION_SUMMARY_EXCERPT_MAX_LENGTH = 280
+CONTINUE_LINE_MAX_LENGTH = 160
+# How many of a session's latest DM responses are read to find its latest narration.
+CONTINUE_LINE_RESPONSE_WINDOW = 10
+FIRST_SENTENCE_RE = re.compile(r'.+?[.!?…]+["”’)\]]*(?=\s|$)', re.S)
+PLAYER_VIEW = 'player'
 
 PARTY_PLAYER_PUBLIC_KEYS = (
     'player_id',
@@ -366,6 +379,7 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
             'turn_count': 0,
             'campaign_ordinal': None,
             'current_session_id': None,
+            'latest_narration': '',
         }
         for session_id in ids
     }
@@ -406,7 +420,69 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
         summary['latest_turn_completed_at'] = latest_completed_at
         summary['turn_count'] = int(turn_count or 0)
 
+    recent_responses = (
+        db.session.query(
+            TurnEvent.session_id.label('session_id'),
+            TurnEvent.payload_json.label('payload_json'),
+            func.row_number()
+            .over(partition_by=TurnEvent.session_id, order_by=TurnEvent.event_id.desc())
+            .label('recency'),
+        )
+        .filter(TurnEvent.session_id.in_(ids), TurnEvent.event_type == DM_RESPONSE_EVENT)
+        .subquery()
+    )
+    for session_id, payload_json in (
+        db.session.query(recent_responses.c.session_id, recent_responses.c.payload_json)
+        .filter(recent_responses.c.recency <= CONTINUE_LINE_RESPONSE_WINDOW)
+        .order_by(recent_responses.c.session_id.asc(), recent_responses.c.recency.asc())
+        .all()
+    ):
+        summary = summaries[int(session_id)]
+        if not summary['latest_narration']:
+            summary['latest_narration'] = _narration_text(payload_json)
+
     return summaries
+
+
+def _narration_text(payload_json) -> str:
+    """A DM response's story text; refusals and roll-gate notices are not narration."""
+
+    payload = safe_json_loads(payload_json, {})
+    payload = payload if isinstance(payload, dict) else {}
+    metadata = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    if metadata.get('rules_rejection') or metadata.get('roll_gate_waiting'):
+        return ''
+    message = payload.get('message')
+    return message.strip() if isinstance(message, str) else ''
+
+
+def first_sentence(text) -> str:
+    plain = ' '.join(str(text or '').replace('*', '').split())
+    match = FIRST_SENTENCE_RE.match(plain)
+    return match.group(0) if match else plain
+
+
+def session_continue_line(snapshot: dict, latest_narration: str) -> str | None:
+    """``{current location} — {first sentence of the latest narration}`` for the title's Continue card.
+
+    ``None`` before anything has been narrated; the rolling summary is never used.
+    """
+
+    sentence = first_sentence(latest_narration)
+    if not sentence:
+        return None
+    scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
+    location_id = str(scene.get('locationId') or '').strip()
+    location = next(
+        (
+            record
+            for record in (snapshot.get('locations') if isinstance(snapshot.get('locations'), list) else [])
+            if isinstance(record, dict) and location_id and str(record.get('id') or '').strip() == location_id
+        ),
+        {},
+    )
+    place = str(location.get('name') or scene.get('name') or '').strip()
+    return text_excerpt(f'{place} — {sentence}' if place else sentence, CONTINUE_LINE_MAX_LENGTH)
 
 
 def account_player_ids_by_campaign(
@@ -429,6 +505,65 @@ def account_player_ids_by_campaign(
     for campaign_id, player_id in rows:
         result[int(campaign_id)].add(int(player_id))
     return {campaign_id: frozenset(player_ids) for campaign_id, player_ids in result.items()}
+
+
+class ViewerProjectionError(ValueError):
+    def __init__(self, error_code: str, message: str, status_code: int):
+        super().__init__(message)
+        self.error_code = error_code
+        self.public_message = message
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class ViewerProjection:
+    """Which projection a read returns, and the hero it is told from.
+
+    ``player_id`` names the hero whose private data is included and for whom
+    legality is computed; without it a read keeps today's choice of heroes.
+    """
+
+    include_hidden_state: bool
+    player_id: int | None = None
+
+    @property
+    def private_player_ids(self) -> frozenset[int] | None:
+        return frozenset({self.player_id}) if self.player_id is not None else None
+
+
+def viewer_projection(
+    *,
+    campaign_id: int,
+    operator: bool,
+    view: str | None,
+    player_id: str | None,
+    account_id: int | None,
+) -> ViewerProjection:
+    """Decide a read's projection: the full one only for an operator who did not ask for ``view=player``.
+
+    With ``view=player``, ``player_id`` may name any hero of the campaign for an
+    operator and only one of the caller's own heroes for anyone else.
+    """
+
+    requested_view = str(view or '').strip().lower()
+    if requested_view and requested_view != PLAYER_VIEW:
+        raise ViewerProjectionError('validation_error', 'view must be player.', 400)
+    if requested_view != PLAYER_VIEW:
+        return ViewerProjection(include_hidden_state=operator)
+    if player_id in (None, ''):
+        return ViewerProjection(include_hidden_state=False)
+    try:
+        hero_id = int(str(player_id).strip())
+    except ValueError:
+        hero_id = 0
+    if hero_id <= 0:
+        raise ViewerProjectionError('validation_error', 'player_id must be a positive integer.', 400)
+    heroes = Player.query.filter_by(player_id=hero_id, campaign_id=campaign_id)
+    if not operator:
+        heroes = heroes.filter(Player.account_id.is_not(None), Player.account_id == account_id)
+    if heroes.first() is None:
+        raise ViewerProjectionError('forbidden', 'You can only view the story as one of your own heroes.', 403)
+    return ViewerProjection(include_hidden_state=False, player_id=hero_id)
 
 
 def session_payload(
@@ -466,6 +601,7 @@ def session_payload(
         'turn_count': int(summary.get('turn_count') or 0),
         'scene_title': session_scene_title(snapshot),
         'summary_excerpt': text_excerpt(rolling_summary or recap, SESSION_SUMMARY_EXCERPT_MAX_LENGTH),
+        'continue_line': session_continue_line(snapshot, summary.get('latest_narration') or ''),
         'imported': session_is_imported(snapshot),
         'play_now': isinstance(play_now, dict) and bool(play_now),
     }
@@ -546,15 +682,19 @@ def session_state_payload(
     include_hidden_state: bool = True,
     viewer_account_id: int | None = None,
     private_player_ids: set[int] | frozenset[int] | None = None,
+    acting_player_id: int | None = None,
 ) -> dict:
+    """A session's state; ``acting_player_id`` is the hero scene-object legality is computed for."""
+
     raw_snapshot = safe_json_loads(session_obj.state_snapshot, None)
     player_ids = private_player_ids
     if include_hidden_state:
         # Operators receive the full snapshot, but the Story map must still use
         # the same player-safe projection as every other viewer. It is derived
         # on read and must not be written back into the persisted snapshot.
-        payload_snapshot = dict(raw_snapshot) if isinstance(raw_snapshot, dict) else raw_snapshot
+        payload_snapshot = with_scene_offers(raw_snapshot, acting_player_id=acting_player_id)
         if isinstance(payload_snapshot, dict):
+            payload_snapshot = dict(payload_snapshot)
             payload_snapshot.pop('worldMap', None)
             player_view = filter_session_snapshot_for_player(raw_snapshot)
             if isinstance(player_view, dict) and isinstance(player_view.get('worldMap'), dict):
@@ -568,6 +708,8 @@ def session_state_payload(
         payload_snapshot = filter_session_snapshot_for_player(
             raw_snapshot,
             private_player_ids=frozenset(player_ids),
+            acting_player_id=acting_player_id,
+            enemy_hit_points=True,
         )
     combat = payload_snapshot.get('combat') if isinstance(payload_snapshot, dict) else None
     if isinstance(combat, dict) and str(combat.get('status') or '').strip().lower() in {'starting', 'active'}:
@@ -578,6 +720,8 @@ def session_state_payload(
             payload_snapshot,
             player_query.order_by(Player.player_id.asc()).all(),
         )
+    if not include_hidden_state:
+        payload_snapshot = hide_enemy_hit_points(payload_snapshot)
     chapter_fields = session_chapter_fields(
         session_obj,
         raw_snapshot if isinstance(raw_snapshot, dict) else {},

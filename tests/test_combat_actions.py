@@ -616,7 +616,9 @@ def test_projection_exposes_the_initiative_ribbon_and_visible_engagements_only()
     _engage(actor, enemy)
     _engage(actor, lurker)
     state = _state(actor, enemy, lurker)
-    projected = with_combat_legal_actions(filter_session_snapshot_for_player(deepcopy(state), private_player_ids={1}), [_player()])
+    projected = with_combat_legal_actions(
+        filter_session_snapshot_for_player(deepcopy(state), private_player_ids={1}, enemy_hit_points=True), [_player()]
+    )
     combat = projected['combat']
     assert combat['turnOrder'] == [
         {'id': ACTOR, 'name': 'Player 1', 'team': 'player', 'isCurrent': True},

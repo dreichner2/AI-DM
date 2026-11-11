@@ -239,6 +239,7 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('turn_count', 'number'),
             field('scene_title', 'string | null'),
             field('summary_excerpt', 'string'),
+            field('continue_line', 'string | null', optional=True),
             field('imported', 'boolean'),
             field('play_now', 'boolean'),
         ),

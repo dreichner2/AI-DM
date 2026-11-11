@@ -11,7 +11,7 @@ from typing import Any
 from aidm_server.game_state.campaign_pack_encounters import CATALOG_CONSEQUENCES, ENCOUNTER_TRIGGER_TYPES
 from aidm_server.game_state.models import stable_slug
 from aidm_server.game_state.quest_engine import CONSEQUENCE_CHANGE_TYPES, objective_is_mechanical
-from aidm_server.interactables import INTERACTABLE_ACTIONS, validate_interactable_catalog
+from aidm_server.interactables import INTERACTABLE_ACTIONS, supported_actions, validate_interactable_catalog
 from aidm_server.segment_triggers import KEYWORD_TRIGGER_TYPES, LOCATION_TRIGGER_TYPE, SUPPORTED_TRIGGER_TYPES
 from aidm_server.services.campaign_pack import (
     PACK_BOUNDS_ERROR_CODE,
@@ -367,6 +367,7 @@ def _engine_contract_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]
     issues.extend(_record_id_issues(pack))
     issues.extend(_reference_issues(pack, ids))
     issues.extend(_interactable_catalog_issues(pack))
+    issues.extend(_action_wording_issues(pack))
     issues.extend(_segment_trigger_issues(pack))
     issues.extend(_quest_issues(pack, ids))
     issues.extend(_checkpoint_condition_issues(pack))
@@ -554,6 +555,26 @@ def _interactable_catalog_issues(pack: dict[str, Any]) -> list[CampaignPackLintI
         _error('invalid_interactable_catalog', _text(error.get('path')), f"{error.get('code')}: {error.get('message')}")
         for error in validate_interactable_catalog(catalog)
     ]
+
+
+def _action_wording_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
+    """An object's label or DM text for an action it does not support is never used."""
+
+    issues: list[CampaignPackLintIssue] = []
+    for path, record in _pack_interactables(pack):
+        supported = supported_actions(record, 'hazards' if '.hazards[' in path else 'interactables')
+        name = _text(record.get('name')) or _record_id(record) or 'This object'
+        for field, wording in (('actionLabels', 'label'), ('actionText', 'text')):
+            for action in _dict(record.get(field)):
+                if action not in supported:
+                    issues.append(
+                        _warning(
+                            f'action_{wording}_for_unsupported_action',
+                            f'{path}.{field}.{action}',
+                            f'{name} does not support "{action}", so this {wording} is never used.',
+                        )
+                    )
+    return issues
 
 
 def _segment_trigger_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:

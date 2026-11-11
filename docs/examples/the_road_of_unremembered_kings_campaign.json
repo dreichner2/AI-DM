@@ -13,6 +13,10 @@
     "locationId": "loc_lantern_post_inn",
     "questId": "quest_road_unremembered_kings",
     "checkpointId": "cp_01_empty_caravan",
+    "clock": {
+      "day": 1,
+      "phase": "evening"
+    },
     "partyStatus": {
       "knownThreat": "An empty caravan has reached the Lantern Post with untouched cargo, calm horses, and no drivers.",
       "startingRumor": "Pale lanterns have been seen moving along the old road at night, and some milestones now stand where no milestones stood before.",
@@ -43,7 +47,7 @@
       "visibleDetails": [
         "One wagon bell rings three times though no hand touches it.",
         "The wheel rims are packed with cold road-mud that does not match any track near the inn.",
-        "A cloth-wrapped chip of pale stone rests beneath the driver's bench.",
+        "Something wrapped in waxed cloth is wedged beneath the driver's bench.",
         "A faint ash mark stains the rear signboard where the caravan route was written."
       ],
       "activeNpcIds": [
@@ -54,7 +58,7 @@
       "activeQuestIds": [
         "quest_road_unremembered_kings"
       ],
-      "hiddenSceneNotes": "The cloth-wrapped chip is part of a road-stone. The bell rang because the ward recognized a danger but no longer remembers whom it is supposed to protect."
+      "hiddenSceneNotes": "The pale chip in the lead wagon's strongbox is part of a road-stone. The bell rang because the ward recognized a danger but no longer remembers whom it is supposed to protect."
     },
     "knownNpcIds": [
       "npc_mara_reedwake",
@@ -111,6 +115,12 @@
           "id": "inn_caravan_ledger",
           "name": "Caravan Ledger",
           "kind": "object",
+          "allowedActions": [
+            "inspect"
+          ],
+          "actionLabels": {
+            "inspect": "Read the caravan ledger"
+          },
           "description": "A drover's travel ledger, cloth-bound and swollen with rain, left open on the driver's bench of the lead wagon. Every line that named a driver or guard has been struck through with black strokes that smell of cold ash. The cargo lists below are untouched: winter meal, lamp oil, salt, wool. The last entry, in a hurried hand, says the bell sounded at the third mile, though no tower stood there.",
           "playerDescription": "A rain-swollen travel ledger lies open on the driver's bench. Black strokes cut through every name in it.",
           "setsFlags": {
@@ -128,12 +138,16 @@
           "id": "inn_drivers_bench",
           "name": "Driver's Bench",
           "kind": "container",
-          "open": true,
           "allowedActions": [
             "inspect",
             "search"
           ],
-          "description": "The lead wagon's box seat, its boards worn pale by years of drivers. In the dark space beneath it sits a knot of waxed cloth. Unwrapped, the cloth holds a flat iron key on a greasy thong and a sliver of pale stone that crumbles to grit at a touch, as if it had been broken from something larger.",
+          "actionLabels": {
+            "inspect": "Look over the driver's bench",
+            "search": "Search under the driver's bench"
+          },
+          "open": true,
+          "description": "The lead wagon's box seat, its boards worn pale by years of drivers. In the dark space beneath it sits a knot of waxed cloth. Unwrapped, the cloth holds a flat iron key on a greasy thong, its bow stamped with a wagon wheel.",
           "playerDescription": "The lead wagon's box seat. A knot of waxed cloth is wedged in the dark space beneath it.",
           "requirements": {
             "search": {
@@ -159,6 +173,12 @@
           "id": "inn_lead_wagon",
           "name": "Lead Wagon",
           "kind": "container",
+          "allowedActions": [
+            "search"
+          ],
+          "actionLabels": {
+            "search": "Search the lead wagon"
+          },
           "open": true,
           "description": "The first of the caravan's wagons, canvas tied back, its meal sacks and oil casks still roped in place. Cold road-mud packs the wheel rims, and a grey-black ash mark is smeared across the rear signboard where the route was painted. Under a loose floorboard behind the sacks, an iron-strapped strongbox is bolted to the frame.",
           "playerDescription": "The caravan's lead wagon, canvas tied back, cargo still roped down. Cold mud packs the wheels and an ash smear darkens the rear signboard.",
@@ -175,6 +195,18 @@
           "id": "inn_wagon_strongbox",
           "name": "Wagon Strongbox",
           "kind": "container",
+          "allowedActions": [
+            "unlock",
+            "open",
+            "search",
+            "break"
+          ],
+          "actionLabels": {
+            "unlock": "Unlock the strongbox",
+            "open": "Open the strongbox",
+            "search": "Search the strongbox",
+            "break": "Break the strongbox open"
+          },
           "hidden": true,
           "locked": true,
           "open": false,
@@ -225,6 +257,12 @@
           "id": "inn_wagon_bell",
           "name": "Wagon Bell",
           "kind": "object",
+          "allowedActions": [
+            "use"
+          ],
+          "actionLabels": {
+            "use": "Ring the wagon bell"
+          },
           "usable": true,
           "description": "A brass bell hung on an iron crook above the lead wagon's seat. It rang three times when the caravan stopped, though nothing touched it. Struck by hand it gives a low note, and out on the dark hills a pale light kindles and answers.",
           "playerDescription": "A brass bell on an iron crook above the lead wagon's seat. It rang three times with no hand on it.",
@@ -282,6 +320,12 @@
           "id": "road_leaning_milestone",
           "name": "Leaning Milestone",
           "kind": "object",
+          "allowedActions": [
+            "inspect"
+          ],
+          "actionLabels": {
+            "inspect": "Read the leaning milestone"
+          },
           "description": "A milestone of old grey stone leaning out of the verge where no milestone stood a season ago. Its carved distance has been chipped away, and the crack down its face has been rubbed with ash in a careful hooked sign, the same sign smeared on the caravan's signboard.",
           "playerDescription": "A grey milestone leaning out of the verge, its carved distance chipped away. Something dark fills the crack down its face.",
           "discoversClueIds": {
@@ -294,6 +338,12 @@
           "id": "road_abandoned_cart",
           "name": "Abandoned Handcart",
           "kind": "container",
+          "allowedActions": [
+            "search"
+          ],
+          "actionLabels": {
+            "search": "Search the abandoned handcart"
+          },
           "open": true,
           "description": "A two-wheeled handcart tipped into the ditch, its shafts snapped and its kindling spilled into the water. Whoever pulled it left in a hurry and did not come back for it. A tarred torch is still wedged under the tailboard, and eight gold pieces lie scattered in the straw of its bed.",
           "playerDescription": "A handcart tipped into the ditch, its shafts snapped and its kindling spilled into the water.",
@@ -359,6 +409,13 @@
           "id": "ws_memorial_wall",
           "name": "Memorial Wall",
           "kind": "object",
+          "allowedActions": [
+            "search",
+            "inspect"
+          ],
+          "actionLabels": {
+            "search": "Study the memorial wall"
+          },
           "searchable": true,
           "description": "A wall of fitted stone carved with the names of roadwardens who died keeping the road. Many names are freshly chiseled away, and stone dust still lies white along its foot. Patient work with charcoal and a careful eye can raise the shallow ghosts of the cut letters and copy them down.",
           "playerDescription": "A stone wall carved with the names of fallen roadwardens. Many have been freshly chiseled out; white dust lies along its foot.",
@@ -387,6 +444,12 @@
           "id": "ws_cold_hearth",
           "name": "Cold Hearth",
           "kind": "container",
+          "allowedActions": [
+            "search"
+          ],
+          "actionLabels": {
+            "search": "Sift the cold hearth"
+          },
           "open": true,
           "description": "The waystation's hearth, long cold, its back-stone blackened by generations of travelers' fires. The old road oath is cut into the back-stone beneath the soot, and a rusted iron key is wedged in a gap between the stones.",
           "playerDescription": "A cold hearth with a soot-black back-stone. Letters show faintly under the soot.",
@@ -414,6 +477,16 @@
           "id": "ws_lockbox",
           "name": "Wardens' Lockbox",
           "kind": "container",
+          "allowedActions": [
+            "unlock",
+            "open",
+            "search"
+          ],
+          "actionLabels": {
+            "unlock": "Unlock the wardens' lockbox",
+            "open": "Open the wardens' lockbox",
+            "search": "Search the wardens' lockbox"
+          },
           "locked": true,
           "open": false,
           "revealsContentsOnOpen": false,
@@ -492,6 +565,12 @@
           "id": "cairn_banner_stone",
           "name": "Banner-Stone",
           "kind": "object",
+          "allowedActions": [
+            "use"
+          ],
+          "actionLabels": {
+            "use": "Speak the names at the banner-stone"
+          },
           "usable": true,
           "description": "A tall standing stone at the heart of the cairn field, notched where the wardens' banner pole once stood. The words of the road oath circle its foot, weathered almost smooth. Spoken at the stone by someone who knows them, the oath quiets the dead and opens the old way to the valley.",
           "playerDescription": "A tall standing stone at the heart of the cairn field, notched for a banner pole. Weathered letters circle its foot.",
@@ -556,6 +635,12 @@
           "id": "yard_rubbing_table",
           "name": "Rubbing Table",
           "kind": "object",
+          "allowedActions": [
+            "inspect"
+          ],
+          "actionLabels": {
+            "inspect": "Study the rubbings"
+          },
           "description": "A long trestle under a lean-to, covered in charcoal rubbings of road-stones pinned flat with chips of slate. Laid side by side, the rubbings show the ward's old roads running together into one hidden valley, and Brokk's blunt notes in the margins set out what can be done with a last stone: renew it with the names, break it, hide it, or claim it.",
           "playerDescription": "A long trestle under a lean-to, covered in charcoal rubbings of old road-stones pinned flat with slate chips.",
           "setsFlags": {
@@ -615,6 +700,14 @@
           "id": "ridge_culvert_grate",
           "name": "Culvert Grate",
           "kind": "door",
+          "allowedActions": [
+            "unlock",
+            "open"
+          ],
+          "actionLabels": {
+            "unlock": "Force the culvert grate",
+            "open": "Open the culvert grate"
+          },
           "locked": true,
           "open": false,
           "description": "An old drainage culvert runs under the ridge, its mouth barred by an iron grate rusted into its frame. Cold air breathes out of the dark beyond, smelling of wet stone and pale bark. A strong back can wrench the grate from its rotten pins; the tunnel behind it runs down to the hidden valley where the old roads meet.",
@@ -686,11 +779,6 @@
           "id": "valley_last_road_stone",
           "name": "The Last Road-Stone",
           "kind": "object",
-          "usable": true,
-          "breakable": true,
-          "broken": false,
-          "locked": false,
-          "repeatableInspect": true,
           "allowedActions": [
             "inspect",
             "use",
@@ -698,6 +786,18 @@
             "lock",
             "trigger"
           ],
+          "actionLabels": {
+            "inspect": "Approach the Last Road-Stone",
+            "use": "Renew the ward",
+            "break": "Break the ward",
+            "lock": "Hide the road-stone",
+            "trigger": "Claim the ward"
+          },
+          "usable": true,
+          "breakable": true,
+          "broken": false,
+          "locked": false,
+          "repeatableInspect": true,
           "description": "A white road-stone taller than a rider, standing where the forgotten roads meet beneath pale trees. Names surface across its face, blur into ash, and return as whispers in the fog. While the Cinder Scribe's binding holds, nothing can be done with it. Once the binding is broken, the stone can be renewed with the fragment and the recovered names, broken with a stonewright's hammer, hidden again by someone who knows the oath, or claimed by whoever lays a hand on it and takes the ward for their own.",
           "playerDescription": "A white road-stone taller than a rider; names surface on its face and fade into ash. Once the Scribe's binding is broken it can be renewed (Use: the road-stone fragment and the recovered names), broken (Break: a mason's hammer), hidden again (Lock: the road oath) or claimed (Trigger).",
           "requirements": {
@@ -763,6 +863,12 @@
           "id": "valley_false_refuge",
           "name": "The False Refuge",
           "kind": "object",
+          "allowedActions": [
+            "inspect"
+          ],
+          "actionLabels": {
+            "inspect": "Look into the False Refuge"
+          },
           "description": "At the valley's edge the fog stands in a still wall, and within it, faint as breath on glass, wait the missing: drivers, guards, a child holding a bell. They are unhurt and cannot leave, kept safe by a ward that no longer knows their names.",
           "playerDescription": "A still wall of fog at the valley's edge. Shapes stand inside it, unmoving, like people waiting at a closed gate.",
           "discoversClueIds": {
@@ -823,7 +929,7 @@
       "knows": [
         "The wagon wheels were packed with cold road-mud from a track the caravan should never have touched.",
         "One horse had a white dust handprint on its neck.",
-        "The driver's bench held a cloth-wrapped stone fragment.",
+        "Something wrapped in waxed cloth was wedged beneath the driver's bench.",
         "The caravan bell rang three times before the horses stopped."
       ],
       "secret": "Tovin stole a silver button from one wagon before anyone arrived. It belongs to a missing driver and can help identify that traveler later.",
@@ -1190,6 +1296,7 @@
     {
       "id": "enemy_ashmarked_cutthroats",
       "name": "Ashmarked Cutthroats",
+      "singularName": "Ashmarked Cutthroat",
       "type": "human_spies_and_mercenaries",
       "role": "early_enemy_pressure",
       "difficulty": "low_to_moderate",
@@ -1395,6 +1502,7 @@
     {
       "id": "enemy_pale_lanterns",
       "name": "Pale Lanterns",
+      "singularName": "Pale Lantern",
       "type": "supernatural_lure_and_hazard",
       "role": "travel_danger",
       "difficulty": "variable",
@@ -1610,6 +1718,7 @@
     {
       "id": "enemy_name_eaten_roadwardens",
       "name": "Name-Eaten Roadwardens",
+      "singularName": "Name-Eaten Roadwarden",
       "type": "oath_bound_spirits",
       "role": "major_moral_encounter",
       "difficulty": "moderate_to_hard",
@@ -1832,6 +1941,7 @@
     {
       "id": "enemy_wardbound_beasts",
       "name": "Wardbound Beasts",
+      "singularName": "Wardbound Beast",
       "type": "animals_altered_by_ward",
       "role": "wilderness_pressure",
       "difficulty": "low_to_moderate",
@@ -2046,6 +2156,7 @@
     {
       "id": "enemy_hollow_marshal",
       "name": "The Hollow Marshal",
+      "proper": true,
       "type": "greater_roadwarden_spirit",
       "role": "conditional_mini_boss",
       "difficulty": "hard",
@@ -2279,6 +2390,7 @@
     {
       "id": "enemy_cinder_scribe",
       "name": "The Cinder Scribe",
+      "proper": true,
       "type": "ritualist_oathbreaker_name_thief",
       "role": "final_boss",
       "difficulty": "boss",
@@ -3599,7 +3711,7 @@
       "id": "clue_road_stone_fragment",
       "name": "Pale Road-Stone Fragment",
       "visibleAtStart": true,
-      "description": "A cloth-wrapped chip of pale stone carved with half a name-rune and faint lines like a road map.",
+      "description": "A palm-sized chip of white road-stone carved with half a name-rune and faint lines like a road map.",
       "foundAtLocationIds": [
         "loc_lantern_post_inn",
         "loc_old_north_road",

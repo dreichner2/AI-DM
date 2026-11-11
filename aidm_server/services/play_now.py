@@ -6,8 +6,8 @@ from typing import Any
 from aidm_server.auth import DEFAULT_WORKSPACE_ID, normalize_workspace_name_key
 from aidm_server.database import db
 from aidm_server.game_state.models import state_snapshot_for_session
-from aidm_server.models import Campaign, Player, Session, SessionState, Workspace, safe_json_dumps, safe_json_loads
-from aidm_server.response_dtos import campaign_payload, player_detail_payload, session_payload
+from aidm_server.models import Campaign, DmTurn, Player, Session, SessionState, Workspace, safe_json_dumps, safe_json_loads
+from aidm_server.response_dtos import campaign_payload, player_detail_payload, session_is_open, session_payload
 from aidm_server.services.campaign_pack import CampaignPackImportError, import_campaign_pack
 from aidm_server.services.campaign_pack_examples import get_example_campaign_pack
 from aidm_server.services.pregen_characters import (
@@ -40,13 +40,31 @@ class PlayNowOnboardingResult:
     status_code: int
 
 
+def play_now_fresh_flag(payload: dict[str, Any]) -> bool:
+    """The Play Now request's ``fresh`` flag: ``true`` asks for a new adventure."""
+
+    fresh = payload.get('fresh', False)
+    if not isinstance(fresh, bool):
+        raise PlayNowOnboardingError('fresh must be true or false.')
+    return fresh
+
+
 def ensure_play_now_adventure(
     *,
     workspace_id: str | None = None,
     account_id: int | None = None,
     character_id: str | None = None,
     example_pack_id: str | None = None,
+    fresh: bool = False,
 ) -> PlayNowOnboardingResult:
+    """Open the Play Now adventure for the chosen hero.
+
+    Without ``fresh`` the workspace's existing Play Now campaign is reused.
+    With it a new campaign is always imported, except that a fresh adventure
+    this hero has not played a turn of yet is returned again, so a repeated
+    request (a double click) does not create a second one.
+    """
+
     target_workspace_id = workspace_id or DEFAULT_WORKSPACE_ID
     requested_pack_id = str(example_pack_id or DEFAULT_PLAY_NOW_EXAMPLE_PACK_ID).strip()
     if not requested_pack_id:
@@ -62,22 +80,31 @@ def ensure_play_now_adventure(
 
     ensure_local_workspace_context(target_workspace_id)
 
-    session_obj = _find_existing_play_now_session(
-        workspace_id=target_workspace_id,
-        requested_pack_id=requested_pack_id,
+    session_obj = (
+        _unplayed_fresh_play_now_session(
+            workspace_id=target_workspace_id,
+            requested_pack_id=requested_pack_id,
+            account_id=account_id,
+            preset=preset,
+        )
+        if fresh
+        else _find_existing_play_now_session(
+            workspace_id=target_workspace_id,
+            requested_pack_id=requested_pack_id,
+        )
     )
     created_session = session_obj is None
     created_chapter = False
     imported_pack_id = None
     source_filename = None
-    if session_obj is not None:
-        session_obj, created_chapter = _current_play_now_chapter(session_obj, workspace_id=target_workspace_id)
-    else:
+    if session_obj is None:
         session_obj, imported_pack_id, source_filename = _import_play_now_campaign_pack(
             workspace_id=target_workspace_id,
             requested_pack_id=requested_pack_id,
             account_id=account_id,
         )
+    elif not fresh:
+        session_obj, created_chapter = _current_play_now_chapter(session_obj, workspace_id=target_workspace_id)
 
     def prepare_result() -> PlayNowOnboardingResult:
         campaign = session_obj.campaign
@@ -99,6 +126,7 @@ def ensure_play_now_adventure(
             requested_pack_id=requested_pack_id,
             imported_pack_id=str(resolved_pack_id),
             source_filename=str(resolved_source_filename or ''),
+            fresh=fresh and created_session,
         )
 
         created = created_session or created_chapter or created_player
@@ -180,6 +208,42 @@ def _find_existing_play_now_session(*, workspace_id: str, requested_pack_id: str
             continue
         metadata = _play_now_metadata(session_obj)
         if metadata.get('source') == 'play_now' and metadata.get('examplePackId') == requested_pack_id:
+            return session_obj
+    return None
+
+
+def _unplayed_fresh_play_now_session(
+    *,
+    workspace_id: str,
+    requested_pack_id: str,
+    account_id: int | None,
+    preset,
+) -> Session | None:
+    """The newest open fresh Play Now chapter in which this account's chosen hero has not played a turn."""
+
+    sessions = (
+        Session.query.join(Campaign, Campaign.campaign_id == Session.campaign_id)
+        .filter(Campaign.workspace_id == workspace_id)
+        .order_by(Session.session_id.desc())
+        .all()
+    )
+    for session_obj in sessions:
+        metadata = _play_now_metadata(session_obj)
+        campaign = session_obj.campaign
+        if (
+            metadata.get('fresh') is not True
+            or metadata.get('examplePackId') != requested_pack_id
+            or not session_is_open(session_obj.status)
+            or campaign is None
+            or campaign.status == 'archived'
+            or DmTurn.query.filter_by(session_id=session_obj.session_id).first() is not None
+        ):
+            continue
+        heroes = Player.query.filter_by(workspace_id=workspace_id, campaign_id=campaign.campaign_id).all()
+        if any(
+            player_matches_preset(player, preset) and (account_id is None or player.account_id == account_id)
+            for player in heroes
+        ):
             return session_obj
     return None
 
@@ -289,6 +353,7 @@ def _sync_play_now_snapshot(
     requested_pack_id: str,
     imported_pack_id: str,
     source_filename: str,
+    fresh: bool,
 ) -> None:
     players = (
         Player.query.filter_by(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id)
@@ -306,6 +371,7 @@ def _sync_play_now_snapshot(
         requested_pack_id=requested_pack_id,
         imported_pack_id=imported_pack_id,
         source_filename=source_filename,
+        fresh=fresh,
     )
     client_session_id = _play_now_client_session_id(imported_pack_id)
     # The Play Now idempotency key stays with the session that first took it;
@@ -336,6 +402,7 @@ def _apply_play_now_metadata(
     requested_pack_id: str,
     imported_pack_id: str,
     source_filename: str,
+    fresh: bool,
 ) -> None:
     now = utc_now().isoformat()
     existing = snapshot.get('playNow') if isinstance(snapshot.get('playNow'), dict) else {}
@@ -348,6 +415,9 @@ def _apply_play_now_metadata(
         'sourceFilename': source_filename or None,
         'updatedAt': now,
     }
+    # Marks a campaign a fresh request started, so a repeated fresh request finds it.
+    if fresh:
+        snapshot['playNow']['fresh'] = True
     flags = snapshot.get('flags') if isinstance(snapshot.get('flags'), dict) else {}
     flags['playNow'] = True
     flags['playNowExamplePackId'] = requested_pack_id

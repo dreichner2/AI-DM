@@ -57,6 +57,21 @@
           "description": "Initial active checkpoint; defaults to the first checkpoint.",
           "$ref": "#/$defs/id"
         },
+        "clock": {
+          "description": "When the adventure begins. Without it the party starts on day 1 in the morning.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "day": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "phase": {
+              "type": "string",
+              "enum": ["morning", "afternoon", "evening", "night"]
+            }
+          }
+        },
         "currentScene": {
           "$ref": "#/$defs/currentScene"
         },
@@ -284,6 +299,131 @@
         "additionalProperties": true
       }
     },
+    "sceneObjectList": {
+      "type": "array",
+      "maxItems": 150,
+      "items": {
+        "$ref": "#/$defs/sceneObject"
+      }
+    },
+    "sceneObject": {
+      "description": "A door, lock, container, object or hazard in a scene. Any other authored field (state, requirements, transitions, discoveries) is kept as written.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "allowedActions": {
+          "description": "Limits the actions the object supports to these; without it the object's kind and flags decide.",
+          "type": "array",
+          "maxItems": 11,
+          "items": {
+            "$ref": "#/$defs/objectAction"
+          },
+          "uniqueItems": true
+        },
+        "actionLabels": {
+          "description": "The words the Story screen offers for an action, for example {\"inspect\": \"Read the caravan ledger\"}. An action without one reads \"Examine {name}\", \"Search {name}\", \"Open {name}\" and so on. The linter warns about a label for an action the object does not support.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/actionLabel"
+          },
+          "properties": {
+            "search": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "use": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "trigger": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "open": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "unlock": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "inspect": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "close": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "lock": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "break": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "disarm": {
+              "$ref": "#/$defs/actionLabel"
+            },
+            "reset": {
+              "$ref": "#/$defs/actionLabel"
+            }
+          }
+        },
+        "actionText": {
+          "description": "DM-side text the narrator draws on when an action resolves, for example what reading a ledger shows. Kept in session state like description and never sent to players. The linter warns about text for an action the object does not support.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/actionText"
+          },
+          "properties": {
+            "search": {
+              "$ref": "#/$defs/actionText"
+            },
+            "use": {
+              "$ref": "#/$defs/actionText"
+            },
+            "trigger": {
+              "$ref": "#/$defs/actionText"
+            },
+            "open": {
+              "$ref": "#/$defs/actionText"
+            },
+            "unlock": {
+              "$ref": "#/$defs/actionText"
+            },
+            "inspect": {
+              "$ref": "#/$defs/actionText"
+            },
+            "close": {
+              "$ref": "#/$defs/actionText"
+            },
+            "lock": {
+              "$ref": "#/$defs/actionText"
+            },
+            "break": {
+              "$ref": "#/$defs/actionText"
+            },
+            "disarm": {
+              "$ref": "#/$defs/actionText"
+            },
+            "reset": {
+              "$ref": "#/$defs/actionText"
+            }
+          }
+        },
+        "proper": {
+          "description": "The name is a proper noun, so refusals read \"Excalibur is locked.\" rather than \"The Excalibur is locked.\". A name that starts with \"The\" is never given another article.",
+          "type": "boolean"
+        }
+      }
+    },
+    "objectAction": {
+      "type": "string",
+      "enum": ["search", "use", "trigger", "open", "unlock", "inspect", "close", "lock", "break", "disarm", "reset"]
+    },
+    "actionLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 48
+    },
+    "actionText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
     "questPredicate": {
       "description": "Quest objective predicate evaluated by the quest engine after every applied change. Event keys (eventType|event|changeType, actorId, targetActorId, targetId, objectId, itemId, itemName, npcId, locationId, encounterId, participantId, endReason, flagKey, checkpointId, objectiveId, questId, quantityAtLeast|amountAtLeast) match the applied change exactly (strings case-insensitively). State keys (atLocationId; locationId and flagKey + flagValue|equals when no event type is given; possessesItemId|possessesItemName with optional actorId and quantityAtLeast; objectiveIds + objectivePolicy all|any) are checked against the state after the change. Event and state keys in one predicate must all hold. all|allOf and any|anyOf hold lists of predicates; entries that are not objects are ignored and a combinator with no predicate is never satisfied; other keys next to a combinator are ignored. Any other key is ignored by the engine and reported by the linter.",
       "properties": {
@@ -431,15 +571,23 @@
             },
             "interactables": {
               "description": "Doors, locks, containers and objects restored into the scene on arrival (and at the start when this is the starting location and the starting scene lists none).",
-              "$ref": "#/$defs/objectList"
+              "$ref": "#/$defs/sceneObjectList"
             },
             "hazards": {
-              "$ref": "#/$defs/objectList"
+              "$ref": "#/$defs/sceneObjectList"
             },
             "sceneState": {
               "description": "Optional scene-local overrides; a collection here wins over the top-level one.",
               "type": "object",
-              "additionalProperties": true
+              "additionalProperties": true,
+              "properties": {
+                "interactables": {
+                  "$ref": "#/$defs/sceneObjectList"
+                },
+                "hazards": {
+                  "$ref": "#/$defs/sceneObjectList"
+                }
+              }
             },
             "gmNotes": {
               "description": "Stored in the operator catalog only; never sent to players or the DM prompt.",
@@ -641,6 +789,16 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 160
+        },
+        "singularName": {
+          "description": "One of this enemy, when name is a group (\"Ashmarked Cutthroat\" for \"Ashmarked Cutthroats\").",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "proper": {
+          "description": "The name is a proper noun (\"The Hollow Marshal\"), never pluralised or given an article.",
+          "type": "boolean"
         },
         "creatureType": {
           "type": "string",
@@ -1238,11 +1396,11 @@
         },
         "interactables": {
           "description": "Opening-scene objects. When absent or empty, the starting location's own interactables are used.",
-          "$ref": "#/$defs/objectList"
+          "$ref": "#/$defs/sceneObjectList"
         },
         "hazards": {
           "description": "Opening-scene hazards. When absent or empty, the starting location's own hazards are used.",
-          "$ref": "#/$defs/objectList"
+          "$ref": "#/$defs/sceneObjectList"
         },
         "sceneType": {
           "type": "string",

@@ -38,6 +38,12 @@ remembered in ``failedCheckActorIds`` until the object's revision changes.
 targets}}``) are resolved with the action and turned into trusted changes by
 :func:`interactable_followup_changes`, together with authored
 ``discoversClueIds``, ``setsFlags`` and ``discoversLocationIds``.
+
+An ``open`` or ``search`` whose only blockers are a lock the actor's key opens
+and/or a closed container first takes those steps itself (unlock, then open),
+each recorded as its own change; a step that needs a roll or carries authored
+effects is never taken implicitly.  Every refusal is one plain sentence that
+names the object, so it can be shown to the player as it is.
 """
 
 from __future__ import annotations
@@ -64,13 +70,17 @@ __all__ = [
     "ACTION_LEDGER_KEY",
     "INTERACTABLE_ACTIONS",
     "INTERACTABLE_KINDS",
+    "OFFERED_ACTION_ORDER",
     "available_actions_for_target",
     "interactable_actor_context",
     "interactable_followup_changes",
     "object_rolls",
+    "offered_scene_actions",
     "project_interactable_event",
     "project_scene_interactables",
     "resolve_interactable_action",
+    "supported_actions",
+    "take_label",
     "validate_interactable_catalog",
 ]
 
@@ -100,8 +110,9 @@ DEFAULT_CHECK_DC = 10
 EFFECT_SOURCE = "interactable_effect"
 COMBAT_ACTION_PREFIX = "object."
 FREE_COMBAT_ACTIONS = frozenset({"inspect"})
+# Default action labels: "{verb} {name}" unless the pack authors actionLabels.
 ACTION_LABELS = {
-    "inspect": "Inspect",
+    "inspect": "Examine",
     "open": "Open",
     "close": "Close",
     "lock": "Lock",
@@ -113,6 +124,68 @@ ACTION_LABELS = {
     "trigger": "Trigger",
     "reset": "Reset",
 }
+OFFERED_ACTION_ORDER = (
+    "search",
+    "use",
+    "trigger",
+    "open",
+    "unlock",
+    "inspect",
+    "close",
+    "lock",
+    "break",
+    "disarm",
+    "reset",
+)
+# What the actor did, one sentence per action; ``{the}`` is the object's name.
+DONE_SENTENCES = {
+    "inspect": "You examine {the}.",
+    "open": "You open {the}.",
+    "close": "You close {the}.",
+    "lock": "You lock {the}.",
+    "unlock": "You unlock {the}.",
+    "search": "You search {the}.",
+    "break": "You break {the}.",
+    "use": "You use {the}.",
+    "disarm": "You disarm {the}.",
+    "trigger": "You set off {the}.",
+    "reset": "You reset {the}.",
+}
+# Why an action cannot be taken: one plain sentence for every refusal.
+REFUSALS = {
+    "unsupported": "That can't be done with {the}.",
+    "broken": "{The} is broken.",
+    "already_open": "{The} is already open.",
+    "locked": "{The} is locked.",
+    "closed": "{The} is closed.",
+    "already_closed": "{The} is already closed.",
+    "close_first": "{The} has to be closed first.",
+    "already_locked": "{The} is already locked.",
+    "not_locked": "{The} is not locked.",
+    "already_inspected": "You have already examined {the}.",
+    "already_searched": "You have already searched {the}.",
+    "already_broken": "{The} is already broken.",
+    "used_up": "{The} can't be used again.",
+    "already_disarmed": "{The} is already disarmed.",
+    "cannot_disarm": "{The} can't be disarmed now.",
+    "inactive": "{The} is not active.",
+    "already_triggered": "{The} has already been set off.",
+    "already_reset": "{The} is already set.",
+    "no_key": "It is locked, and you carry no key that fits.",
+    "missing_item": "You don't have what {the} needs.",
+    "missing_tool": "You don't have the tools {the} needs.",
+    "missing_capability": "You don't know how to do that with {the}.",
+    "missing_flag": "You don't know enough to do that yet.",
+    "object_state": "Something else has to change first.",
+    "check_required": "That takes a roll.",
+    "check_mismatch": "That roll doesn't match what {the} needs.",
+    "check_failed": "The attempt fails.",
+    "repeat_check": REPEAT_CHECK_MESSAGE,
+    "malformed": "That can't be done with {the} right now.",
+    "stale": "{The} changed after the player selected it.",
+}
+NOT_HERE_MESSAGE = "There is nothing like that here."
+UNAVAILABLE_MESSAGE = "That can't be done right now."
 
 _SAFE_TRANSITION_FIELDS = frozenset(
     {
@@ -203,6 +276,8 @@ _NEVER_PUBLIC_FIELDS = frozenset(
         "discoversClueIds",
         "discoversLocationIds",
         "setsFlags",
+        "actionLabels",
+        "actionText",
         FAILED_CHECK_ACTORS_KEY,
     }
 )
@@ -598,8 +673,60 @@ def _target_is_visible(target: dict[str, Any], actor: dict[str, Any]) -> bool:
     return True
 
 
-def _failure(code: str, message: str, **details: Any) -> dict[str, Any]:
-    return {"ok": False, "code": code, "message": message, "details": details}
+def _name_phrase(target: Mapping[str, Any]) -> str:
+    """``the Wagon Strongbox``; a proper name, or one that already starts with "The", stands alone."""
+
+    name = _text(target.get("name")) or _text(target.get("id")).replace("_", " ")
+    if not name:
+        return "it"
+    if target.get("proper") is True or name.lower().startswith("the "):
+        return name
+    return f"the {name}"
+
+
+def _capitalized(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _object_sentence(template: str, target: Mapping[str, Any]) -> str:
+    the = _name_phrase(target)
+    return template.format(the=the, The=_capitalized(the))
+
+
+def _refusal(code: str, refusal: str, target: Mapping[str, Any], **details: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "code": code,
+        "message": _object_sentence(REFUSALS[refusal], target),
+        "details": details,
+    }
+
+
+def _unmet(code: str, **details: Any) -> dict[str, Any]:
+    """A requirement that does not hold; :func:`_action_legality` words it."""
+
+    return {"ok": False, "code": code, "details": details}
+
+
+def _requirement_refusal(failure: Mapping[str, Any], action: str) -> str:
+    code = _text(failure.get("code"))
+    prerequisite = _text((failure.get("details") or {}).get("prerequisite"))
+    if code == "prerequisite_missing":
+        if prerequisite in {"allItemIds", "anyItemIds"}:
+            return "no_key" if action == "unlock" else "missing_item"
+        if prerequisite in {"allToolIds", "anyToolIds"}:
+            return "missing_tool"
+        if prerequisite in {"allCapabilities", "anyCapabilities"}:
+            return "missing_capability"
+        if prerequisite == "flags":
+            return "missing_flag"
+        return "object_state"
+    return {
+        "check_already_attempted": "repeat_check",
+        "authoritative_check_mismatch": "check_mismatch",
+        "check_failed": "check_failed",
+        "check_required": "check_required",
+    }.get(code, "malformed")
 
 
 def _requirement_failure_priority(failure: dict[str, Any]) -> int:
@@ -625,16 +752,12 @@ def _evaluate_requirement(
     if requirement in (None, {}, []):
         return {"ok": True}
     if not isinstance(requirement, Mapping) or depth > 8:
-        return _failure(
-            "malformed_interactable", "The interactable has malformed prerequisites."
-        )
+        return _unmet("malformed_interactable")
 
     all_of = requirement.get("allOf")
     if all_of is not None:
         if not isinstance(all_of, list):
-            return _failure(
-                "malformed_interactable", "allOf prerequisites must be a list."
-            )
+            return _unmet("malformed_interactable")
         for child in all_of:
             result = _evaluate_requirement(
                 child,
@@ -651,10 +774,7 @@ def _evaluate_requirement(
     any_of = requirement.get("anyOf")
     if any_of is not None:
         if not isinstance(any_of, list) or not any_of:
-            return _failure(
-                "malformed_interactable",
-                "anyOf prerequisites must be a non-empty list.",
-            )
+            return _unmet("malformed_interactable")
         failures: list[dict[str, Any]] = []
         for child in any_of:
             result = _evaluate_requirement(
@@ -688,96 +808,53 @@ def _evaluate_requirement(
             required.issubset(possessed) if require_all else bool(required & possessed)
         )
         if not satisfied:
-            return _failure(
-                "prerequisite_missing",
-                "The actor does not meet the action prerequisites.",
-                prerequisite=field,
-                requiredIds=sorted(required),
-            )
+            return _unmet("prerequisite_missing", prerequisite=field, requiredIds=sorted(required))
 
     required_flags = requirement.get("flags")
     if required_flags is not None:
         if not isinstance(required_flags, Mapping):
-            return _failure(
-                "malformed_interactable", "flags prerequisites must be an object."
-            )
+            return _unmet("malformed_interactable")
         for key, expected in required_flags.items():
             if actor["flags"].get(str(key)) != expected:
-                return _failure(
-                    "prerequisite_missing",
-                    "The actor does not meet the action prerequisites.",
-                    prerequisite="flags",
-                    flag=str(key),
-                )
+                return _unmet("prerequisite_missing", prerequisite="flags", flag=str(key))
 
     object_states = requirement.get("objectStates")
     if object_states is not None:
         if not isinstance(object_states, list):
-            return _failure(
-                "malformed_interactable", "objectStates prerequisites must be a list."
-            )
+            return _unmet("malformed_interactable")
         for predicate in object_states:
             if not isinstance(predicate, Mapping):
-                return _failure(
-                    "malformed_interactable",
-                    "An object state prerequisite is malformed.",
-                )
+                return _unmet("malformed_interactable")
             predicate_id = _text(predicate.get("targetId"))
             field = _text(predicate.get("field"))
             if not predicate_id or not field or predicate_id not in objects:
-                return _failure(
-                    "prerequisite_missing",
-                    "A required scene-object state is not satisfied.",
-                    prerequisite="objectStates",
-                    targetId=predicate_id,
-                )
+                return _unmet("prerequisite_missing", prerequisite="objectStates", targetId=predicate_id)
             expected = predicate.get("equals", True)
             if objects[predicate_id][0].get(field) != expected:
-                return _failure(
-                    "prerequisite_missing",
-                    "A required scene-object state is not satisfied.",
-                    prerequisite="objectStates",
-                    targetId=predicate_id,
-                    field=field,
+                return _unmet(
+                    "prerequisite_missing", prerequisite="objectStates", targetId=predicate_id, field=field
                 )
 
     check = requirement.get("check")
     if check is not None:
         if not isinstance(check, Mapping) or not _text(check.get("id")):
-            return _failure(
-                "malformed_interactable",
-                "The interactable has a malformed check prerequisite.",
-            )
+            return _unmet("malformed_interactable")
         check_id = _text(check.get("id"))
         resolved = actor["checks"].get(check_id)
         if isinstance(resolved, Mapping):
             for field in ("dc", "ability", "skill"):
                 if field in check and resolved.get(field) != check.get(field):
-                    return _failure(
-                        "authoritative_check_mismatch",
-                        "The supplied check result does not match the required check.",
-                        checkId=check_id,
-                        field=field,
-                    )
+                    return _unmet("authoritative_check_mismatch", checkId=check_id, field=field)
         elif check_blocked:
-            return _failure("check_already_attempted", REPEAT_CHECK_MESSAGE, checkId=check_id)
+            return _unmet("check_already_attempted", checkId=check_id)
         elif roll_check is None:
-            return _failure(
-                "check_required",
-                "An authoritative check must be resolved before this action.",
-                check=dict(check),
-            )
+            return _unmet("check_required", check=dict(check))
         else:
             resolved = roll_check(dict(check))
             if rolled_checks is not None:
                 rolled_checks.append(dict(resolved))
         if resolved.get("passed") is not True:
-            return _failure(
-                "check_failed",
-                "The authoritative check failed.",
-                checkId=check_id,
-                check=dict(resolved),
-            )
+            return _unmet("check_failed", checkId=check_id, check=dict(resolved))
 
     return {"ok": True}
 
@@ -938,6 +1015,80 @@ def _invariant_error(target: dict[str, Any], collection: str) -> str | None:
     return None
 
 
+def _state_refusal(target: dict[str, Any], collection: str, action: str) -> str | None:
+    """Why the object's own state rules the action out, as a ``REFUSALS`` key."""
+
+    is_hazard = _entry_kind(target, collection) == "hazard"
+    if action == "inspect":
+        if target.get("inspected") is True and target.get("repeatableInspect") is not True:
+            return "already_inspected"
+    elif action == "open":
+        if target.get("broken") is True:
+            return "broken"
+        if target.get("open") is True:
+            return "already_open"
+        if target.get("locked") is True:
+            return "locked"
+    elif action == "close":
+        if target.get("broken") is True:
+            return "broken"
+        if target.get("open") is not True:
+            return "already_closed"
+    elif action == "lock":
+        if target.get("broken") is True:
+            return "broken"
+        if target.get("open") is True:
+            return "close_first"
+        if target.get("locked") is True:
+            return "already_locked"
+    elif action == "unlock":
+        if target.get("broken") is True:
+            return "broken"
+        if target.get("locked") is not True:
+            return "not_locked"
+    elif action == "search":
+        if target.get("locked") is True:
+            return "locked"
+        if _needs_opening(target, collection):
+            return "closed"
+        if target.get("searched") is True and target.get("repeatableSearch") is not True:
+            return "already_searched"
+    elif action == "break":
+        if target.get("broken") is True:
+            return "already_broken"
+    elif action == "use":
+        if target.get("broken") is True:
+            return "broken"
+        if target.get("depleted") is True or target.get("usesRemaining") == 0:
+            return "used_up"
+    elif action == "disarm":
+        if target.get("disarmed") is True:
+            return "already_disarmed"
+        if target.get("active") is not True or target.get("triggered") is True:
+            return "cannot_disarm"
+    elif action == "trigger":
+        if is_hazard and (target.get("disarmed") is True or target.get("active") is not True):
+            return "inactive"
+        if target.get("triggered") is True and target.get("repeatable") is not True:
+            return "already_triggered"
+    elif action == "reset":
+        if (
+            target.get("active") is True
+            and target.get("triggered") is not True
+            and target.get("disarmed") is not True
+        ):
+            return "already_reset"
+    return None
+
+
+def _needs_opening(target: Mapping[str, Any], collection: str) -> bool:
+    return (
+        _entry_kind(dict(target), collection) == "container"
+        and target.get("open") is not True
+        and target.get("searchWhenClosed") is not True
+    )
+
+
 def _action_legality(
     target: dict[str, Any],
     collection: str,
@@ -948,122 +1099,17 @@ def _action_legality(
     roll_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     rolled_checks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    invariant_error = _invariant_error(target, collection)
-    if invariant_error:
-        return _failure(
-            "malformed_interactable",
-            f"The interactable state is contradictory: {invariant_error}.",
-        )
+    if _invariant_error(target, collection):
+        return _refusal("malformed_interactable", "malformed", target)
     if action not in _candidate_actions(target, collection):
-        return _failure(
-            "unsupported_action", "That action is not supported by this interactable."
-        )
-
-    if (
-        action == "inspect"
-        and target.get("inspected") is True
-        and target.get("repeatableInspect") is not True
-    ):
-        return _failure(
-            "invalid_transition", "The interactable has already been inspected."
-        )
-    if action == "open":
-        if target.get("broken") is True:
-            return _failure(
-                "invalid_transition", "A broken interactable cannot be opened normally."
-            )
-        if target.get("open") is True:
-            return _failure("invalid_transition", "The interactable is already open.")
-        if target.get("locked") is True:
-            return _failure("invalid_transition", "The interactable is locked.")
-    if action == "close":
-        if target.get("broken") is True:
-            return _failure(
-                "invalid_transition", "A broken interactable cannot be closed."
-            )
-        if target.get("open") is not True:
-            return _failure("invalid_transition", "The interactable is already closed.")
-    if action == "lock":
-        if target.get("broken") is True:
-            return _failure(
-                "invalid_transition", "A broken interactable cannot be locked."
-            )
-        if target.get("open") is True:
-            return _failure(
-                "invalid_transition",
-                "The interactable must be closed before it can be locked.",
-            )
-        if target.get("locked") is True:
-            return _failure("invalid_transition", "The interactable is already locked.")
-    if action == "unlock":
-        if target.get("broken") is True:
-            return _failure(
-                "invalid_transition",
-                "A broken interactable cannot be unlocked normally.",
-            )
-        if target.get("locked") is not True:
-            return _failure(
-                "invalid_transition", "The interactable is already unlocked."
-            )
-    if action == "search":
-        if target.get("locked") is True:
-            return _failure(
-                "invalid_transition", "A locked interactable cannot be searched."
-            )
-        if (
-            _entry_kind(target, collection) == "container"
-            and target.get("open") is not True
-            and target.get("searchWhenClosed") is not True
-        ):
-            return _failure(
-                "invalid_transition",
-                "The container must be opened before it can be searched.",
-            )
-        if (
-            target.get("searched") is True
-            and target.get("repeatableSearch") is not True
-        ):
-            return _failure(
-                "invalid_transition", "The interactable has already been searched."
-            )
-    if action == "break" and target.get("broken") is True:
-        return _failure("invalid_transition", "The interactable is already broken.")
-    if action == "use":
-        if target.get("broken") is True:
-            return _failure(
-                "invalid_transition", "A broken interactable cannot be used."
-            )
-        if target.get("depleted") is True or target.get("usesRemaining") == 0:
-            return _failure(
-                "resource_exhausted", "The interactable has no uses remaining."
-            )
-    if action == "disarm":
-        if target.get("disarmed") is True:
-            return _failure("invalid_transition", "The hazard is already disarmed.")
-        if target.get("active") is not True or target.get("triggered") is True:
-            return _failure(
-                "invalid_transition",
-                "The hazard cannot be disarmed in its current state.",
-            )
-    if action == "trigger":
-        is_hazard = _entry_kind(target, collection) == "hazard"
-        if is_hazard and (target.get("disarmed") is True or target.get("active") is not True):
-            return _failure("invalid_transition", "The hazard is not active.")
-        if target.get("triggered") is True and target.get("repeatable") is not True:
-            return _failure(
-                "invalid_transition",
-                "The hazard has already triggered." if is_hazard else "The interactable has already been triggered.",
-            )
-    if action == "reset":
-        if (
-            target.get("active") is True
-            and target.get("triggered") is not True
-            and target.get("disarmed") is not True
-        ):
-            return _failure("invalid_transition", "The hazard is already reset.")
+        return _refusal("unsupported_action", "unsupported", target)
+    refusal = _state_refusal(target, collection, action)
+    if refusal:
+        code = "resource_exhausted" if refusal == "used_up" else "invalid_transition"
+        return _refusal(code, refusal, target)
 
     requirement = _requirements_for(target, action)
-    return _evaluate_requirement(
+    result = _evaluate_requirement(
         requirement,
         actor=actor,
         objects=objects,
@@ -1071,6 +1117,47 @@ def _action_legality(
         check_blocked=actor["id"] in _string_set(target.get(FAILED_CHECK_ACTORS_KEY)),
         rolled_checks=rolled_checks,
     )
+    if result["ok"]:
+        return result
+    return {**result, "message": _object_sentence(REFUSALS[_requirement_refusal(result, action)], target)}
+
+
+def _prerequisite_steps(
+    target: dict[str, Any],
+    collection: str,
+    action: str,
+    *,
+    actor: dict[str, Any],
+    objects: dict[str, tuple[dict[str, Any], str]],
+) -> tuple[list[str], dict[str, Any] | None]:
+    """The unlock and open steps that clear an action's only blockers, with the
+    action's legality once they are taken; ``([], None)`` when it cannot be chained.
+
+    A step is chained only when it is legal outright: one that needs a roll, or
+    that carries authored effects, is offered on its own instead.
+    """
+
+    if action not in {"open", "search"} or target.get("broken") is True:
+        return [], None
+    steps: list[str] = []
+    if target.get("locked") is True:
+        steps.append("unlock")
+    if action == "search" and _needs_opening(target, collection):
+        steps.append("open")
+    if not steps:
+        return [], None
+    effects = target.get("mechanicalEffects") if isinstance(target.get("mechanicalEffects"), Mapping) else {}
+    probe = deepcopy(target)
+    for step in steps:
+        if step in effects or f"failure:{step}" in effects:
+            return [], None
+        if not _action_legality(probe, collection, step, actor=actor, objects=objects)["ok"]:
+            return [], None
+        probe.update(_primary_patch(probe, collection, step))
+    legality = _action_legality(probe, collection, action, actor=actor, objects=objects)
+    if legality["ok"] or legality["code"] == "check_required":
+        return steps, legality
+    return [], None
 
 
 def _mark_contents_known(target: dict[str, Any], *, include_hidden: bool) -> None:
@@ -1270,7 +1357,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="invalid_request",
-            message="State, request, and actor must be objects.",
+            message=UNAVAILABLE_MESSAGE,
         )
 
     action_id = _text(request.get("actionId"))
@@ -1296,7 +1383,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="invalid_request",
-            message="actionId, a supported action, targetId, locationId, and actor.id are required.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
     turn_id = request.get("turnId")
@@ -1307,7 +1394,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="invalid_request",
-            message="turnId must be a non-negative integer.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
     expected_revision = request.get("expectedRevision")
@@ -1320,7 +1407,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="invalid_request",
-            message="expectedRevision must be a non-negative integer.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
 
@@ -1335,7 +1422,7 @@ def resolve_interactable_action(
                 state,
                 ok=True,
                 code="already_applied",
-                message="This interactable action was already applied.",
+                message="That was already done.",
                 details={"eventIds": list(entry.get("eventIds") or [])},
                 replayed=True,
                 **common,
@@ -1344,7 +1431,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="action_id_conflict",
-            message="The actionId is already associated with a different interactable action.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
 
@@ -1355,7 +1442,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="location_mismatch",
-            message="The requested location is not the actor's current scene.",
+            message=NOT_HERE_MESSAGE,
             **common,
         )
     location, location_error = _find_current_location(next_state, location_id)
@@ -1364,7 +1451,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code=location_error,
-            message="The current scene does not resolve to one exact persistent location.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
     assert location is not None
@@ -1374,7 +1461,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code=scene_error,
-            message="The current scene has malformed interactable collections.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
     assert scene is not None
@@ -1384,7 +1471,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code=index_error,
-            message="The current scene contains a malformed interactable.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
     persisted_matches = _location_target_appearances(location, target_id)
@@ -1404,7 +1491,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="duplicate_interactable_id",
-            message="The target ID is not globally unique.",
+            message=UNAVAILABLE_MESSAGE,
             **common,
         )
     target_entry = objects.get(target_id)
@@ -1413,7 +1500,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="interactable_not_found",
-            message="No available interactable exists with that exact ID in the current scene.",
+            message=NOT_HERE_MESSAGE,
             **common,
         )
     target, collection = target_entry
@@ -1425,7 +1512,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="malformed_interactable",
-            message="The target has an unsupported interactable kind.",
+            message=_object_sentence(REFUSALS["malformed"], target),
             **common,
         )
     revision = target.get("revision", 0)
@@ -1434,7 +1521,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="malformed_interactable",
-            message="The target has an invalid revision.",
+            message=_object_sentence(REFUSALS["malformed"], target),
             **common,
         )
     if expected_revision is not None and revision != expected_revision:
@@ -1442,7 +1529,7 @@ def resolve_interactable_action(
             state,
             ok=False,
             code="stale_interactable_revision",
-            message="The interactable changed after the player selected it.",
+            message=_object_sentence(REFUSALS["stale"], target),
             details={
                 "expectedRevision": expected_revision,
                 "currentRevision": revision,
@@ -1452,157 +1539,106 @@ def resolve_interactable_action(
 
     rolls = actor_ctx["rolls"]
     rolled_checks: list[dict[str, Any]] = []
+    roll_check = (
+        (lambda check: rolls["check"](actor_id, check, f"{action_id}:check:{_text(check.get('id'))}"))
+        if rolls
+        else None
+    )
+    attempt = {
+        "location": location,
+        "scene": scene,
+        "target": target,
+        "collection": collection,
+        "request": dict(request),
+        "actor_id": actor_id,
+        "fingerprint": fingerprint,
+        "rolls": rolls,
+    }
     legality = _action_legality(
         target,
         collection,
         action,
         actor=actor_ctx,
         objects=objects,
-        roll_check=(
-            (lambda check: rolls["check"](actor_id, check, f"{action_id}:check:{_text(check.get('id'))}"))
-            if rolls
-            else None
-        ),
+        roll_check=roll_check,
         rolled_checks=rolled_checks,
     )
+    steps: list[str] = []
     if not legality["ok"] and legality["code"] == "check_failed":
-        return _failed_attempt(
-            state,
-            next_state,
-            location=location,
-            scene=scene,
-            target=target,
-            collection=collection,
-            request=dict(request),
-            actor_id=actor_id,
-            fingerprint=fingerprint,
-            check=dict((legality.get("details") or {}).get("check") or {}),
-            rolls=rolls,
-        )
+        return _failed_attempt(state, next_state, check=_failed_check(legality), **attempt)
     if not legality["ok"]:
-        return _result(
-            state,
-            ok=False,
-            code=legality["code"],
-            message=legality["message"],
-            details=legality.get("details"),
-            **common,
-        )
-
-    authored_transitions, transition_error = _authored_transitions(target, action)
-    if transition_error:
-        return _result(
-            state,
-            ok=False,
-            code="malformed_interactable",
-            message=f"The target has malformed authored transitions: {transition_error}.",
-            **common,
-        )
-    transitions = [*_controlled_transition(target, action), *authored_transitions]
-    reveal_ids = _action_reveals(target, action)
-    affected_ids = [transition["targetId"] for transition in transitions] + reveal_ids
-    if target_id in affected_ids:
-        return _result(
-            state,
-            ok=False,
-            code="malformed_interactable",
-            message="An interactable cannot transition or reveal itself by target reference.",
-            **common,
-        )
-    if len(affected_ids) != len(set(affected_ids)):
-        return _result(
-            state,
-            ok=False,
-            code="malformed_interactable",
-            message="An action references the same secondary target more than once.",
-            **common,
-        )
-    for affected_id in affected_ids:
-        if affected_id in duplicates or affected_id not in objects:
+        steps, _ = _prerequisite_steps(target, collection, action, actor=actor_ctx, objects=objects)
+        if not steps:
             return _result(
                 state,
                 ok=False,
-                code="secondary_target_not_found",
-                message="A required secondary interactable target is stale or ambiguous.",
-                details={"secondaryTargetId": affected_id},
+                code=legality["code"],
+                message=legality["message"],
+                details=legality.get("details"),
                 **common,
             )
 
-    before_by_id = {
-        object_id: deepcopy(entry[0])
-        for object_id, entry in objects.items()
-        if object_id in {target_id, *affected_ids}
-    }
-    primary_patch = _primary_patch(target, collection, action)
-    target.update(primary_patch)
-    revealed_items: list[dict[str, Any]] = []
-    if (
-        action == "open"
-        and target_kind == "container"
-        and target.get("revealsContentsOnOpen") is not False
-    ):
-        _mark_contents_known(target, include_hidden=False)
-        revealed_items = _move_revealed_contents(target, scene, include_hidden=False)
-    if action == "search":
-        _mark_contents_known(target, include_hidden=True)
-        revealed_items = _move_revealed_contents(target, scene, include_hidden=True)
-    known_fields = _string_set(target.get("playerKnownFields")) | _reveal_fields(
-        target, action
-    )
-    if known_fields:
-        target["playerKnownFields"] = sorted(known_fields)
-    _touch(target, request=dict(request), actor_id=actor_id)
+    plans = []
+    for step in [*steps, action]:
+        plan, error = _step_plan(target, step, objects=objects, duplicates=duplicates)
+        if error:
+            return _result(state, ok=False, **error, **common)
+        plans.append(plan)
 
-    for transition in transitions:
-        secondary, secondary_collection = objects[transition["targetId"]]
-        candidate = {**secondary, **deepcopy(transition["patch"])}
-        invariant_error = _invariant_error(candidate, secondary_collection)
-        if invariant_error:
-            return _result(
-                state,
-                ok=False,
-                code="invalid_authored_transition",
-                message=f"An authored transition would create contradictory state: {invariant_error}.",
-                details={"secondaryTargetId": transition["targetId"]},
-                **common,
-            )
-        secondary.update(deepcopy(transition["patch"]))
-        _touch(secondary, request=dict(request), actor_id=actor_id)
-
-    for revealed_id in reveal_ids:
-        revealed = objects[revealed_id][0]
-        revealed.update({"playerKnown": True, "hidden": False})
-        _touch(revealed, request=dict(request), actor_id=actor_id)
-
-    final_invariant = _invariant_error(target, collection)
-    if final_invariant:
-        return _result(
-            state,
-            ok=False,
-            code="invalid_transition",
-            message=f"The action would create contradictory state: {final_invariant}.",
-            **common,
-        )
-
-    _sync_location_scene(location, scene)
     event_id = _stable_id("evt", action_id, action, target_id, location_id, actor_id)
     changes: list[dict[str, Any]] = []
-    for changed_id in [target_id, *affected_ids]:
-        changed, changed_collection = objects[changed_id]
-        patch = _diff_patch(before_by_id[changed_id], changed)
-        if not patch:
-            continue
-        changes.append(
-            {
-                "id": _stable_id("chg", event_id, changed_id),
-                "type": "scene.interactable.update",
-                "locationId": location_id,
-                "collection": changed_collection,
-                "targetId": changed_id,
-                "patch": patch,
-            }
+    revealed_items: list[dict[str, Any]] = []
+    revealed_target_ids: list[str] = []
+    for index, plan in enumerate(plans):
+        requested = index == len(plans) - 1
+        if requested and steps:
+            # The requested action is judged, and rolled, as it stands once its steps are taken.
+            legality = _action_legality(
+                target,
+                collection,
+                action,
+                actor=actor_ctx,
+                objects=objects,
+                roll_check=roll_check,
+                rolled_checks=rolled_checks,
+            )
+            if not legality["ok"] and legality["code"] == "check_failed":
+                return _failed_attempt(
+                    state,
+                    next_state,
+                    check=_failed_check(legality),
+                    steps=steps,
+                    prior_changes=changes,
+                    revealed_items=revealed_items,
+                    revealed_target_ids=revealed_target_ids,
+                    **attempt,
+                )
+            if not legality["ok"]:
+                return _result(
+                    state,
+                    ok=False,
+                    code=legality["code"],
+                    message=legality["message"],
+                    details=legality.get("details"),
+                    **common,
+                )
+        applied, error = _apply_step(
+            plan,
+            target=target,
+            collection=collection,
+            scene=scene,
+            objects=objects,
+            request={**dict(request), "action": plan["action"]},
+            actor_id=actor_id,
+            change_scope=(event_id,) if requested else (event_id, plan["action"]),
         )
+        if error:
+            return _result(state, ok=False, **error, **common)
+        changes.extend(applied["changes"])
+        revealed_items.extend(applied["revealedItems"])
+        revealed_target_ids.extend(plan["revealIds"])
 
+    _sync_location_scene(location, scene)
     event = _event(
         event_id,
         f"{_event_prefix(target_kind)}.{EVENT_VERBS[action]}",
@@ -1610,12 +1646,15 @@ def resolve_interactable_action(
         actor_id=actor_id,
         target=target,
         target_kind=target_kind,
-        reveal_ids=reveal_ids,
+        reveal_ids=revealed_target_ids,
     )
-    message = "The interactable action was applied."
+    sentences = [_object_sentence(DONE_SENTENCES[step], target) for step in steps]
+    if steps:
+        event["steps"] = list(steps)
     if rolled_checks:
         event["check"] = rolled_checks[-1]
-        message = f"{_check_message(rolled_checks[-1])} {message}"
+        sentences.append(_check_message(rolled_checks[-1]))
+    sentences.append(_object_sentence(DONE_SENTENCES[action], target))
     if revealed_items:
         event["revealedItems"] = revealed_items
     _attach_effects(event, state, target, action, actor_id=actor_id, rolls=rolls)
@@ -1628,12 +1667,126 @@ def resolve_interactable_action(
         state,
         ok=True,
         code="applied",
-        message=message,
+        message=" ".join(sentences),
         changes=changes,
         events=[event],
         next_state=next_state,
         **common,
     )
+
+
+def _failed_check(legality: Mapping[str, Any]) -> dict[str, Any]:
+    return dict((legality.get("details") or {}).get("check") or {})
+
+
+def _step_plan(
+    target: dict[str, Any],
+    action: str,
+    *,
+    objects: dict[str, tuple[dict[str, Any], str]],
+    duplicates: set[str],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The secondary objects one action on ``target`` transitions and reveals."""
+
+    malformed = {
+        "code": "malformed_interactable",
+        "message": _object_sentence(REFUSALS["malformed"], target),
+    }
+    authored_transitions, transition_error = _authored_transitions(target, action)
+    if transition_error:
+        return {}, malformed
+    transitions = [*_controlled_transition(target, action), *authored_transitions]
+    reveal_ids = _action_reveals(target, action)
+    affected_ids = [transition["targetId"] for transition in transitions] + reveal_ids
+    if _text(target.get("id")) in affected_ids or len(affected_ids) != len(set(affected_ids)):
+        return {}, malformed
+    for affected_id in affected_ids:
+        if affected_id in duplicates or affected_id not in objects:
+            return {}, {
+                "code": "secondary_target_not_found",
+                "message": UNAVAILABLE_MESSAGE,
+                "details": {"secondaryTargetId": affected_id},
+            }
+    return {"action": action, "transitions": transitions, "revealIds": reveal_ids}, None
+
+
+def _apply_step(
+    plan: dict[str, Any],
+    *,
+    target: dict[str, Any],
+    collection: str,
+    scene: dict[str, Any],
+    objects: dict[str, tuple[dict[str, Any], str]],
+    request: dict[str, Any],
+    actor_id: str,
+    change_scope: tuple[str, ...],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Apply one action to ``target`` and its secondary objects in place.
+
+    Returns the action's changes (one per object it changed) and the contents
+    it moved into the scene's items.
+    """
+
+    action = plan["action"]
+    target_id = _text(target.get("id"))
+    affected_ids = [transition["targetId"] for transition in plan["transitions"]] + plan["revealIds"]
+    before_by_id = {
+        object_id: deepcopy(objects[object_id][0]) for object_id in [target_id, *affected_ids]
+    }
+    target.update(_primary_patch(target, collection, action))
+    revealed_items: list[dict[str, Any]] = []
+    if (
+        action == "open"
+        and _entry_kind(target, collection) == "container"
+        and target.get("revealsContentsOnOpen") is not False
+    ):
+        _mark_contents_known(target, include_hidden=False)
+        revealed_items = _move_revealed_contents(target, scene, include_hidden=False)
+    if action == "search":
+        _mark_contents_known(target, include_hidden=True)
+        revealed_items = _move_revealed_contents(target, scene, include_hidden=True)
+    known_fields = _string_set(target.get("playerKnownFields")) | _reveal_fields(target, action)
+    if known_fields:
+        target["playerKnownFields"] = sorted(known_fields)
+    _touch(target, request=request, actor_id=actor_id)
+
+    for transition in plan["transitions"]:
+        secondary, secondary_collection = objects[transition["targetId"]]
+        if _invariant_error({**secondary, **deepcopy(transition["patch"])}, secondary_collection):
+            return {}, {
+                "code": "invalid_authored_transition",
+                "message": _object_sentence(REFUSALS["malformed"], target),
+                "details": {"secondaryTargetId": transition["targetId"]},
+            }
+        secondary.update(deepcopy(transition["patch"]))
+        _touch(secondary, request=request, actor_id=actor_id)
+
+    for revealed_id in plan["revealIds"]:
+        revealed = objects[revealed_id][0]
+        revealed.update({"playerKnown": True, "hidden": False})
+        _touch(revealed, request=request, actor_id=actor_id)
+
+    if _invariant_error(target, collection):
+        return {}, {"code": "invalid_transition", "message": _object_sentence(REFUSALS["malformed"], target)}
+
+    changes: list[dict[str, Any]] = []
+    for changed_id in [target_id, *affected_ids]:
+        changed, changed_collection = objects[changed_id]
+        patch = _diff_patch(before_by_id[changed_id], changed)
+        if not patch:
+            continue
+        changes.append(
+            {
+                "id": _stable_id("chg", *change_scope, changed_id),
+                "type": "scene.interactable.update",
+                "action": action,
+                "locationId": _text(request.get("locationId")),
+                "collection": changed_collection,
+                "targetId": changed_id,
+                "patch": patch,
+            }
+        )
+    return {"changes": changes, "revealedItems": revealed_items}, None
 
 
 EVENT_VERBS = {
@@ -1872,8 +2025,16 @@ def _failed_attempt(
     fingerprint: str,
     check: dict[str, Any],
     rolls: Mapping[str, Callable[..., dict[str, Any]]] | None,
+    steps: list[str] | None = None,
+    prior_changes: list[dict[str, Any]] | None = None,
+    revealed_items: list[dict[str, Any]] | None = None,
+    revealed_target_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Record a failed check as an applied attempt with its failure effects."""
+    """Record a failed check as an applied attempt with its failure effects.
+
+    ``steps`` already taken on the way (unlock, open) stay taken, with their
+    ``prior_changes`` and the contents they revealed.
+    """
 
     action_id = _text(request.get("actionId"))
     action = _text(request.get("action")).lower()
@@ -1891,24 +2052,34 @@ def _failed_attempt(
         actor_id=actor_id,
         target=target,
         target_kind=target_kind,
-        reveal_ids=[],
+        reveal_ids=list(revealed_target_ids or []),
     )
     event["check"] = check
+    if steps:
+        event["steps"] = list(steps)
+    if revealed_items:
+        event["revealedItems"] = list(revealed_items)
     _attach_effects(event, state, target, f"failure:{action}", actor_id=actor_id, rolls=rolls)
     _record_action(next_state, action_id=action_id, fingerprint=fingerprint, event_ids=[event_id])
+    sentences = [_object_sentence(DONE_SENTENCES[step], target) for step in steps or []]
+    sentences.append(
+        f"{_check_message(check)} {REFUSALS['check_failed']}" if "roll" in check else REFUSALS["check_failed"]
+    )
     return _result(
         state,
         ok=True,
         code="check_failed",
-        message=f"{_check_message(check)} The attempt fails." if "roll" in check else "The authoritative check failed.",
+        message=" ".join(sentences),
         action_id=action_id,
         action=action,
         target_id=target_id,
         location_id=location_id,
         changes=[
+            *(prior_changes or []),
             {
                 "id": _stable_id("chg", event_id, target_id),
                 "type": "scene.interactable.update",
+                "action": action,
                 "locationId": location_id,
                 "collection": collection,
                 "targetId": target_id,
@@ -1921,33 +2092,40 @@ def _failed_attempt(
     )
 
 
-def available_actions_for_target(
-    state: Mapping[str, Any] | Any,
-    *,
-    location_id: str,
-    target_id: str,
-    actor: Mapping[str, Any] | Any,
-) -> dict[str, Any]:
-    """Return action legality for a visible exact-ID target without mutation."""
+def _rules_scene(
+    state: Mapping[str, Any], location_id: str
+) -> tuple[dict[str, Any] | None, str]:
+    """A working copy of the current scene's objects, or why there is none."""
 
-    if not isinstance(state, Mapping) or not isinstance(actor, Mapping):
-        return {"ok": False, "code": "invalid_request", "actions": []}
     working = deepcopy(dict(state))
     scene = working.get("currentScene")
-    if not isinstance(scene, dict) or _text(scene.get("locationId")) != _text(
-        location_id
-    ):
-        return {"ok": False, "code": "location_mismatch", "actions": []}
-    location, error = _find_current_location(working, _text(location_id))
+    if not isinstance(scene, dict) or _text(scene.get("locationId")) != location_id:
+        return None, "location_mismatch"
+    location, error = _find_current_location(working, location_id)
     if error or location is None:
-        return {"ok": False, "code": error or "location_not_found", "actions": []}
+        return None, error or "location_not_found"
     scene, error = _hydrate_current_scene(working, location)
     if error or scene is None:
-        return {"ok": False, "code": error or "invalid_current_scene", "actions": []}
+        return None, error or "invalid_current_scene"
     objects, duplicates, error = _index_scene(scene)
-    target_entry = objects.get(_text(target_id))
-    actor_ctx = _actor_context(actor)
-    persisted_matches = _location_target_appearances(location, _text(target_id))
+    if error:
+        return None, error
+    return {
+        "state": working,
+        "location": location,
+        "scene": scene,
+        "objects": objects,
+        "duplicates": duplicates,
+    }, ""
+
+
+def _available_target(
+    rules: Mapping[str, Any], target_id: str, actor: dict[str, Any]
+) -> tuple[dict[str, Any], str] | None:
+    """The exact, unambiguous target the actor can see, or ``None``."""
+
+    target_entry = rules["objects"].get(target_id)
+    persisted_matches = _location_target_appearances(rules["location"], target_id)
     mirror_conflict = bool(
         len(persisted_matches) == 1
         and target_entry is not None
@@ -1955,45 +2133,205 @@ def available_actions_for_target(
         != _entry_kind(target_entry[0], target_entry[1])
     )
     if (
-        error
-        or _text(target_id) in duplicates
+        target_id in rules["duplicates"]
         or len(persisted_matches) > 1
         or mirror_conflict
         or _target_appears_in_remote_location(
-            working, _text(target_id), _text(location_id)
+            rules["state"], target_id, _text(rules["location"].get("id"))
         )
         or target_entry is None
-        or not _target_is_visible(target_entry[0], actor_ctx)
+        or not _target_is_visible(target_entry[0], actor)
     ):
-        return {"ok": False, "code": error or "interactable_not_found", "actions": []}
-    target, collection = target_entry
-    actions = []
+        return None
+    return target_entry
+
+
+def _target_options(
+    target: dict[str, Any],
+    collection: str,
+    *,
+    actor: dict[str, Any],
+    objects: dict[str, tuple[dict[str, Any], str]],
+) -> list[dict[str, Any]]:
+    options = []
     for action in sorted(_candidate_actions(target, collection)):
-        legality = _action_legality(
-            target, collection, action, actor=actor_ctx, objects=objects
-        )
+        legality = _action_legality(target, collection, action, actor=actor, objects=objects)
+        steps: list[str] = []
+        if not legality["ok"]:
+            steps, chained = _prerequisite_steps(target, collection, action, actor=actor, objects=objects)
+            legality = chained or legality
         entry: dict[str, Any] = {
             "action": action,
             "legal": legality["ok"],
             "code": "legal" if legality["ok"] else legality["code"],
         }
+        if steps:
+            entry["steps"] = steps
         if legality.get("code") == "check_required":
             entry["requiresCheck"] = True
             entry["check"] = deepcopy((legality.get("details") or {}).get("check"))
-        if legality.get("code") == "check_already_attempted":
+        elif not legality["ok"]:
             entry["reason"] = legality["message"]
-        actions.append(entry)
+        options.append(entry)
+    return options
+
+
+def available_actions_for_target(
+    state: Mapping[str, Any] | Any,
+    *,
+    location_id: str,
+    target_id: str,
+    actor: Mapping[str, Any] | Any,
+) -> dict[str, Any]:
+    """Return action legality for a visible exact-ID target without mutation.
+
+    An action that becomes legal once its unlock/open steps are taken is legal
+    and lists those ``steps``; a refused one carries its ``reason`` sentence.
+    """
+
+    if not isinstance(state, Mapping) or not isinstance(actor, Mapping):
+        return {"ok": False, "code": "invalid_request", "actions": []}
+    rules, error = _rules_scene(state, _text(location_id))
+    actor_ctx = _actor_context(actor)
+    target_entry = _available_target(rules, _text(target_id), actor_ctx) if rules else None
+    if rules is None or target_entry is None:
+        return {"ok": False, "code": error or "interactable_not_found", "actions": []}
+    target, collection = target_entry
+    scene = rules["scene"]
     return {
         "ok": True,
         "code": "resolved",
         "targetId": _text(target_id),
-        "actions": actions,
+        "actions": _target_options(target, collection, actor=actor_ctx, objects=rules["objects"]),
         "take": [
             {"itemId": _text(item.get("id")), "name": _text(item.get("name"))}
             for item in (scene.get("items") if isinstance(scene.get("items"), list) else [])
             if isinstance(item, dict) and _text(item.get("containerId")) == _text(target_id) and _text(item.get("id"))
         ],
     }
+
+
+def supported_actions(target: Mapping[str, Any], collection: str = "interactables") -> set[str]:
+    """The actions an authored object supports at all, whatever its state."""
+
+    return _candidate_actions(dict(target), collection) if isinstance(target, Mapping) else set()
+
+
+def _action_label(target: Mapping[str, Any], action: str) -> tuple[str, bool]:
+    labels = target.get("actionLabels") if isinstance(target.get("actionLabels"), Mapping) else {}
+    authored = _text(labels.get(action))
+    if authored:
+        return authored, True
+    name = _text(target.get("name")) or _text(target.get("id")).replace("_", " ")
+    return f"{ACTION_LABELS[action]} {name}".strip(), False
+
+
+def _action_done(target: Mapping[str, Any], collection: str, action: str) -> bool:
+    """The object already shows the action's result, so taking it again yields nothing new."""
+
+    if action == "inspect":
+        return target.get("inspected") is True and target.get("repeatableInspect") is not True
+    if action == "search":
+        return target.get("searched") is True and target.get("repeatableSearch") is not True
+    if action == "open":
+        return target.get("open") is True
+    if action == "close":
+        return target.get("open") is not True and target.get("broken") is not True
+    if action == "lock":
+        return target.get("locked") is True
+    if action == "unlock":
+        return target.get("locked") is not True and target.get("broken") is not True
+    if action == "break":
+        return target.get("broken") is True
+    if action == "use":
+        remaining = target.get("usesRemaining")
+        return (
+            target.get("depleted") is True
+            or remaining == 0
+            or (target.get("used") is True and remaining is None)
+        )
+    if action == "disarm":
+        return target.get("disarmed") is True
+    if action == "trigger":
+        return target.get("triggered") is True and target.get("repeatable") is not True
+    if action == "reset":
+        return _state_refusal(dict(target), collection, "reset") == "already_reset"
+    return False
+
+
+def _offered_check(spec: Mapping[str, Any]) -> dict[str, Any]:
+    skill = condition_key(spec.get("skill"))
+    ability = ability_key(spec.get("ability")) or SKILL_ABILITY.get(skill, "")
+    check: dict[str, Any] = {}
+    if skill:
+        check["skill"] = skill
+    if ability:
+        check["ability"] = ability
+    dc = spec.get("dc")
+    if spec.get("showDc") is True and isinstance(dc, int) and not isinstance(dc, bool):
+        check["dc"] = dc
+    return check
+
+
+def _offered_action(target: Mapping[str, Any], collection: str, option: Mapping[str, Any]) -> dict[str, Any]:
+    action = option["action"]
+    label, authored = _action_label(target, action)
+    legal = option["legal"] is True or option.get("requiresCheck") is True
+    entry: dict[str, Any] = {"action": action, "label": label}
+    if authored:
+        entry["authored"] = True
+    entry["legal"] = legal
+    entry["done"] = _action_done(target, collection, action)
+    if option.get("requiresCheck"):
+        entry["check"] = _offered_check(option.get("check") or {})
+    if not legal:
+        entry["reason"] = option.get("reason") or _object_sentence(REFUSALS["unsupported"], target)
+    return entry
+
+
+def offered_scene_actions(state: Mapping[str, Any] | Any, hero: Mapping[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    """What each scene object the hero can see offers them, by object id.
+
+    Entries follow ``OFFERED_ACTION_ORDER``; ``legal`` counts an action that
+    asks for a roll (``check``) or first takes its unlock/open steps.
+    """
+
+    if not isinstance(state, Mapping) or not isinstance(state.get("currentScene"), Mapping):
+        return {}
+    scene = state["currentScene"]
+    rules_state = {
+        "currentScene": scene,
+        "locations": state.get("locations") if isinstance(state.get("locations"), list) else [],
+        "flags": state.get("flags") if isinstance(state.get("flags"), Mapping) else {},
+    }
+    rules, _ = _rules_scene(rules_state, _text(scene.get("locationId")))
+    if rules is None:
+        return {}
+    actor = _actor_context(interactable_actor_context(rules_state, hero) if hero else {})
+    offered: dict[str, list[dict[str, Any]]] = {}
+    for target_id in rules["objects"]:
+        target_entry = _available_target(rules, target_id, actor)
+        if target_entry is None:
+            continue
+        target, collection = target_entry
+        options = _target_options(target, collection, actor=actor, objects=rules["objects"])
+        offered[target_id] = sorted(
+            (_offered_action(target, collection, option) for option in options),
+            key=lambda entry: OFFERED_ACTION_ORDER.index(entry["action"]),
+        )
+    return offered
+
+
+def take_label(item: Mapping[str, Any]) -> str:
+    """``Take the Caravan Strongbox Key``; ``Take 15 gp`` for coins."""
+
+    currency = normalize_price(item.get("currency")) if _text(item.get("type")).lower() == "currency" else None
+    if currency:
+        return "Take " + ", ".join(f"{currency[code]} {code}" for code in COIN_VALUES_CP if code in currency)
+    name = _text(item.get("name")) or _text(item.get("id")).replace("_", " ")
+    if item.get("proper") is True or name.lower().startswith("the "):
+        return f"Take {name}"
+    return f"Take the {name}"
 
 
 def _project_content_item(item: dict[str, Any], *, gm: bool) -> dict[str, Any] | None:
@@ -2440,8 +2778,9 @@ def interactable_followup_changes(
     """Trusted changes that follow one applied object action.
 
     Resolved ``effectResults`` become damage (and, in combat, condition)
-    changes; a successful action also discovers its ``discoversClueIds`` and
-    ``discoversLocationIds`` and sets its ``setsFlags``.
+    changes; a successful action, and each unlock/open step it took first,
+    also discovers its ``discoversClueIds`` and ``discoversLocationIds`` and
+    sets its ``setsFlags``.
     """
 
     if _text(applied_change.get("type")) != "scene.interactable.action":
@@ -2484,7 +2823,11 @@ def interactable_followup_changes(
                     "reason": f"{target_name} leaves the target {condition.get('condition')}.",
                 }
             )
-    if _text(event.get("type")).endswith(".check_failed"):
+    # Unlock/open steps taken on the way count even when the requested action's check fails.
+    actions = [_text(step).lower() for step in (event.get("steps") or []) if _text(step)]
+    if not _text(event.get("type")).endswith(".check_failed"):
+        actions.append(_text(event.get("action")).lower())
+    if not actions:
         return changes
     scene = state.get("currentScene") if isinstance(state.get("currentScene"), Mapping) else {}
     target_object = next(
@@ -2496,8 +2839,16 @@ def interactable_followup_changes(
         ),
         {},
     )
-    action = _text(event.get("action")).lower()
-    for clue_id in sorted(_string_set(_action_entries(target_object.get("discoversClueIds"), action))):
+    clue_ids: set[str] = set()
+    flags: dict[str, tuple[Any, str]] = {}
+    location_ids: set[str] = set()
+    for action in actions:
+        clue_ids |= _string_set(_action_entries(target_object.get("discoversClueIds"), action))
+        action_flags = _action_entries(target_object.get("setsFlags"), action)
+        for flag_key, flag_value in (action_flags.items() if isinstance(action_flags, Mapping) else []):
+            flags[flag_key] = (flag_value, action)
+        location_ids |= _string_set(_action_entries(target_object.get("discoversLocationIds"), action))
+    for clue_id in sorted(clue_ids):
         changes.append(
             {
                 **base,
@@ -2507,8 +2858,7 @@ def interactable_followup_changes(
                 "reason": f"Found at the {target_name}.",
             }
         )
-    flags = _action_entries(target_object.get("setsFlags"), action)
-    for flag_key, flag_value in (flags.items() if isinstance(flags, Mapping) else []):
+    for flag_key, (flag_value, action) in flags.items():
         changes.append(
             {
                 **base,
@@ -2520,7 +2870,7 @@ def interactable_followup_changes(
                 "reason": f"{target_name}: {action}.",
             }
         )
-    for location_id in sorted(_string_set(_action_entries(target_object.get("discoversLocationIds"), action))):
+    for location_id in sorted(location_ids):
         changes.append(
             {
                 **base,
@@ -2567,22 +2917,16 @@ def combat_object_actions(
         "locations": snapshot.get("locations") if isinstance(snapshot.get("locations"), list) else [],
         "flags": snapshot.get("flags") if isinstance(snapshot.get("flags"), dict) else {},
     }
-    context = interactable_actor_context(rules_state, actor)
     actor_name = _text(participant.get("name")) or _text(actor.get("name")) or "I"
+    offered = offered_scene_actions(rules_state, actor)
     projected = project_scene_interactables(rules_state, {"id": actor.get("id")})
     actions: list[dict[str, Any]] = []
     for collection in COLLECTIONS:
         for entry in projected[collection]:
             target_id = _text(entry.get("id"))
             name = _text(entry.get("name")) or target_id
-            options = available_actions_for_target(
-                rules_state,
-                location_id=_text(scene.get("locationId")),
-                target_id=target_id,
-                actor=context,
-            )
-            for option in options.get("actions") or []:
-                if not option.get("legal") and not option.get("requiresCheck"):
+            for option in offered.get(target_id, []):
+                if not option["legal"]:
                     continue
                 action = option["action"]
                 cost = "Free." if action in FREE_COMBAT_ACTIONS else "Uses your action."
@@ -2590,8 +2934,8 @@ def combat_object_actions(
                     {
                         "id": f"{COMBAT_ACTION_PREFIX}{target_id}.{action}",
                         "type": "object",
-                        "label": f"{ACTION_LABELS[action]} {name}",
-                        "description": f"{cost} Needs a check." if option.get("requiresCheck") else cost,
+                        "label": option["label"],
+                        "description": f"{cost} Needs a check." if "check" in option else cost,
                         "message": f"{actor_name} {_verb_phrase(action)} the {name}.",
                         "available": True,
                         "reason": "",

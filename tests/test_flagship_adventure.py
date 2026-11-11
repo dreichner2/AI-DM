@@ -570,3 +570,105 @@ def test_the_shortcut_reaches_the_valley_by_the_culvert(table):
     assert table.offers('valley_last_road_stone') == {
         'break': False, 'inspect': True, 'lock': False, 'trigger': False, 'use': False,
     }
+
+
+def _story_view(snapshot: dict) -> dict:
+    return filter_session_snapshot_for_player(snapshot, private_player_ids={_hero(snapshot)['playerId']})
+
+
+def _offered(view: dict, object_id: str) -> list[tuple[str, str, bool, bool]]:
+    entry = next(entry for entry in view['currentScene']['interactables'] if entry['id'] == object_id)
+    return [(action['action'], action['label'], action['legal'], action['done']) for action in entry['offeredActions']]
+
+
+def test_the_opening_offers_only_authored_actions_and_starts_in_the_evening(table):
+    view = _story_view(table.last)
+
+    assert view['clock']['label'] == 'Day 1 · Evening'
+    assert "Something wrapped in waxed cloth is wedged beneath the driver's bench." in view['currentScene']['visibleDetails']
+    assert 'pale stone' not in next(
+        record for record in PACK['locations'][0]['interactables'] if record['id'] == 'inn_drivers_bench'
+    )['description']
+    assert {entry['id']: _offered(view, entry['id']) for entry in view['currentScene']['interactables']} == {
+        'inn_caravan_ledger': [('inspect', 'Read the caravan ledger', True, False)],
+        'inn_drivers_bench': [
+            ('search', "Search under the driver's bench", True, False),
+            ('inspect', "Look over the driver's bench", True, False),
+        ],
+        'inn_lead_wagon': [('search', 'Search the lead wagon', True, False)],
+        'inn_wagon_bell': [('use', 'Ring the wagon bell', True, False)],
+    }
+    bench = next(entry for entry in view['currentScene']['interactables'] if entry['id'] == 'inn_drivers_bench')
+    assert bench['offeredActions'][0]['check'] == {'skill': 'investigation', 'ability': 'intelligence'}
+
+
+def test_every_object_offers_exactly_its_labelled_actions():
+    for location in PACK['locations']:
+        for record in location.get('interactables', []):
+            assert set(record['allowedActions']) >= set(record['actionLabels']), record['id']
+            assert set(record['allowedActions']) - set(record['actionLabels']) <= {'inspect'}, record['id']
+            assert all(len(label) <= 48 for label in record['actionLabels'].values())
+    assert {enemy['id']: (enemy.get('singularName'), enemy.get('proper')) for enemy in PACK['enemies']} == {
+        'enemy_ashmarked_cutthroats': ('Ashmarked Cutthroat', None),
+        'enemy_pale_lanterns': ('Pale Lantern', None),
+        'enemy_name_eaten_roadwardens': ('Name-Eaten Roadwarden', None),
+        'enemy_wardbound_beasts': ('Wardbound Beast', None),
+        'enemy_hollow_marshal': (None, True),
+        'enemy_cinder_scribe': (None, True),
+    }
+
+
+def test_the_journal_shows_only_the_objectives_the_party_has_reached(table):
+    quest = next(quest for quest in PACK['quests'] if quest['id'] == QUEST)
+    first = _story_view(table.last)['journal']
+    assert first['objectives'] == [
+        {'id': 'obj_investigate_empty_caravan', 'title': 'Investigate the empty caravan', 'optional': True, 'status': 'active'}
+    ]
+    assert (first['quest']['stageTitle'], first['clues']) == ('The Empty Caravan', [])
+
+    journal = _story_view(table.act('inn_caravan_ledger', 'inspect', 'Caravan Ledger').snapshot)['journal']
+
+    assert journal['objectives'] == [
+        {'id': 'obj_investigate_empty_caravan', 'title': 'Investigate the empty caravan', 'optional': True, 'status': 'completed'},
+        {'id': 'obj_follow_changing_road', 'title': 'Follow the changing road', 'optional': True, 'status': 'active'},
+    ]
+    assert journal['quest']['stageTitle'] == 'The Changing Road'
+    assert [clue['id'] for clue in journal['clues']] == ['clue_erased_caravan_ledger']
+    reached = {'obj_investigate_empty_caravan', 'obj_follow_changing_road'}
+    rendered = json.dumps(journal)
+    for objective in quest['objectives']:
+        if objective['id'] not in reached:
+            assert objective['title'] not in rendered
+    assert _offered(_story_view(table.last), 'inn_caravan_ledger') == [
+        ('inspect', 'Read the caravan ledger', False, True)
+    ]
+
+
+def test_one_search_opens_the_locked_strongbox_when_the_hero_holds_its_key(table):
+    table.act('inn_drivers_bench', 'search', "Driver's Bench")
+    table.take('caravan_strongbox_key', 'Caravan Strongbox Key')
+    revealed = _story_view(table.act('inn_lead_wagon', 'search', 'Lead Wagon').snapshot)
+
+    assert _offered(revealed, 'inn_wagon_strongbox') == [
+        ('search', 'Search the strongbox', True, False),
+        ('open', 'Open the strongbox', True, False),
+        ('unlock', 'Unlock the strongbox', True, False),
+        ('break', 'Break the strongbox open', True, False),
+    ]
+
+    strongbox = table.act('inn_wagon_strongbox', 'search', 'Wagon Strongbox')
+
+    assert strongbox.flags == {'stone_fragment_recovered': True}
+    assert strongbox.clues == {'clue_road_stone_fragment'}
+    assert _scene_items(strongbox) == ['road_stone_fragment', 'inn_wagon_strongbox_coins']
+    assert strongbox.encounter == 'enc_empty_caravan_pressure'
+    with table.app.app_context():
+        turn = DmTurn.query.filter_by(session_id=table.ids['session_id']).order_by(DmTurn.turn_id.desc()).first()
+        pipeline = safe_json_loads(turn.metadata_json, {})['state_pipeline']
+    action = next(change for change in pipeline['immediateAppliedChanges'] if change['type'] == 'scene.interactable.action')
+    assert action['event']['steps'] == ['unlock', 'open']
+    items = {item['id']: item['takeLabel'] for item in _story_view(strongbox.snapshot)['currentScene']['items']}
+    assert items == {
+        'road_stone_fragment': 'Take the Pale Road-Stone Fragment',
+        'inn_wagon_strongbox_coins': 'Take 15 gp',
+    }

@@ -1,7 +1,8 @@
 """The party's day clock, hit dice, and when a rest is allowed.
 
 ``snapshot.clock = {"day", "phase", "shortRestsSinceLong", "lastLongRestDay"?}``
-(default day 1, morning).  A short rest and structured travel advance one
+(default day 1, morning; a campaign pack may start it elsewhere with
+``startingState.clock = {"day", "phase"}``).  A short rest and structured travel advance one
 phase; a long rest advances to the next morning.  At most two short rests count
 between long rests and one long rest is allowed per day.
 

@@ -6,9 +6,12 @@ import pytest
 
 from aidm_server.interactables import (
     available_actions_for_target,
+    interactable_followup_changes,
+    offered_scene_actions,
     project_interactable_event,
     project_scene_interactables,
     resolve_interactable_action,
+    take_label,
     validate_interactable_catalog,
 )
 
@@ -396,12 +399,33 @@ def test_container_open_and_search_reveal_contents_in_stages():
     assert repeated["code"] == "invalid_transition"
 
 
-def test_searching_closed_container_fails():
+def test_searching_a_closed_container_opens_it_first_in_the_same_action():
     result = resolve_interactable_action(
         _state(), _request("search", "chest"), _actor()
     )
+
+    assert result["ok"] is True
+    assert [
+        (change["action"], change["targetId"])
+        for change in result["changes"]
+        if change["type"] == "scene.interactable.update"
+    ] == [("open", "chest"), ("search", "chest"), ("search", "spike_trap")]
+    chest = _target(result["nextState"], "chest")
+    assert (chest["open"], chest["searched"], chest["revision"]) == (True, True, 2)
+    assert result["events"][0]["type"] == "interactable.searched"
+    assert result["events"][0]["steps"] == ["open"]
+    assert result["message"] == "You open the Carved Chest. You search the Carved Chest."
+
+
+def test_a_closed_container_that_cannot_be_opened_cannot_be_searched():
+    state = _state()
+    for chest in (_target(state, "chest"), _persisted_target(state, "chest")):
+        chest["allowedActions"] = ["inspect", "search"]
+
+    result = resolve_interactable_action(state, _request("search", "chest"), _actor())
+
     assert result["code"] == "invalid_transition"
-    assert "opened" in result["message"]
+    assert result["message"] == "The Carved Chest is closed."
 
 
 def test_breaking_door_opens_and_unlocks_it_but_broken_door_cannot_close():
@@ -862,3 +886,294 @@ def test_malformed_resource_or_hazard_state_fails_closed(malformed):
         _actor(canTargetHidden=True),
     )
     assert result["code"] == "malformed_interactable"
+
+
+def _set_object(state: dict, target_id: str, **fields) -> None:
+    for record in (_target(state, target_id), _persisted_target(state, target_id)):
+        record.update(deepcopy(fields))
+
+
+def _locked_chest(state: dict, **fields) -> None:
+    _set_object(
+        state,
+        "chest",
+        locked=True,
+        requirements={"unlock": {"anyItemIds": ["chest_key"]}},
+        setsFlags={"open": {"chest_opened": True}, "search": {"chest_searched": True}},
+        discoversClueIds={"search": ["clue_maker"]},
+        **fields,
+    )
+
+
+def test_one_search_unlocks_and_opens_a_container_with_the_key_in_order():
+    state = _state()
+    _locked_chest(state)
+
+    result = resolve_interactable_action(state, _request("search", "chest"), _actor(itemIds=["chest_key"]))
+
+    assert result["ok"] is True
+    assert [
+        (change["action"], change["targetId"], change["patch"].get("locked"), change["patch"].get("open"))
+        for change in result["changes"]
+        if change["type"] == "scene.interactable.update"
+    ] == [
+        ("unlock", "chest", False, None),
+        ("open", "chest", None, True),
+        ("search", "chest", None, None),
+        ("search", "spike_trap", None, None),
+    ]
+    assert len({change["id"] for change in result["changes"]}) == len(result["changes"])
+    event = result["events"][0]
+    assert (event["type"], event["action"], event["steps"]) == ("interactable.searched", "search", ["unlock", "open"])
+    assert [item["id"] for item in event["revealedItems"]] == ["rope", "hidden_gem"]
+    assert result["message"] == (
+        "You unlock the Carved Chest. You open the Carved Chest. You search the Carved Chest."
+    )
+    chest = _target(result["nextState"], "chest")
+    assert (chest["locked"], chest["open"], chest["searched"], chest["revision"]) == (False, True, True, 3)
+    assert _persisted_target(result["nextState"], "chest")["searched"] is True
+
+    followups = interactable_followup_changes(
+        result["nextState"], {"type": "scene.interactable.action", "turnId": 7, "event": event}
+    )
+    assert {(change["type"], change.get("flagKey") or change.get("clueId")) for change in followups} == {
+        ("flag.set", "chest_opened"),
+        ("flag.set", "chest_searched"),
+        ("clue.discover", "clue_maker"),
+    }
+
+
+def test_the_step_by_step_route_still_works_after_one_click_chaining():
+    state = _state()
+    _locked_chest(state)
+    actor = _actor(itemIds=["chest_key"])
+
+    unlocked = resolve_interactable_action(state, _request("unlock", "chest"), actor)
+    opened = resolve_interactable_action(unlocked["nextState"], _request("open", "chest"), actor)
+    searched = resolve_interactable_action(opened["nextState"], _request("search", "chest"), actor)
+
+    assert [result["code"] for result in (unlocked, opened, searched)] == ["applied"] * 3
+    assert "steps" not in searched["events"][0]
+    assert _target(searched["nextState"], "chest")["searched"] is True
+
+
+def test_a_prerequisite_that_needs_a_roll_is_never_taken_implicitly():
+    state = _state()
+    lockpicker = _actor(toolIds=["tool_lockpicks"])
+
+    refused = resolve_interactable_action(state, _request("open", "gate"), lockpicker)
+    offers = {
+        entry["action"]: entry
+        for entry in offered_scene_actions(
+            state,
+            {"id": "player_1", "inventory": {"items": [{"id": "tool_lockpicks", "name": "Lockpicks", "type": "tool"}]}},
+        )["gate"]
+    }
+
+    assert (refused["code"], refused["message"]) == ("invalid_transition", "The Iron Gate is locked.")
+    assert refused["nextState"] == state
+    assert offers["open"] == {
+        "action": "open",
+        "label": "Open Iron Gate",
+        "legal": False,
+        "done": False,
+        "reason": "The Iron Gate is locked.",
+    }
+    assert offers["unlock"]["legal"] is True
+    assert offers["unlock"]["check"] == {"skill": "sleight_of_hand", "ability": "dexterity"}
+
+
+def test_a_step_with_authored_effects_is_never_taken_implicitly():
+    state = _state()
+    _locked_chest(state, mechanicalEffects={"open": {"damage": {"dice": "1d4", "type": "piercing"}}})
+
+    result = resolve_interactable_action(state, _request("search", "chest"), _actor(itemIds=["chest_key"]))
+
+    assert (result["code"], result["message"]) == ("invalid_transition", "The Carved Chest is locked.")
+
+
+def test_a_failed_check_after_the_steps_keeps_the_steps_and_their_discoveries():
+    state = _state()
+    _locked_chest(state)
+    for record in (_target(state, "chest"), _persisted_target(state, "chest")):
+        record["requirements"]["search"] = {"check": {"id": "search_chest", "dc": 30, "skill": "investigation"}}
+    rolls = {
+        "check": lambda actor_id, check, seed: {**check, "roll": 2, "modifier": 0, "bonus": 0, "total": 2, "outcome": "failure", "passed": False},
+    }
+
+    result = resolve_interactable_action(
+        state, _request("search", "chest"), _actor(itemIds=["chest_key"], rolls=rolls)
+    )
+
+    assert result["code"] == "check_failed"
+    assert result["message"].startswith("You unlock the Carved Chest. You open the Carved Chest. Investigation check")
+    assert result["message"].endswith("The attempt fails.")
+    chest = _target(result["nextState"], "chest")
+    assert (chest["locked"], chest["open"], chest.get("searched")) == (False, True, None)
+    assert chest["failedCheckActorIds"] == ["player_1"]
+    event = result["events"][0]
+    assert (event["type"], event["steps"]) == ("interactable.check_failed", ["unlock", "open"])
+    assert [change.get("action") for change in result["changes"]] == ["unlock", "open", "search", None]
+    followups = interactable_followup_changes(
+        result["nextState"], {"type": "scene.interactable.action", "turnId": 7, "event": event}
+    )
+    assert [(change["type"], change.get("flagKey")) for change in followups] == [("flag.set", "chest_opened")]
+
+
+REFUSAL_CASES = [
+    ("gate", "close", {}, {}, "The Iron Gate is already closed."),
+    ("gate", "lock", {}, {}, "The Iron Gate is already locked."),
+    ("gate", "use", {}, {}, "That can't be done with the Iron Gate."),
+    ("side_lock", "unlock", {}, {}, "It is locked, and you carry no key that fits."),
+    ("chest", "unlock", {}, {}, "The Carved Chest is not locked."),
+    ("chest", "lock", {"open": True}, {}, "The Carved Chest has to be closed first."),
+    ("chest", "open", {"open": True}, {}, "The Carved Chest is already open."),
+    ("chest", "search", {"searched": True, "open": True}, {}, "You have already searched the Carved Chest."),
+    ("chest", "inspect", {"inspected": True}, {}, "You have already examined the Carved Chest."),
+    ("gate", "break", {"broken": True, "locked": False, "open": True}, {}, "The Iron Gate is already broken."),
+    ("gate", "close", {"broken": True, "locked": False, "open": True}, {}, "The Iron Gate is broken."),
+    ("lever", "use", {"usesRemaining": 0, "depleted": True}, {}, "The Bronze Lever can't be used again."),
+    ("seal", "use", {}, {}, "You don't know how to do that with the Rune Seal."),
+    ("seal", "use", {}, {"capabilities": ["read_runes"]}, "You don't know enough to do that yet."),
+    (
+        "seal",
+        "use",
+        {},
+        {"capabilities": ["read_runes"], "flags": {"moon_aligned": True}},
+        "Something else has to change first.",
+    ),
+    ("gate", "unlock", {}, {"toolIds": ["tool_lockpicks"]}, "That takes a roll."),
+]
+
+
+@pytest.mark.parametrize(("target_id", "action", "state_patch", "actor_patch", "sentence"), REFUSAL_CASES)
+def test_every_refusal_is_one_plain_sentence_naming_the_object(target_id, action, state_patch, actor_patch, sentence):
+    state = _state()
+    _set_object(state, target_id, **state_patch)
+
+    result = resolve_interactable_action(state, _request(action, target_id), _actor(**actor_patch))
+
+    assert result["ok"] is False
+    assert result["message"] == sentence
+    for word in ("interactable", "legal", "supported", "_"):
+        assert word not in result["message"].lower()
+
+
+def test_refusals_for_hidden_targets_and_stale_choices_stay_plain():
+    hidden = resolve_interactable_action(_state(), _request("trigger", "spike_trap"), _actor())
+    stale = resolve_interactable_action(_state(), _request("use", "shrine", expectedRevision=3), _actor())
+
+    assert hidden["message"] == "There is nothing like that here."
+    assert stale["message"] == "The Wayside Shrine changed after the player selected it."
+
+
+def test_a_proper_name_or_one_starting_with_the_takes_no_article():
+    state = _state()
+    _set_object(state, "gate", name="The Iron Gate")
+    _set_object(state, "side_door", name="Whisperwood", proper=True)
+
+    assert resolve_interactable_action(state, _request("close", "gate"), _actor())["message"] == (
+        "The Iron Gate is already closed."
+    )
+    assert resolve_interactable_action(state, _request("close", "side_door"), _actor())["message"] == (
+        "Whisperwood is already closed."
+    )
+
+
+def test_offered_actions_follow_the_contract_order_labels_and_done_flags():
+    state = _state()
+    _set_object(
+        state,
+        "chest",
+        open=True,
+        inspected=True,
+        actionLabels={"search": "Rummage through the chest"},
+        requirements={"search": {"check": {"id": "rummage", "dc": 12, "skill": "investigation", "showDc": True}}},
+    )
+
+    offered = offered_scene_actions(state, {"id": "player_1"})
+
+    assert list(offered) == ["gate", "side_door", "side_lock", "chest", "lever", "shrine", "seal"]
+    chest = offered["chest"]
+    assert [entry["action"] for entry in chest] == ["search", "open", "unlock", "inspect", "close", "lock"]
+    assert chest[0] == {
+        "action": "search",
+        "label": "Rummage through the chest",
+        "authored": True,
+        "legal": True,
+        "done": False,
+        "check": {"skill": "investigation", "ability": "intelligence", "dc": 12},
+    }
+    by_action = {entry["action"]: entry for entry in chest}
+    assert by_action["inspect"] == {
+        "action": "inspect",
+        "label": "Examine Carved Chest",
+        "legal": False,
+        "done": True,
+        "reason": "You have already examined the Carved Chest.",
+    }
+    assert (by_action["open"]["done"], by_action["close"]["legal"], by_action["close"]["done"]) == (True, True, False)
+    assert offered["shrine"] == [
+        {"action": "use", "label": "Use Wayside Shrine", "legal": True, "done": False},
+        {"action": "inspect", "label": "Examine Wayside Shrine", "legal": True, "done": False},
+    ]
+    assert "spike_trap" not in offered
+
+
+def test_a_used_object_that_tracks_no_uses_is_done_but_still_legal():
+    state = _state()
+    _set_object(state, "shrine", used=True, usedCount=1)
+
+    use = offered_scene_actions(state, {"id": "player_1"})["shrine"][0]
+
+    assert (use["action"], use["legal"], use["done"]) == ("use", True, True)
+
+
+def test_offered_actions_count_a_chained_search_as_legal():
+    state = _state()
+    _locked_chest(state)
+
+    with_key = {entry["action"]: entry for entry in offered_scene_actions(
+        state, {"id": "player_1", "inventory": {"items": [{"id": "chest_key", "name": "Chest Key"}]}}
+    )["chest"]}
+    without_key = {entry["action"]: entry for entry in offered_scene_actions(state, {"id": "player_1"})["chest"]}
+
+    assert (with_key["search"]["legal"], with_key["open"]["legal"], with_key["unlock"]["legal"]) == (True, True, True)
+    assert without_key["search"] == {
+        "action": "search",
+        "label": "Search Carved Chest",
+        "legal": False,
+        "done": False,
+        "reason": "The Carved Chest is locked.",
+    }
+    assert without_key["unlock"]["reason"] == "It is locked, and you carry no key that fits."
+
+
+@pytest.mark.parametrize(
+    ("item", "label"),
+    [
+        ({"id": "caravan_strongbox_key", "name": "Caravan Strongbox Key"}, "Take the Caravan Strongbox Key"),
+        ({"id": "crown", "name": "The Hollow Crown"}, "Take The Hollow Crown"),
+        ({"id": "blade", "name": "Dawnbringer", "proper": True}, "Take Dawnbringer"),
+        ({"id": "box_coins", "name": "a purse", "type": "currency", "currency": {"gp": 15}}, "Take 15 gp"),
+        ({"id": "box_coins_2", "type": "currency", "currency": {"sp": 4, "gp": 2}}, "Take 2 gp, 4 sp"),
+    ],
+)
+def test_take_labels_name_the_item_or_the_coins(item, label):
+    assert take_label(item) == label
+
+
+def test_action_labels_and_action_text_never_reach_the_player_projection():
+    state = _state()
+    _set_object(
+        state,
+        "lever",
+        actionLabels={"use": "Pull the bronze lever"},
+        actionText={"use": "Somewhere below, chains rattle and a gate grinds up."},
+        playerKnownFields=["actionText", "actionLabels"],
+    )
+
+    lever = next(item for item in project_scene_interactables(state, _actor())["interactables"] if item["id"] == "lever")
+
+    assert "actionText" not in lever
+    assert "actionLabels" not in lever
