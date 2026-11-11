@@ -34,7 +34,22 @@ All notable AIDM closed-beta changes should be recorded here.
   plain prose, and closes the previous chapter, which stays readable.
 - Saves are a single file you can download, and import as a read-only archive or
   restore as the next chapter.
-- The classic console is still there as "Table tools" for hosts.
+- The classic console is still there as "Table tools" for hosts. It now wears
+  the same look as the Story view (one accent, no boxes, the same type), and
+  the light theme is gone.
+- "More ancestries" and "More callings" open as Story catalogs, and editing a
+  hero is a Story sheet; no screen keeps the old boxed look.
+- With an AI narrator, the engine decides what a search, a pickup or a journey
+  does, and the narrator only describes it: each turn the narrator is told what
+  the engine resolved and what it must leave alone. Closing questions ("What do
+  you do?" and its variants), stray markdown and repeated reward lists are
+  removed from its prose.
+- The action box and the suggested actions stay locked until the engine has
+  finished applying the turn, so a suggestion from before the turn is never
+  offered.
+- Narration can be read aloud by OpenAI's Realtime voices (`gpt-realtime-2.1`
+  or the faster `-mini`): ten voices, six accents and two qualities in
+  Settings, streamed as it is spoken. Deepgram remains available.
 
 #### Rules
 
