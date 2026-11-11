@@ -1130,7 +1130,7 @@
           "type": "boolean"
         },
         "lethalDefeat": {
-          "description": "true skips the beaten-party recovery when every hero is down at the end of this encounter's fight and lets that defeat fail a checkpoint naming the encounter in failWhen. Without it the heroes wake later with 1 HP, the encounter re-arms and no checkpoint fails. A failure never advances onto a terminal checkpoint either way. Read only when it is exactly true."
+          "description": "true makes a defeat in this encounter's fight decisive: when every hero is down it fails a checkpoint naming the encounter in failWhen, so the story takes that checkpoint's failure route. It means nothing else: lethal or not, a beaten party wakes at the end of the fight with 1 HP one phase later, the encounter re-arms, and a failure never advances onto a terminal checkpoint. Read only when it is exactly true."
         }
       }
     },

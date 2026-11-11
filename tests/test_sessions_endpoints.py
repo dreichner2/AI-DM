@@ -1149,7 +1149,8 @@ def test_list_campaign_sessions_includes_display_metadata(client, app):
     assert payload['name'] is None
     assert payload['display_name'] == 'Session 1'
     assert payload['turn_count'] == 1
-    assert payload['summary_excerpt'] == 'The relic started glowing.'
+    # No saved recap and no narration event: the rolling summary is never shown instead.
+    assert payload['summary_excerpt'] == ''
     assert payload['latest_activity_at']
     assert payload['updated_at']
     assert payload['is_archived'] is False

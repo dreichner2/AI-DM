@@ -119,8 +119,6 @@ free-form actions that name nothing the game knows get only a short note.
   Narration quality and latency with a live AI provider have not been measured
   yet.
 - Signed-out guests do not get the ready-made hero choice on the title screen.
-- Starting a new chapter of the ready-made adventure resets the day clock and
-  closes its shops (a known defect); finish the adventure in one chapter.
 - TTS depends on provider configuration and browser autoplay behavior.
 - The top runtime notice strip is reserved for current player-impacting
   provider outages. Optional narration availability appears with the TTS

@@ -313,9 +313,10 @@ def _session_save_document(
         )
     ]
     own_player_ids = frozenset(player.player_id for player in characters)
+    session_state = SessionState.query.filter_by(session_id=session_obj.session_id).first()
     state = session_state_payload(
         session_obj,
-        SessionState.query.filter_by(session_id=session_obj.session_id).first(),
+        session_state,
         include_hidden_state=include_hidden_state,
         viewer_account_id=viewer_account_id,
         private_player_ids=own_player_ids,
@@ -337,8 +338,9 @@ def _session_save_document(
         'session': session_payload(session_obj),
         'state_snapshot': state['state_snapshot'],
         'session_state': {
-            key: state[key]
-            for key in ('rolling_summary', 'current_location', 'current_quest', 'memory_snippets')
+            # Only an operator's save keeps the narrator's memory, so a restore picks up where it left off.
+            'rolling_summary': (session_state.rolling_summary or '') if include_hidden_state and session_state else '',
+            **{key: state[key] for key in ('current_location', 'current_quest', 'memory_snippets')},
         },
         'log': _session_save_log(
             session_obj.session_id,

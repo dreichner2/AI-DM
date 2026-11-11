@@ -6,10 +6,12 @@ from aidm_server.models import (
     CampaignPackSession,
     DmTurn,
     Session,
+    SessionState,
     TurnEvent,
     safe_json_dumps,
 )
 from aidm_server.services.campaign_pack_progress import PROGRESS_CHANGED_EVENT
+from aidm_server.turn_events import DM_RESPONSE_EVENT, record_turn_event
 from tests.helpers import seed_world_campaign_player_session
 
 
@@ -200,3 +202,44 @@ def test_campaign_chronicle_falls_back_to_session_boundary_chapters(client, app)
     assert 'Chapter 1: First Watch' in html
     assert 'Chapter 2: Second Watch' in html
     assert 'The second watch hears wheels in the fog.' in html
+
+
+def _epilogue(html: str) -> str | None:
+    parts = html.split('data-chapter-source="epilogue"')
+    return parts[1].split('</section>')[0] if len(parts) > 1 else None
+
+
+def test_chronicle_epilogue_is_the_latest_recap_or_place_and_narration_never_the_rolling_summary(client, app):
+    ids = seed_world_campaign_player_session(app)
+    with app.app_context():
+        first = db.session.get(Session, ids['session_id'])
+        first.state_snapshot = safe_json_dumps({'recap': 'The first beacon was lit.'}, {})
+        road = {'currentScene': {'locationId': 'north_road'}, 'locations': [{'id': 'north_road', 'name': 'The North Road'}]}
+        second = Session(campaign_id=ids['campaign_id'], state_snapshot=safe_json_dumps(road, {}))
+        silent = Session(campaign_id=ids['campaign_id'])
+        db.session.add_all([second, silent])
+        db.session.flush()
+        db.session.add_all(
+            SessionState(session_id=session_obj.session_id, rolling_summary=f'T{index} | P1: I act | DM: SUMMARY_ONLY')
+            for index, session_obj in enumerate((first, second, silent), start=1)
+        )
+        record_turn_event(
+            session_id=second.session_id,
+            campaign_id=ids['campaign_id'],
+            event_type=DM_RESPONSE_EVENT,
+            payload={'message': 'Wheels creak in the fog. A cart appears.'},
+        )
+        db.session.commit()
+        session_ids = (first.session_id, second.session_id, silent.session_id)
+
+    first_html, second_html, silent_html = (
+        client.get(f'/api/sessions/{session_id}/chronicle').get_data(as_text=True) for session_id in session_ids
+    )
+    campaign_html = client.get(f"/api/campaigns/{ids['campaign_id']}/chronicle").get_data(as_text=True)
+
+    assert 'The first beacon was lit.' in _epilogue(first_html)
+    assert 'The North Road — Wheels creak in the fog.' in _epilogue(second_html)
+    assert _epilogue(silent_html) is None
+    # The campaign's epilogue is its latest chapter that has either.
+    assert 'The North Road — Wheels creak in the fog.' in _epilogue(campaign_html)
+    assert all('SUMMARY_ONLY' not in html for html in (first_html, second_html, silent_html, campaign_html))

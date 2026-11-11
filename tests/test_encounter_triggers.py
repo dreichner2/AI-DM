@@ -25,7 +25,16 @@ from aidm_server.game_state.validation.validator import (
     validate_state_changes,
     validated_changes_for_application,
 )
-from aidm_server.models import Campaign, CombatDebugEvent, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
+from aidm_server.models import (
+    Campaign,
+    CombatDebugEvent,
+    DmTurn,
+    Player,
+    Session,
+    SessionStateMutationAudit,
+    safe_json_dumps,
+    safe_json_loads,
+)
 from aidm_server.services.campaign_pack_linter import lint_campaign_pack_manifest
 from tests.helpers import seed_world_campaign_player_session
 
@@ -723,6 +732,43 @@ def test_an_operator_started_fight_resolves_the_enemies_opening_turns(client, ap
     assert _engine_results(ledger)
 
 
+def test_an_operator_started_fight_the_enemies_win_at_once_wakes_the_hero_before_it_returns(client, app, monkeypatch):
+    ids = seed_world_campaign_player_session(app)
+    hero_id = f"player_{ids['player_id']}"
+    # The wolf wins initiative and every engine die rolls its highest: its opening bite drops the only hero.
+    _enemies_go_first(monkeypatch, roll=lambda sides: sides)
+    with app.app_context():
+        db.session.get(Player, ids['player_id']).stats = safe_json_dumps({'current_hp': 1, 'max_hp': 20}, {})
+        db.session.commit()
+
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/start",
+        json={'creature': core_creature('wolf'), 'enemyCount': 1},
+    )
+
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert (body['combat']['status'], body['combat']['flags']['endReason']) == ('ended', 'objective_failed')
+    assert body['combat']['flags']['defeatRecovery']['wokenActorIds'] == [hero_id]
+    assert [participant['team'] for participant in body['combat']['participants']] == ['player']
+    state = client.get(f"/api/sessions/{ids['session_id']}/state").get_json()['state_snapshot']
+    with app.app_context():
+        player_stats = safe_json_loads(db.session.get(Player, ids['player_id']).stats, {})
+    hero = state['playerCharacters'][0]
+    assert (hero['health']['currentHp'], hero['health']['conditions']) == (1, [])
+    assert player_stats['current_hp'] == 1
+    assert state['clock']['phase'] == 'afternoon'
+    # The waking joins the opening turns' revision and audit record.
+    recovery = next(change for change in state['stateChangeLedger'] if change['type'] == 'combat.defeat_recovery')
+    with app.app_context():
+        audits = SessionStateMutationAudit.query.filter_by(session_id=ids['session_id']).all()
+        recorded = [(audit.source, audit.state_revision, safe_json_loads(audit.applied_change_ids_json, [])) for audit in audits]
+    assert body['stateRevision'] == state['stateRevision'] == 1
+    assert len(recorded) == 1 and recorded[0][:2] == ('api.combat.start', 1)
+    assert recovery['id'] in recorded[0][2]
+    assert recovery['id'] in state['lastMutation']['appliedChangeIds']
+
+
 def test_a_turn_never_ends_waiting_on_an_enemy(app, camp, monkeypatch):
     ids = camp(_camp_pack())
     _enemies_go_first(monkeypatch)
@@ -826,11 +872,85 @@ def test_a_beaten_party_wakes_later_and_the_encounter_can_fire_again(trigger):
     assert party_defeat_recovery(state, turn_id=32) is None
 
 
-def test_a_lethal_encounter_leaves_the_party_down():
-    state = _beaten_state({'type': 'on_enter', 'locationId': 'bridge'}, lethalDefeat=True)
+def test_a_lethal_encounter_wakes_the_party_like_any_defeat():
+    trigger = {'type': 'on_enter', 'locationId': 'bridge'}
+    beaten, lethal = _beaten_state(trigger), _beaten_state(trigger, lethalDefeat=True)
 
-    assert party_defeat_recovery(state, turn_id=31) is None
-    assert state['playerCharacters'][0]['health']['currentHp'] == 0
+    # lethalDefeat only routes the story (campaign_pack_progress); the waking is the same.
+    assert party_defeat_recovery(lethal, turn_id=31) == party_defeat_recovery(beaten, turn_id=31)
+    assert lethal['playerCharacters'] == beaten['playerCharacters']
+    assert lethal['playerCharacters'][0]['health']['currentHp'] == 1
+    assert (lethal['clock'], lethal['flags'][TRIGGERED_ENCOUNTERS_FLAG]) == (beaten['clock'], [])
+
+
+def _bridge_checkpoint_pack(*, lethal: bool) -> dict:
+    """Holding the bridge is a checkpoint whose failure route is the ford; its fight may be lethal."""
+
+    pack = _travel_pack()
+    pack['startingState']['checkpointId'] = 'cp_bridge'
+    pack['checkpoints'] = [
+        {'id': 'cp_bridge', 'title': 'Hold the bridge', 'completeWhen': {'encounterIds': ['enc_bridge']},
+         'failWhen': {'encounterIds': ['enc_bridge']}, 'nextCheckpointIds': ['cp_far_bank'], 'failureCheckpointIds': ['cp_ford']},
+        {'id': 'cp_far_bank', 'title': 'The far bank'},
+        {'id': 'cp_ford', 'title': 'Find the ford'},
+    ]
+    pack['encounters'] = [
+        _encounter('enc_bridge', {'type': 'on_enter', 'locationId': 'bridge'}, scaling=False,
+                   enemyGroups=[{'enemyId': 'bandit', 'count': 1}], **({'lethalDefeat': True} if lethal else {})),
+    ]
+    return pack
+
+
+@pytest.mark.parametrize(('lethal', 'failed', 'active'), [(False, [], 'cp_bridge'), (True, ['cp_bridge'], 'cp_ford')])
+def test_a_beaten_party_wakes_when_the_fight_ends_and_only_a_lethal_one_fails_the_checkpoint(
+    client, app, socketio, monkeypatch, lethal, failed, active,
+):
+    for target in ('requests.Session.request', 'aidm_server.llm_providers.http_post', 'aidm_server.llm_providers.subprocess.Popen'):
+        monkeypatch.setattr(target, lambda *_args, **_kwargs: pytest.fail('Safe Mode must not call a network or CLI model'))
+    app.config.update(AIDM_LLM_PROVIDER='fallback', AIDM_LLM_MODEL='deterministic-v1')
+    response = client.post('/api/campaigns/import-pack', json={'pack': _bridge_checkpoint_pack(lethal=lethal)})
+    assert response.status_code == 201, response.get_json()
+    ids = {key: response.get_json()[key] for key in ('campaign_id', 'session_id')}
+    with app.app_context():
+        campaign = db.session.get(Campaign, ids['campaign_id'])
+        player = Player(workspace_id=campaign.workspace_id, campaign_id=campaign.campaign_id, name='Alice',
+                        character_name='Seraphina', class_='Fighter', level=1,
+                        stats=safe_json_dumps({'ability_scores': {'strength': 15, 'dexterity': 12, 'constitution': 14},
+                                               'current_hp': 1, 'hp_current': 1, 'max_hp': 12, 'hp_max': 12}, {}))
+        db.session.add(player)
+        db.session.commit()
+        ids['player_id'], ids['workspace_id'] = player.player_id, campaign.workspace_id
+    state_path = f"/api/sessions/{ids['session_id']}/state?view=player&player_id={ids['player_id']}"
+    clock_before = client.get(state_path).get_json()['state_snapshot']['clock']
+    socket_client = socketio.test_client(app, flask_test_client=app.test_client())
+    socket_client.emit('join_session', {key: ids[key] for key in ('session_id', 'player_id', 'workspace_id')})
+    socket_client.get_received()
+    # The bandit wins initiative and every engine die rolls its highest: its opening strike drops the hero.
+    _enemies_go_first(monkeypatch, roll=lambda sides: sides)
+
+    socket_client.emit('send_message', {
+        'session_id': ids['session_id'], 'campaign_id': ids['campaign_id'], 'player_id': ids['player_id'],
+        'message': 'The party travels to Bridge.', 'client_message_id': 'cross-bridge',
+        'action_intent': {'kind': 'travel', 'source': 'scene_panel', 'location': {'id': 'bridge', 'name': 'Bridge'},
+                          'text': 'The party travels to Bridge.', 'client_message_id': 'cross-bridge'},
+    })
+    received = socket_client.get_received()
+    socket_client.disconnect()
+
+    assert [event['args'] for event in received if event['name'] == 'error'] == []
+    beats = [beat['text'] for event in received if event['name'] == 'turn_status'
+             for beat in (event['args'][0].get('details') or {}).get('storyBeats') or []]
+    assert 'Defeated — you wake later with 1 HP' in beats
+    # Awake at once, lethal or not: 1 HP a phase later, and the bandit gone.
+    snapshot = client.get(state_path).get_json()['state_snapshot']
+    hero = snapshot['playerCharacters'][0]
+    assert (snapshot['combat']['status'], snapshot['combat']['flags']['endReason']) == ('ended', 'objective_failed')
+    assert (hero['health']['currentHp'], hero['health']['conditions']) == (1, [])
+    assert [participant['team'] for participant in snapshot['combat']['participants']] == ['player']
+    assert (clock_before['label'], snapshot['clock']['label']) == ('Day 1 · Morning', 'Day 1 · Afternoon')
+    # Only a lethal defeat fails the checkpoint and takes its failure route.
+    progress = client.get(f"/api/sessions/{ids['session_id']}/campaign-pack/progress").get_json()
+    assert (progress['failedCheckpointIds'], progress['activeCheckpointId']) == (failed, active)
 
 
 def test_a_defeat_then_a_victory_pays_the_once_only_reward_once(app, camp, client, monkeypatch):

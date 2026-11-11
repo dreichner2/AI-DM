@@ -88,21 +88,26 @@ chapter of it, and exactly one chapter is current.
 
 - Starting a chapter (`POST /api/sessions/start`, the Story menu's "Start next
   chapter") with `continuity: "continue"` (the default) carries the world
-  forward: scene, places and their saved scene state, known NPCs, quests, flags,
-  clues, factions, maps, handouts, lore, the campaign-pack mirror and progress,
-  content settings, and the ledgers. Combat, turn control, presence, recovery
-  gates and per-chapter bookkeeping start fresh. The day clock and merchants are
-  not carried yet (a known defect: the next chapter starts on day 1 in the
-  morning and the pack's shops no longer trade). `continuity: "fresh"` starts
-  the world again; a campaign created from a pack is re-seeded from the pack's
-  opening.
+  forward: everything that describes the world and the party — the scene and
+  place, places and their saved scene state (scene objects, their states and
+  loose items), known NPCs, quests and objectives, flags, clues, factions, maps,
+  handouts, lore, the campaign-pack mirror and progress, the day clock, the
+  merchants and their remaining stock, content settings, and the ledgers.
+  What belongs to one sitting starts fresh: combat, turn control, presence,
+  pending rolls, recovery gates and per-chapter bookkeeping. `continuity:
+  "fresh"` starts all of it again; a campaign created from a pack is re-seeded
+  from the pack's opening (its starting clock and full shop stock).
 - The previous chapter becomes `ended`: it stays readable (state, log, export,
   chronicle) but every live action and socket join returns 409
   `session_ended` with the current chapter's id. A closing line, `Chapter closed.
   The adventure continues in the next chapter.`, is logged in it.
 - A new chapter opens with `**Chapter {n} begins.**` and, when there is one, a
-  `Previously:` recap (the previous chapter's recap or rolling summary, at most
-  1,200 characters, cut at a sentence).
+  `Previously:` line: the previous chapter's saved recap (at most 1,200
+  characters, cut at a sentence), otherwise `{place} — {first sentence of its
+  last narration}` (the title's continue line); without either the line is
+  left out. The rolling summary is the narrator's memory and is never shown to
+  a player: not here, not in session lists, state reads, recaps, player saves
+  or the chronicle.
 - An unfinished fight, pending roll or running turn blocks a new chapter with
   409 `chapter_unsettled` (`Finish the current fight or roll before starting a
   new chapter.`); only an operator may force it, and transient state is then
@@ -246,18 +251,21 @@ this order:
 ### Defeat and waking
 
 - When every present player character is down, combat ends with
-  `objective_failed`. Unless the combat or its encounter sets
-  `lethalDefeat: true`, the party is beaten but not killed: the clock advances
-  one phase, every hero who is not dead wakes with 1 HP (no longer dying,
-  stable, unconscious or prone; death saves reset), the enemies leave the scene,
-  and the encounter records the outcome `defeat`, pays nothing, and is re-armed
-  so its trigger can fire again. The turn carries the beat
-  `Defeated — you wake later with 1 HP`. Any other combat end stabilizes the
-  dying.
+  `objective_failed` and the party is beaten, never killed, whether or not the
+  fight is lethal. At the end of the fight the clock advances one phase, every
+  hero who is not dead wakes with 1 HP (no longer dying, stable, unconscious or
+  prone; death saves reset), the enemies leave the scene, and the encounter
+  records the outcome `defeat`, pays nothing, and is re-armed so its trigger
+  can fire again. The turn carries the beat
+  `Defeated — you wake later with 1 HP`. When the enemies' opening turns end
+  the fight inside an operator's combat start, the party wakes before that
+  request returns, in the same state revision and audit record. Any other
+  combat end stabilizes the dying.
 - A lost or fled fight never ends the story. A beaten party's defeat fails no
-  checkpoint (the encounter can simply be fought again); only an encounter with
-  `lethalDefeat: true` lets a defeat fail its checkpoint and take the
-  checkpoint's failure route. A checkpoint failure, such as fleeing, never
+  checkpoint. `lethalDefeat: true` on the combat or its encounter only means
+  the defeat is decisive: it fails the checkpoint that names the encounter in
+  `failWhen` and the story takes that checkpoint's failure route (the heroes
+  still wake as above). A checkpoint failure, such as fleeing, never
   advances onto a terminal checkpoint: when the only way on is the ending, the
   checkpoint stays active to be tried again. The ending is reached only when the
   checkpoint before it completes; in the Play Now adventure, by choosing the
@@ -825,10 +833,10 @@ Potion of Healing, and clerics and druids also carry a Healer's Kit.
   enemies never attack a downed character.
 - Non-player allies in a fight (party NPCs) only pass their turn; the engine
   plans and resolves turns for enemies alone.
-- `lethalDefeat` skips the beaten-party recovery at the fight's end (and lets
-  the defeat fail the checkpoint), but heroes left dying are not rolled for
-  afterwards, and the out-of-fight waking rule then brings them to with 1 HP
-  before the next action, so only damage that kills outright ends a character.
+- Losing a fight never kills the party: a beaten party always wakes at the
+  fight's end (`lethalDefeat` only sends the story down the failure route), so
+  only damage that kills outright, or three failed death saves inside a fight,
+  ends a character.
 - Equipment affects armour class and weapon actions, but armour proficiency is
   not a class rule. Only the catalog items above have rules effects.
 - Merchants have unlimited coin, sold items do not enter their stock, and prices

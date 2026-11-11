@@ -390,9 +390,10 @@ def test_all_player_characters_down_ends_combat_and_stabilizes_the_dying():
     assert _participant(ended, 'player_2')['conditions'] == ['dead']
 
 
-def test_lethal_defeat_leaves_the_dying_unstabilized():
+def test_a_lethal_defeat_stabilizes_the_dying_too():
+    # lethalDefeat only routes the story; the beaten party then wakes like any other.
     ended = _apply(_all_down_state({'lethalDefeat': True}), [combat_end_change(51, 'objective_failed')])
-    assert 'dying' in _participant(ended, 'player_1')['conditions']
+    assert set(_participant(ended, 'player_1')['conditions']) == {'unconscious', 'stable'}
 
 
 # --- A8, A9, A10 -------------------------------------------------------------------

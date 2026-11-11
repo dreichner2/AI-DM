@@ -37,8 +37,10 @@ from aidm_server.response_dtos import (
     ENDED_STATUS,
     current_chapter_session_id,
     open_sessions_filter,
+    session_continue_line,
     session_is_open,
     session_latest_activity_at,
+    session_recap_line,
     session_snapshot,
     session_summaries,
 )
@@ -59,9 +61,11 @@ CHAPTER_CLOSED_MESSAGE = 'Chapter closed. The adventure continues in the next ch
 CHAPTER_UNSETTLED_MESSAGE = 'Finish the current fight or roll before starting a new chapter.'
 SESSION_BUSY_MESSAGE = 'A turn is still running in this chapter. Try again when it finishes.'
 
-# World state a continued chapter inherits. Everything else in the previous
-# snapshot (party mirror, presence, turn control, recovery gates, revision and
-# audit bookkeeping, recaps, import and display metadata) belongs to that chapter.
+# What a continued chapter inherits: everything that describes the world and
+# the party. Everything else in the previous snapshot belongs to one sitting or
+# to that chapter (active combat, turn control, recovery gates, presence, the
+# party mirror rebuilt from the characters, revision and audit bookkeeping,
+# recaps, import and display metadata).
 CHAPTER_CARRIED_KEYS = (
     'schemaVersion',
     'campaignId',
@@ -78,6 +82,8 @@ CHAPTER_CARRIED_KEYS = (
     'handouts',
     'lore',
     'campaignPack',
+    'clock',
+    'merchants',
     'contentSettings',
     'playNow',
     'stateChangeLedger',
@@ -147,10 +153,13 @@ def chapter_snapshot_from(
     return snapshot
 
 
-def chapter_recap_text(previous_snapshot: dict, rolling_summary: str | None) -> str:
-    recap = previous_snapshot.get('recap')
-    source = recap if isinstance(recap, str) and recap.strip() else (rolling_summary or '')
-    return _trim_to_sentence(source.strip(), CHAPTER_RECAP_MAX_LENGTH)
+def chapter_recap_text(previous_snapshot: dict, continue_line: str | None) -> str:
+    """The ``Previously:`` text a new chapter opens with ('' when there is none).
+
+    See :func:`session_recap_line`; the rolling summary is never used.
+    """
+
+    return _trim_to_sentence(session_recap_line(previous_snapshot, continue_line), CHAPTER_RECAP_MAX_LENGTH)
 
 
 def _trim_to_sentence(text: str, limit: int) -> str:
@@ -495,7 +504,8 @@ def _start_chapter_locked(
     pack_seed = None
     if continuity == CHAPTER_CONTINUE:
         previous_snapshot = session_snapshot(source)
-        recap_text = chapter_recap_text(previous_snapshot, source_state.rolling_summary if source_state else None)
+        latest_narration = session_summaries([source.session_id])[source.session_id]['latest_narration']
+        recap_text = chapter_recap_text(previous_snapshot, session_continue_line(previous_snapshot, latest_narration))
         snapshot = chapter_snapshot_from(
             previous_snapshot,
             new_client_session_id=client_session_id,

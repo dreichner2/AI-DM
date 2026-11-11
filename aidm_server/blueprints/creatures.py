@@ -7,6 +7,7 @@ from typing import Any
 from flask import Blueprint, jsonify, request
 
 from aidm_server.capabilities import capability_forbidden_response, current_actor_has_capability
+from aidm_server.combat.defeat import party_defeat_recovery
 from aidm_server.combat.end_conditions import check_combat_end, combat_end_change
 from aidm_server.combat.intent_planner import attach_intents_to_combat, plan_enemy_intents
 from aidm_server.combat.state import (
@@ -988,10 +989,12 @@ def start_session_combat(session_id: int):
                 turn_id=combat['flags']['initiativeSeed'],
                 already_applied_changes=[],
             )
+            # A party those turns beat wakes now, not on its next action.
+            recovery = party_defeat_recovery(settled.state, turn_id=combat['flags']['initiativeSeed'])
             return SessionStateFollowUp(
                 state=settled.state,
                 validation=settled.validation,
-                applied_changes=settled.applied_changes,
+                applied_changes=[*settled.applied_changes, *([recovery] if recovery else [])],
                 metadata={'openingTurns': settled.resolved_actions} if settled.resolved_actions else {},
             )
 

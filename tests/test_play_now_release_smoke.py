@@ -5,8 +5,10 @@ renewed ward) through the socket pipeline with that file's seeded dice, and a
 second leg that loses the final fight for real, wakes, fights again and only
 then chooses a fate. Both record every narration and story beat the turns
 produced, as streamed to the table and as persisted, and fail on any raw id,
-dotted change type or engine phrase in them, or on an ending reported before a
-fate was chosen. Run it alone with ``make play-now-smoke``.
+dotted change type, engine phrase or line of the narrator's rolling summary in
+them, or on an ending reported before a fate was chosen. Each leg then starts
+the next chapter and reads its ``Previously`` line the same way. Run it alone
+with ``make play-now-smoke``.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ RAW_ID = re.compile(r'\b(?:loc|enemy|clue|obj|cp)_[a-z0-9_]+')
 # A change or event type such as ``scene.interactable.action`` or ``xp.add``.
 DOTTED_CHANGE_TYPE = re.compile(r'(?<![\w.])[a-z][a-z_]+(?:\.[a-z][a-z_]+)+(?![\w])')
 ENGINE_PHRASES = ('update applied', 'not legal')
+# A turn line of the narrator's rolling summary: ``T12 | P3: <action> | DM: <outcome>``.
+ROLLING_SUMMARY_TURN_LINE = re.compile(r'\bT\d+ \| P\d+: ')
 # The careful route narrates about forty turns; far fewer means it did not play and the scan proves nothing.
 MIN_NARRATED_TURNS = 30
 ROAD_STONE = 'valley_last_road_stone'
@@ -34,9 +38,9 @@ DEFEAT_BEAT = 'Defeated — you wake later with 1 HP'
 
 
 def leaks(text: str) -> list[str]:
-    """Raw ids, dotted change types and engine phrases a player must never read."""
+    """Raw ids, dotted change types, engine phrases and rolling-summary lines a player must never read."""
 
-    found = [*RAW_ID.findall(text), *DOTTED_CHANGE_TYPE.findall(text)]
+    found = [*RAW_ID.findall(text), *DOTTED_CHANGE_TYPE.findall(text), *ROLLING_SUMMARY_TURN_LINE.findall(text)]
     found.extend(phrase for phrase in ENGINE_PHRASES if phrase in text.lower())
     return found
 
@@ -131,8 +135,24 @@ def _persisted_texts(app, session_id: int) -> list[tuple[str, str]]:
     return texts
 
 
+def _assert_next_chapter_reads_cleanly(table) -> str:  # noqa: F811
+    """Start the next chapter; its ``Previously`` line is the last chapter's place and narration, read cleanly. Returns it."""
+
+    session_list = table.client.get(f"/api/sessions/campaigns/{table.ids['campaign_id']}/sessions").get_json()['sessions']
+    continue_line = next(item for item in session_list if item['session_id'] == table.ids['session_id'])['continue_line']
+    started = table.client.post('/api/sessions/start', json={'campaign_id': table.ids['campaign_id'], 'continuity': 'continue'})
+    assert started.status_code == 201, started.get_json()
+    welcome = table.client.get(f"/api/sessions/{started.get_json()['session_id']}/log").get_json()['entries'][0]['message']
+
+    assert continue_line and welcome == f'**Chapter 2 begins.**\n\nPreviously: {continue_line}'
+    assert started.get_json()['chapter_recap'] == continue_line
+    assert leaks(welcome) == []
+    return continue_line
+
+
 def test_leaks_catches_what_a_player_must_never_read():
     assert leaks('You reach loc_old_north_road.') == ['loc_old_north_road']
+    assert leaks('Previously: T41 | P1: Arden Vale attempts | DM: The stone') == ['T41 | P1: ']
     assert leaks('scene.interactable.action update applied') == ['scene.interactable.action', 'update applied']
     assert leaks('+100 XP from xp.add') == ['xp.add']
     assert leaks('That action is not legal: locked.') == ['not legal']
@@ -151,6 +171,7 @@ def test_the_careful_route_reads_cleanly_from_ledger_to_renewed_ward(table):  # 
     persisted = _assert_reads_cleanly(table, events)
     assert any(label.endswith('beat') for label, _text in persisted)
     assert any(text == 'The story ends — The Road Remembers' for _label, text in persisted)
+    assert _assert_next_chapter_reads_cleanly(table).startswith('Valley of the Last Road-Stone — ')
 
 
 def test_a_lost_final_fight_is_fought_again_before_any_ending(table, monkeypatch):  # noqa: F811
@@ -187,3 +208,4 @@ def test_a_lost_final_fight_is_fought_again_before_any_ending(table, monkeypatch
     assert _assert_no_ending_before_a_fate(steps) == flagship._ending_for('ward_claimed')
     persisted = _assert_reads_cleanly(table, events)
     assert DEFEAT_BEAT in [text for _label, text in persisted]
+    assert _assert_next_chapter_reads_cleanly(table).startswith('Valley of the Last Road-Stone — ')

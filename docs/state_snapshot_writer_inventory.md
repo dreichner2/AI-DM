@@ -43,15 +43,17 @@ top-level keys:
 
 - `chapter`: `{number, previousSessionId, startedAt, recap}` on every chapter
   after the first, plus `fresh: true` when the chapter deliberately started a
-  fresh world. `recap` is the bounded "Previously" text shown when it began.
+  fresh world. `recap` is the bounded "Previously" text shown when it began:
+  the previous chapter's saved recap, else its continue line, else empty.
 - `ended_at`: ISO time the chapter was closed by the next chapter (or by
   `POST /api/sessions/<id>/end`).
 
 A continued chapter copies only `schemaVersion`, `campaignId`, `currentScene`
 (with combat state, positions and zones reset), `locations`,
 `locationSceneStates`, `knownNpcs`, `partyNpcs`, `quests`, `flags`, `clues`,
-`factions`, `maps`, `handouts`, `lore`, `campaignPack`, `contentSettings`,
-`playNow` and the four gameplay ledgers, and starts with an empty `combat`.
+`factions`, `maps`, `handouts`, `lore`, `campaignPack`, `clock`, `merchants`,
+`contentSettings`, `playNow` and the four gameplay ledgers, and starts with an
+empty `combat`.
 
 ## Inventory
 

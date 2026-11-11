@@ -187,7 +187,8 @@ def _snapshot_recap(snapshot: dict[str, Any]) -> str:
 def _session_state_payload(snapshot: dict[str, Any], state_record: SessionState | None) -> dict[str, Any]:
     scene = snapshot.get('currentScene') if isinstance(snapshot.get('currentScene'), dict) else {}
     return {
-        'rolling_summary': text(state_record.rolling_summary if state_record else ''),
+        # The rolling summary is the narrator's memory and is never shown to a player.
+        'rolling_summary': '',
         'current_location': text(state_record.current_location if state_record else '')
         or text(first(scene, 'name', 'title', 'locationName', 'location_name')),
         'current_quest': text(state_record.current_quest if state_record else ''),

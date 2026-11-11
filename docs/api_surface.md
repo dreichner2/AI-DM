@@ -51,12 +51,12 @@ Session list items are `SessionSummary` summaries: identity, `name`, the
 server-computed `display_name` (name, else the legacy snapshot name/title, else
 `Chapter {n}` or `Session {n}`; imported archives are prefixed `Archive — `),
 chapter fields, timestamps, `turn_count`, `scene_title` (at most 120
-characters), `summary_excerpt` (rolling summary or recap, at most 280
-characters), `imported` and `play_now`. They never carry `state_snapshot`; the
-full snapshot comes only from `GET /api/sessions/<session_id>/state` and the
-export endpoint. The same summary is returned by the campaign workspace, the
-session list, rename, archive, restore, content-settings, Play Now and import
-responses.
+characters), `summary_excerpt` (the saved recap, else the `continue_line`,
+else empty; at most 280 characters), `imported` and `play_now`. They never
+carry `state_snapshot`; the full snapshot comes only from
+`GET /api/sessions/<session_id>/state` and the export endpoint. The same
+summary is returned by the campaign workspace, the session list, rename,
+archive, restore, content-settings, Play Now and import responses.
 
 Paging:
 
@@ -86,9 +86,12 @@ holding the session's turn lock so it never straddles a turn's commit:
 pack_id?}, session: SessionSummary, state_snapshot, session_state:
 {rolling_summary, current_location, current_quest, memory_snippets}, log,
 characters, unsettled: {pending_roll, active_combat}}`. Players receive the
-snapshot exactly as the state endpoint projects it for them and only their own
-characters; workspace administrators receive the full snapshot and every
-character. The client downloads this document unchanged.
+snapshot exactly as the state endpoint projects it for them, only their own
+characters and an empty `rolling_summary`; workspace administrators receive the
+full snapshot, every character and the rolling summary, so a restore keeps the
+narrator's memory. The client downloads this document unchanged. The state
+endpoint and the session recap always send `rolling_summary` empty: the
+rolling summary is never shown to a player.
 
 `POST /api/sessions/import` takes a save (or the older client-assembled
 export) with `mode`:

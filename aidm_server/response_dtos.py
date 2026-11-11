@@ -371,7 +371,6 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
     ids = list(dict.fromkeys(int(session_id) for session_id in session_ids if session_id is not None))
     summaries = {
         session_id: {
-            'session_state': None,
             'state_updated_at': None,
             'latest_log_at': None,
             'latest_turn_created_at': None,
@@ -391,7 +390,6 @@ def session_summaries(session_ids: list[int]) -> dict[int, dict]:
 
     states = SessionState.query.filter(SessionState.session_id.in_(ids)).all()
     for session_state in states:
-        summaries[int(session_state.session_id)]['session_state'] = session_state
         summaries[int(session_state.session_id)]['state_updated_at'] = session_state.updated_at
 
     log_rows = (
@@ -483,6 +481,18 @@ def session_continue_line(snapshot: dict, latest_narration: str) -> str | None:
     )
     place = str(location.get('name') or scene.get('name') or '').strip()
     return text_excerpt(f'{place} — {sentence}' if place else sentence, CONTINUE_LINE_MAX_LENGTH)
+
+
+def session_recap_line(snapshot: dict, continue_line: str | None) -> str:
+    """What a player reads as a session's story so far: its saved recap, else its continue line; '' when neither exists.
+
+    The rolling summary is the narrator's memory and is never shown to a player.
+    """
+
+    recap = snapshot.get('recap')
+    if isinstance(recap, str) and recap.strip():
+        return recap.strip()
+    return continue_line or ''
 
 
 def account_player_ids_by_campaign(
@@ -582,10 +592,8 @@ def session_payload(
 
     snapshot = session_snapshot(session_obj)
     summary = summary or session_summaries([session_obj.session_id]).get(session_obj.session_id, {})
-    session_state = summary.get('session_state')
     latest_activity = session_activity_at(session_obj.created_at, session_obj.updated_at, summary)
-    rolling_summary = session_state.rolling_summary if session_state else ''
-    recap = snapshot.get('recap') if isinstance(snapshot.get('recap'), str) else ''
+    continue_line = session_continue_line(snapshot, summary.get('latest_narration') or '')
     play_now = snapshot.get('playNow')
 
     return {
@@ -600,8 +608,8 @@ def session_payload(
         'latest_activity_at': latest_activity,
         'turn_count': int(summary.get('turn_count') or 0),
         'scene_title': session_scene_title(snapshot),
-        'summary_excerpt': text_excerpt(rolling_summary or recap, SESSION_SUMMARY_EXCERPT_MAX_LENGTH),
-        'continue_line': session_continue_line(snapshot, summary.get('latest_narration') or ''),
+        'summary_excerpt': text_excerpt(session_recap_line(snapshot, continue_line), SESSION_SUMMARY_EXCERPT_MAX_LENGTH),
+        'continue_line': continue_line,
         'imported': session_is_imported(snapshot),
         'play_now': isinstance(play_now, dict) and bool(play_now),
     }
@@ -727,6 +735,8 @@ def session_state_payload(
         raw_snapshot if isinstance(raw_snapshot, dict) else {},
         session_chapter_positions([session_obj.session_id]).get(session_obj.session_id, {}),
     )
+    # The rolling summary is the narrator's memory and is never shown at the
+    # table, so a state read always sends ``rolling_summary`` empty.
     if session_state is None:
         return {
             'session_id': session_obj.session_id,
@@ -756,7 +766,7 @@ def session_state_payload(
         **chapter_fields,
         'current_location': session_state.current_location,
         'current_quest': session_state.current_quest,
-        'rolling_summary': session_state.rolling_summary,
+        'rolling_summary': '',
         'active_segments': active_segments,
         'memory_snippets': safe_json_loads(session_state.memory_snippets, []),
         'state_snapshot': payload_snapshot,

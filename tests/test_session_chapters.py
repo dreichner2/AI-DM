@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import timedelta
+import re
 import threading
 
 from sqlalchemy import update
@@ -35,8 +36,9 @@ from aidm_server.services.session_chapters import (
 )
 from aidm_server.time_utils import utc_now
 from aidm_server.turn_coordinator import session_turn_coordinator
-from aidm_server.turn_events import SESSION_ENDED_EVENT, SESSION_STARTED_EVENT
+from aidm_server.turn_events import DM_RESPONSE_EVENT, SESSION_ENDED_EVENT, SESSION_STARTED_EVENT, record_turn_event
 from tests.helpers import seed_world_campaign_player_session
+from tests.test_flagship_adventure import table  # noqa: F401 - the Play Now table fixture
 
 NOW_ISO = '2026-11-10T12:00:00+00:00'
 TRANSIENT_KEYS = (
@@ -65,6 +67,8 @@ TRANSIENT_KEYS = (
     'lastUpdatedAt',
 )
 CHAPTER_CLOSED = 'Chapter closed. The adventure continues in the next chapter.'
+# A turn line of the narrator's rolling summary: ``T12 | P3: <action> | DM: <outcome>``.
+ROLLING_SUMMARY_TURN_LINE = re.compile(r'T\d+ \| P\d+: ')
 CHAPTER_UNSETTLED = 'Finish the current fight or roll before starting a new chapter.'
 
 
@@ -257,8 +261,9 @@ def test_chapter_snapshot_from_resets_combat_and_deep_copies_the_world():
 
 
 def test_chapter_recap_prefers_snapshot_recap_and_trims_on_a_sentence_boundary():
-    assert chapter_recap_text({'recap': '  The vault opened.  '}, 'Rolling summary.') == 'The vault opened.'
-    assert chapter_recap_text({'recap': '   '}, 'They reached the archive.') == 'They reached the archive.'
+    continue_line = 'Sunken Archive — They reached the archive.'
+    assert chapter_recap_text({'recap': '  The vault opened.  '}, continue_line) == 'The vault opened.'
+    assert chapter_recap_text({'recap': '   '}, continue_line) == continue_line
     assert chapter_recap_text({}, None) == ''
 
     sentence = 'The party crossed the drowned stacks and argued with the archivist. '
@@ -358,20 +363,40 @@ def test_continue_carries_the_world_into_the_next_chapter(client, app):
         assert safe_json_loads(closed_event.payload_json, {})['metadata']['kind'] == 'chapter_closed'
 
 
-def test_continue_uses_rolling_summary_when_previous_chapter_has_no_recap(client, app):
+def test_without_a_recap_the_next_chapter_recalls_the_place_and_the_last_narration(client, app):
     ids = _seed_chapter_one(
         app,
         customize=lambda snapshot: snapshot.pop('recap'),
-        rolling_summary='They bargained with the archivist.',
+        rolling_summary='T7 | P1: I bargain | DM: The archivist relents.',
     )
+    with app.app_context():
+        record_turn_event(
+            session_id=ids['session_id'],
+            campaign_id=ids['campaign_id'],
+            event_type=DM_RESPONSE_EVENT,
+            payload={'message': '*The archivist* sets down her lamp. "Ask, then."'},
+        )
+        db.session.commit()
 
     response = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id'], 'name': 'The Flooded Stacks'})
 
     assert response.status_code == 201
     payload = response.get_json()
-    assert payload['chapter_recap'] == 'They bargained with the archivist.'
+    previously = 'Sunken Archive — The archivist sets down her lamp.'
+    assert payload['chapter_recap'] == previously
+    assert _log_messages(app, payload['session_id']) == [f'**Chapter 2 begins.**\n\nPreviously: {previously}']
     with app.app_context():
         assert db.session.get(Session, payload['session_id']).name == 'The Flooded Stacks'
+
+
+def test_without_a_recap_or_narration_the_next_chapter_has_no_previously_line(client, app):
+    ids = _seed_chapter_one(app, customize=lambda snapshot: snapshot.pop('recap'), rolling_summary='T7 | P1: I wait')
+
+    response = client.post('/api/sessions/start', json={'campaign_id': ids['campaign_id']})
+
+    assert response.status_code == 201
+    assert response.get_json()['chapter_recap'] == ''
+    assert _log_messages(app, response.get_json()['session_id']) == ['**Chapter 2 begins.**']
 
 
 def test_continue_carries_campaign_pack_progress_rows(client, app):
@@ -794,3 +819,81 @@ def test_play_now_replay_opens_the_current_chapter(client, app):
     assert resumed.get_json()['session']['is_current'] is True
     assert resumed.get_json()['session']['chapter_number'] == 3
     assert _snapshot(app, chapter_three_id)['chapter']['previousSessionId'] == chapter_one_id
+
+
+def _player_view(table, session_id: int) -> dict:  # noqa: F811
+    response = table.client.get(f"/api/sessions/{session_id}/state?view=player&player_id={table.ids['player_id']}")
+    assert response.status_code == 200, response.get_json()
+    return response.get_json()
+
+
+def _start_next_chapter(table, continuity: str = 'continue') -> int:  # noqa: F811
+    response = table.client.post('/api/sessions/start', json={'campaign_id': table.ids['campaign_id'], 'continuity': continuity})
+    assert response.status_code == 201, response.get_json()
+    return response.get_json()['session_id']
+
+
+def test_a_continued_play_now_chapter_keeps_the_day_and_the_shops(table):  # noqa: F811
+    kit = table.buy('merchant_mara_counter', 'merchant_mara_counter_1', "a Healer's Kit")
+    assert (kit.gp, kit.items["Healer's Kit"]) == (-5, 1)
+    table.send(
+        'Arden Vale takes a short rest.',
+        {'kind': 'rest', 'source': 'scene_panel', 'rest_type': 'short_rest', 'hit_dice': 0},
+    )
+    before = _player_view(table, table.ids['session_id'])['state_snapshot']
+    assert before['clock']['label'] == 'Day 1 · Night'
+
+    chapter_two_id = _start_next_chapter(table)
+
+    after = _player_view(table, chapter_two_id)['state_snapshot']
+    assert after['clock'] == before['clock']
+    trade = {merchant['id']: merchant for merchant in after['currentScene']['merchants']}
+    assert trade == {merchant['id']: merchant for merchant in before['currentScene']['merchants']}
+    stock = {entry['stockId']: (entry['name'], entry['quantity']) for entry in trade['merchant_mara_counter']['stock']}
+    assert stock['merchant_mara_counter_0'] == ('Potion of Healing', 3)
+    assert stock['merchant_mara_counter_1'] == ("Healer's Kit", 0)
+
+
+def test_a_fresh_play_now_chapter_starts_the_day_and_the_shops_again(table):  # noqa: F811
+    table.buy('merchant_mara_counter', 'merchant_mara_counter_1', "a Healer's Kit")
+    table.send(
+        'Arden Vale takes a short rest.',
+        {'kind': 'rest', 'source': 'scene_panel', 'rest_type': 'short_rest', 'hit_dice': 0},
+    )
+
+    fresh = _player_view(table, _start_next_chapter(table, 'fresh'))['state_snapshot']
+
+    assert fresh['clock']['label'] == 'Day 1 · Evening'
+    trade = {merchant['id']: merchant for merchant in fresh['currentScene']['merchants']}
+    stock = {entry['stockId']: entry['quantity'] for entry in trade['merchant_mara_counter']['stock']}
+    assert stock['merchant_mara_counter_1'] == 1
+
+
+def test_the_next_play_now_chapter_opens_with_prose_and_never_the_rolling_summary(table):  # noqa: F811
+    table.act('inn_caravan_ledger', 'inspect', 'Caravan Ledger')
+    workspace = table.client.get(f"/api/campaigns/{table.ids['campaign_id']}/workspace").get_json()
+    chapter_one = next(item for item in workspace['sessions'] if item['session_id'] == table.ids['session_id'])
+    assert chapter_one['continue_line'].startswith('The Lantern Post Inn — ')
+    assert chapter_one['summary_excerpt'] == chapter_one['continue_line']
+
+    chapter_two_id = _start_next_chapter(table)
+
+    log = table.client.get(f'/api/sessions/{chapter_two_id}/log').get_json()['entries']
+    assert log[0]['message'] == f"**Chapter 2 begins.**\n\nPreviously: {chapter_one['continue_line']}"
+    with table.app.app_context():
+        rolling_summary = SessionState.query.filter_by(session_id=chapter_two_id).one().rolling_summary
+    first_line, *turn_lines = rolling_summary.splitlines()
+    assert ROLLING_SUMMARY_TURN_LINE.match(turn_lines[0])
+    # No player-facing read of either chapter carries the narrator's rolling summary.
+    reads = [
+        log,
+        table.client.get(f"/api/campaigns/{table.ids['campaign_id']}/workspace").get_json(),
+        _player_view(table, chapter_two_id),
+        _player_view(table, table.ids['session_id']),
+        table.client.get(f"/api/sessions/{chapter_two_id}/state").get_json(),
+        table.client.get(f"/api/sessions/{table.ids['session_id']}/recap").get_json(),
+        table.client.get(f"/api/sessions/{table.ids['session_id']}/chronicle").get_data(as_text=True),
+    ]
+    for read in map(str, reads):
+        assert first_line not in read
+        assert ROLLING_SUMMARY_TURN_LINE.search(read) is None, read

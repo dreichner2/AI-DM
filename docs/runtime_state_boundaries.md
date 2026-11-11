@@ -30,13 +30,12 @@ snapshot. Systems that need current play state should read it for:
 
 Each chapter of a campaign has its own snapshot. Starting the next chapter
 copies the world keys (scene, places and their saved scene states, NPCs, quests,
-flags, clues, factions, maps, handouts, lore, the campaign-pack mirror, content
-settings, Play Now metadata and the ledgers) into a new snapshot; the party
-mirror, combat, turn control, recovery gates, revision and audit bookkeeping,
-recaps and display metadata stay with the chapter that wrote them. The closed
-chapter becomes `ended` and read-only. `clock` and `merchants` are not in the
-carried list yet (a known defect): a continued chapter starts on day 1 in the
-morning and a pack campaign's merchants stop trading.
+flags, clues, factions, maps, handouts, lore, the campaign-pack mirror, the day
+clock, the merchants and their stock, content settings, Play Now metadata and
+the ledgers) into a new snapshot; the party mirror, combat, turn control,
+recovery gates, revision and audit bookkeeping, recaps and display metadata
+stay with the chapter that wrote them. The closed chapter becomes `ended` and
+read-only.
 
 Future live systems should use `Session.state_snapshot` unless they
 intentionally need authored source data, durable campaign-pack progress,

@@ -262,8 +262,6 @@ Known open items and decisions, in no particular order:
 - **Middle-earth example packs.** *Shadow over the Greenway* and *Shadow Under
   Eryn Luin* describe themselves as Middle-earth campaigns and use Tolkien's
   places and peoples; they need an IP review before a public host offers them.
-- `lethalDefeat` does not make defeat deadly in practice: a party left dying
-  wakes on its next action through the out-of-fight waking rule.
 - A new adventure from a bundled pack goes straight to hero creation; the
   ready-made heroes are offered only by the title's Play now.
 

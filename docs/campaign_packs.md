@@ -559,9 +559,9 @@ Checkpoint graph fields:
   failure never advances onto a terminal checkpoint: when the only way on is the
   ending, the checkpoint stays active so the party can try again. A party defeat
   (every hero down) fails a checkpoint through its `failWhen.encounterIds` only
-  when the encounter or its combat sets `lethalDefeat: true`; otherwise the party
-  wakes and the encounter can be fought again. Fleeing (`players_fled`) fails it
-  either way.
+  when the encounter or its combat sets `lethalDefeat: true`; either way the
+  party wakes at the end of the fight. Fleeing (`players_fled`) fails it either
+  way.
 - `terminal`: marks an end/finale checkpoint. Once reached it stays the active
   checkpoint with status `reached` (it never completes itself away), and the
   player projection carries `ending: {checkpointId, title, summary, text}` from
@@ -683,13 +683,15 @@ is given it as a line it must convey. From the Play Now finale:
   below half HP, their side has lost a member, or it is round 4 or later and
   they have been hurt. `"allowParley": true` lifts that from the first round
   (for an encounter meant to be talked down; the Play Now pack sets none).
-- When every hero is down the party is beaten and wakes later with 1 HP, the
-  encounter re-arms, and no checkpoint fails. `"lethalDefeat": true` skips that
-  recovery at the fight's end and lets the defeat fail the checkpoint that names
-  the encounter in `failWhen` (see [gameplay systems](gameplay_systems.md) for
-  what follows). Consequences authored under the `defeat` outcome still apply
-  when the party is beaten, so never set a story-ending flag there; the Play Now
-  finale has no `defeat` outcome, and a lost or fled fight never ends the story.
+- When every hero is down the party is beaten, never killed: at the end of the
+  fight it wakes later with 1 HP (the clock moves on one phase), the encounter
+  re-arms, and no checkpoint fails. `"lethalDefeat": true` only makes the defeat
+  decisive: it fails the checkpoint that names the encounter in `failWhen`, so
+  the story takes that checkpoint's failure route, and the party still wakes
+  (see [gameplay systems](gameplay_systems.md)). Consequences authored under the
+  `defeat` outcome still apply when the party is beaten, so never set a
+  story-ending flag there; the Play Now finale has no `defeat` outcome, and a
+  lost or fled fight never ends the story.
 
 ### Enemy names and condition durations
 

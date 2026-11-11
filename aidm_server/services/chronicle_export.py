@@ -16,12 +16,16 @@ from aidm_server.models import (
     CampaignPackSession,
     DmTurn,
     Session,
-    SessionLogEntry,
-    SessionState,
     TurnEvent,
     safe_json_loads,
 )
-from aidm_server.response_dtos import session_display_name
+from aidm_server.response_dtos import (
+    session_continue_line,
+    session_display_name,
+    session_recap_line,
+    session_snapshot,
+    session_summaries,
+)
 from aidm_server.services.campaign_pack_progress import PROGRESS_CHANGED_EVENT
 from aidm_server.time_utils import utc_now
 
@@ -473,29 +477,16 @@ def _session_subtitle(session_obj: Session) -> str:
 
 
 def _epilogue_text(sessions: list[Session]) -> str:
-    session_ids = [session_obj.session_id for session_obj in sessions]
-    if not session_ids:
-        return ''
+    """The latest session's story so far: its saved recap, else its continue line ('' when no session has either)."""
 
-    session_state = (
-        SessionState.query.filter(
-            SessionState.session_id.in_(session_ids),
-            SessionState.rolling_summary.isnot(None),
-        )
-        .order_by(SessionState.updated_at.desc(), SessionState.state_id.desc())
-        .first()
-    )
-    if session_state and _text(session_state.rolling_summary):
-        return _text(session_state.rolling_summary)
-
-    log_entries = (
-        SessionLogEntry.query.filter(SessionLogEntry.session_id.in_(session_ids))
-        .order_by(SessionLogEntry.timestamp.desc(), SessionLogEntry.id.desc())
-        .limit(5)
-        .all()
-    )
-    tail = [_text(entry.message) for entry in reversed(log_entries) if _text(entry.message)]
-    return '\n\n'.join(tail)
+    summaries = session_summaries([session_obj.session_id for session_obj in sessions])
+    for session_obj in reversed(sessions):
+        snapshot = session_snapshot(session_obj)
+        latest_narration = summaries[session_obj.session_id]['latest_narration']
+        text = session_recap_line(snapshot, session_continue_line(snapshot, latest_narration))
+        if text:
+            return text
+    return ''
 
 
 def _render_html(

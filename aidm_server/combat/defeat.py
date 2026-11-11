@@ -1,13 +1,15 @@
-"""A party that is beaten wakes later instead of dying, unless the fight is lethal.
+"""A party that is beaten wakes later instead of dying, whether or not the fight is lethal.
 
-When a combat ends with every present player character down (``objective_failed``)
-and neither the combat nor its pack encounter sets ``lethalDefeat``, the clock
-advances one phase, every hero who is not dead wakes with 1 HP (no longer
-dying, stable, unconscious or prone; death saves reset), the enemies leave
-the scene, and the pack encounter is re-armed so its trigger can fire again.
-The encounter's ``defeat`` outcome is recorded (and pays nothing) by the
-ordinary combat-end reward transaction, which does not use up the
-encounter's once-only success rewards.
+When a combat ends with every present player character down (``objective_failed``),
+the clock advances one phase, every hero who is not dead wakes with 1 HP (no
+longer dying, stable, unconscious or prone; death saves reset), the enemies
+leave the scene, and the pack encounter is re-armed so its trigger can fire
+again. The encounter's ``defeat`` outcome is recorded (and pays nothing) by the
+ordinary combat-end reward transaction, which does not use up the encounter's
+once-only success rewards. ``lethalDefeat`` on the combat or its encounter
+changes none of this: it only lets the defeat fail the checkpoint that names
+the encounter, so the story takes that checkpoint's failure route
+(``campaign_pack_progress``).
 
 Outside a fight the same waking applies at once, whatever put the heroes down:
 when no combat is active and every present hero is down, each one who is not
@@ -49,14 +51,8 @@ def _present_heroes(combat: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _lethal(state: dict[str, Any], combat: dict[str, Any]) -> bool:
-    flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
-    encounter = catalog_record(state, 'encounters', flags.get('campaignPackEncounterId'))
-    return flags.get('lethalDefeat') is True or encounter.get('lethalDefeat') is True
-
-
 def party_is_beaten(state: dict[str, Any]) -> bool:
-    """The combat has ended with every present hero down, and it is not lethal."""
+    """The combat has ended with every present hero down and the party has not woken yet."""
 
     combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
@@ -67,7 +63,6 @@ def party_is_beaten(state: dict[str, Any]) -> bool:
         and not isinstance(flags.get('defeatRecovery'), dict)
         and bool(heroes)
         and all(is_down(hero) for hero in heroes)
-        and not _lethal(state, combat)
     )
 
 

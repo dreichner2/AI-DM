@@ -30,6 +30,8 @@ def test_session_recap_get_returns_stored_snapshot_recap(client, app):
     assert payload['source'] == 'state_snapshot'
     assert payload['generated'] is False
     assert payload['state']['current_location'] == 'Moon Gate'
+    # The narrator's rolling summary is never sent to the table.
+    assert payload['state']['rolling_summary'] == ''
 
 
 def test_session_recap_get_builds_player_facing_recap_from_recent_completed_turns(client, app):

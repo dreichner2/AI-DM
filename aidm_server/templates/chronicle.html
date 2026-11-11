@@ -200,7 +200,7 @@
     <section class="chapter epilogue" data-chapter-source="epilogue">
       <h2>Epilogue</h2>
       {% if include_director_metadata %}
-      <p class="chapter-meta">Stored session summary or recent line-log tail</p>
+      <p class="chapter-meta">Saved recap, or the place and the latest narration</p>
       {% endif %}
       {% for paragraph in epilogue %}
       <p>{% for line in paragraph %}{{ line }}{% if not loop.last %}<br>{% endif %}{% endfor %}</p>

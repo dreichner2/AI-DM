@@ -80,12 +80,11 @@ def test_session_list_items_are_summaries_with_every_field(client, app):
             {
                 'currentScene': {'name': 'The Drowned Lantern ' + 'and its long cellar ' * 10},
                 'playNow': {'source': 'play_now'},
+                'recap': 'The party ' + 'searched the inn. ' * 40,
                 'ledgerPadding': LARGE_SNAPSHOT_PADDING,
             }
         )
-        db.session.add(
-            SessionState(session_id=ids['session_id'], rolling_summary='The party ' + 'searched the inn. ' * 40)
-        )
+        db.session.add(SessionState(session_id=ids['session_id'], rolling_summary='T1 | P1: search | DM: the inn'))
         db.session.commit()
 
     listed = client.get(f"/api/sessions/campaigns/{ids['campaign_id']}/sessions").get_json()['sessions'][0]
@@ -97,6 +96,7 @@ def test_session_list_items_are_summaries_with_every_field(client, app):
     assert listed['is_current'] is True
     assert listed['scene_title'].startswith('The Drowned Lantern')
     assert len(listed['scene_title']) <= 120
+    # The saved recap, cut to fit; never the narrator's rolling summary.
     assert listed['summary_excerpt'].startswith('The party searched the inn.')
     assert len(listed['summary_excerpt']) <= 280
     assert listed['summary_excerpt'].endswith('…')

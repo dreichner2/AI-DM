@@ -1229,7 +1229,8 @@ def test_campaign_workspace_endpoint_returns_aggregate_payload(client, app):
         'segments': None,
     }
     assert payload['sessions'][0]['turn_count'] == 1
-    assert payload['sessions'][0]['summary_excerpt'] == 'The party found the Ash Gate.'
+    # No saved recap and no narration event: the rolling summary is never shown instead.
+    assert payload['sessions'][0]['summary_excerpt'] == ''
     assert 'state_snapshot' not in payload['sessions'][0]
     assert payload['limits']['sessions'] == 30
     assert payload['players'][0]['player_id'] == ids['player_id']

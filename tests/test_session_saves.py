@@ -104,10 +104,14 @@ def test_archive_import_is_ended_unplayable_and_touches_no_character(client, app
     state = client.get(f"/api/sessions/{payload['session_id']}/state").get_json()
     log = client.get(f"/api/sessions/{payload['session_id']}/log").get_json()['entries']
     assert state['state_snapshot']['playerCharacters'][0]['inventory']['currency']['gp'] == 100
-    assert state['rolling_summary'] == 'The party opened the Ash Gate.'
+    # The narrator's memory is imported but never read back to the table.
+    assert state['rolling_summary'] == ''
     assert [entry['message'] for entry in log] == ['The gate opens.']
 
     with app.app_context():
+        assert SessionState.query.filter_by(session_id=payload['session_id']).one().rolling_summary == (
+            'The party opened the Ash Gate.'
+        )
         archive_row = db.session.get(Session, payload['session_id'])
         assert session_playability_error(archive_row).error_code == 'session_ended'
     blocked = client.patch(
@@ -164,14 +168,37 @@ def test_restore_starts_a_new_current_chapter_from_the_saved_world(client, app):
     assert snapshot['chapter']['restoredFrom']['sessionId'] == ids['session_id']
     assert 'imported' not in snapshot
     assert 'playerCharacters' not in snapshot
-    assert state['rolling_summary'] == 'The party opened the Ash Gate.'
+    assert state['rolling_summary'] == ''
     assert state['current_location'] == 'Ash Gate'
+    with app.app_context():
+        assert SessionState.query.filter_by(session_id=payload['session_id']).one().rolling_summary == (
+            'The party opened the Ash Gate.'
+        )
 
     previous = client.get(f"/api/sessions/{ids['session_id']}/state").get_json()
     assert previous['status'] == 'ended'
     log = client.get(f"/api/sessions/{payload['session_id']}/log").get_json()['entries']
     assert log[0]['message'].startswith('**Chapter 2 begins.**')
     assert RESTORED_MID_SCENE_MESSAGE not in [entry['message'] for entry in log]
+
+
+def test_a_restored_chapter_recalls_the_save_in_prose_never_its_rolling_summary(client, app):
+    ids = _seed_saved_chapter(app)
+    document = _saved_document(client, app, ids)
+    assert (document['session']['continue_line'], document['state_snapshot'].get('recap')) == (None, None)
+
+    def restored_welcome(save: dict) -> str:
+        response = client.post('/api/sessions/import', json={**save, 'mode': 'restore'})
+        assert response.status_code == 201, response.get_json()
+        return client.get(f"/api/sessions/{response.get_json()['session_id']}/log").get_json()['entries'][0]['message']
+
+    # Neither a saved recap nor narration: no Previously line, though the save holds a rolling summary.
+    assert document['session_state']['rolling_summary'] == 'The party opened the Ash Gate.'
+    assert restored_welcome(document) == '**Chapter 2 begins.**'
+    narrated = {**document, 'session': {**document['session'], 'continue_line': 'Ash Gate — The gate opens.'}}
+    assert restored_welcome(narrated) == '**Chapter 3 begins.**\n\nPreviously: Ash Gate — The gate opens.'
+    recapped = {**narrated, 'state_snapshot': {**narrated['state_snapshot'], 'recap': 'The party forced the Ash Gate.'}}
+    assert restored_welcome(recapped) == '**Chapter 4 begins.**\n\nPreviously: The party forced the Ash Gate.'
 
 
 def test_restore_keeps_characters_unless_asked_and_then_restores_their_saved_state(client, app):
@@ -383,6 +410,8 @@ def test_export_gives_players_their_own_character_and_the_projected_snapshot(tmp
             ),
         )
         db.session.add(session_obj)
+        db.session.flush()
+        db.session.add(SessionState(session_id=session_obj.session_id, rolling_summary='T4 | P1: NARRATOR_MEMORY'))
         db.session.commit()
         ids = {
             'campaign_id': campaign.campaign_id,
@@ -431,12 +460,16 @@ def test_export_gives_players_their_own_character_and_the_projected_snapshot(tmp
     assert 'PEER_PRIVATE_ITEM' not in json.dumps(document)
     assert 'DM_ONLY_LEDGER' not in json.dumps(document)
     assert 'DM_ONLY_NPC' not in json.dumps(document)
+    # The narrator's memory stays out of a player's save and state; only an operator's save keeps it.
+    assert (document['session_state']['rolling_summary'], player_state.get_json()['rolling_summary']) == ('', '')
+    assert 'NARRATOR_MEMORY' not in json.dumps(document)
 
     assert admin_export.status_code == 200
     admin_document = admin_export.get_json()
     assert [character['player_id'] for character in admin_document['characters']] == [ids['own_id'], ids['peer_id']]
     assert 'DM_ONLY_LEDGER' in json.dumps(admin_document['state_snapshot'])
     assert 'DM_ONLY_NPC' in json.dumps(admin_document['state_snapshot'])
+    assert admin_document['session_state']['rolling_summary'] == 'T4 | P1: NARRATOR_MEMORY'
 
     assert player_restore.status_code == 409
     assert player_restore.get_json()['error_code'] == 'save_not_restorable'

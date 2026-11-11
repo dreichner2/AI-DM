@@ -300,7 +300,7 @@ def _restore_chapter_locked(campaign: Campaign, document: dict[str, Any]) -> Ses
     saved_state = _record(document.get('session_state'))
     recap_text = session_chapters.chapter_recap_text(
         saved_snapshot,
-        _optional_text(saved_state.get('rolling_summary'), max_length=MAX_IMPORTED_TEXT_LENGTH),
+        _optional_text(_record(document.get('session')).get('continue_line'), max_length=MAX_IMPORTED_TEXT_LENGTH),
     )
     snapshot = session_chapters.chapter_snapshot_from(
         saved_snapshot,

@@ -2886,9 +2886,7 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 )
                 state_flags['campaignPackCompletedEncounterIds'] = completed_encounter_ids
                 flags['campaignPackCompletedEncounterIds'] = completed_encounter_ids
-            # Nobody makes death saves outside combat: the dying are left stable,
-            # unless a lethal encounter's party defeat leaves them dying.
-            lethal_defeat = flags.get('lethalDefeat') is True and end_reason == 'objective_failed'
+            # Nobody makes death saves outside combat: the dying are left stable.
             stabilized: list[str] = []
             for participant in combat.get('participants') or []:
                 if not isinstance(participant, dict):
@@ -2897,7 +2895,7 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                     participant['currentIntent'] = None
                     if 'morale' in participant:
                         participant['morale'] = min(int_or_default(participant.get('morale'), default=0), 10)
-                elif not lethal_defeat and vitality.is_player_character(participant) and vitality.stabilize(participant):
+                elif vitality.is_player_character(participant) and vitality.stabilize(participant):
                     stabilized.append(_text(participant.get('id')))
                     _sync_player_actor_from_combat_participant(next_state, participant)
             ended_spell_effects = _end_encounter_spell_effects(next_state, combat)
