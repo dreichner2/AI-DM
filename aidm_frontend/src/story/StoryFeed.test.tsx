@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionBoardProps } from '../SessionBoard'
 import type { JsonRecord, TimelineEntry } from '../types'
 import { makeBoardFixture } from './preview/fixtures'
@@ -53,7 +53,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(container.querySelector('.story-narration')).toHaveTextContent(longNarration)
@@ -69,7 +69,7 @@ describe('StoryFeed', () => {
           sendPending: true,
         })}
         textSize="large"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(container.querySelector('.narrative-dialogue')).toHaveTextContent('“Stay close,”')
@@ -86,7 +86,7 @@ describe('StoryFeed', () => {
           currentResponseEntry: entry('log-2', 'dm', 'DM', '"Stay close," Mira says. It\'s cold.', { turn_id: 1 }),
         })}
         textSize="large"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(container.querySelector('.story-caret')).toBeNull()
@@ -115,7 +115,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     const changes = screen.getByRole('list', { name: 'What changed' })
@@ -144,7 +144,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     const breakdown = container.querySelector('.story-roll-breakdown')
@@ -168,7 +168,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(screen.getByText('sending…')).toBeInTheDocument()
@@ -182,7 +182,7 @@ describe('StoryFeed', () => {
       <StoryFeed
         board={board({ turnRows: [entry('log-1', 'dm', 'DM', 'Rain.', { turn_id: 1, persistence_status: 'failed' })] })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(screen.getByText('not saved')).toBeInTheDocument()
@@ -198,7 +198,7 @@ describe('StoryFeed', () => {
       submitTurnQuality,
       reportBadTurn,
     })
-    const { rerender } = render(<StoryFeed board={props} textSize="default" onExitToTitle={vi.fn()} />)
+    const { rerender } = render(<StoryFeed board={props} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
 
     expect(screen.getAllByRole('button', { name: 'Rate this turn' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Rate this turn' }))
@@ -216,7 +216,7 @@ describe('StoryFeed', () => {
       <StoryFeed
         board={{ ...props, ratedTurnQualityIds: new Set([3]), reportedBadTurnIds: new Set([3]) }}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(screen.getByText('Feedback sent.')).toBeInTheDocument()
@@ -226,18 +226,18 @@ describe('StoryFeed', () => {
   it('offers the empty session a way to begin, then waits for the story', () => {
     const onStartAdventure = vi.fn()
     const turnRows = [entry('log-1', 'system', 'System', 'Welcome to the table.', { kind: 'session_welcome' })]
-    const { rerender } = render(<StoryFeed board={board({ turnRows, onStartAdventure })} textSize="default" onExitToTitle={vi.fn()} />)
+    const { rerender } = render(<StoryFeed board={board({ turnRows, onStartAdventure })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
     expect(screen.getByText('The Lantern Road')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Begin the adventure' }))
     expect(onStartAdventure).toHaveBeenCalledTimes(1)
 
-    rerender(<StoryFeed board={board({ turnRows, onStartAdventure, sendPending: true })} textSize="default" onExitToTitle={vi.fn()} />)
+    rerender(<StoryFeed board={board({ turnRows, onStartAdventure, sendPending: true })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
     expect(screen.queryByRole('button', { name: 'Begin the adventure' })).toBeNull()
     expect(screen.getByText('The story is beginning')).toBeInTheDocument()
   })
 
   it('shows shimmering lines while the session loads', () => {
-    const { container } = render(<StoryFeed board={board({ sessionLoading: true })} textSize="default" onExitToTitle={vi.fn()} />)
+    const { container } = render(<StoryFeed board={board({ sessionLoading: true })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
     expect(screen.getByLabelText('Loading the story')).toBeInTheDocument()
     expect(container.querySelector('.story-empty')).toBeNull()
   })
@@ -252,7 +252,7 @@ describe('StoryFeed', () => {
           turnRows: [entry('log-9', 'dm', 'DM', 'Rain.', { turn_id: 9 })],
         })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Earlier in the story' }))
@@ -271,7 +271,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(screen.getByText('Chapter 3')).toBeInTheDocument()
@@ -289,7 +289,7 @@ describe('StoryFeed', () => {
           ],
         })}
         textSize="default"
-        onExitToTitle={vi.fn()}
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
       />,
     )
     expect(screen.getByText('The Drowned Lantern')).toBeInTheDocument()
@@ -307,7 +307,7 @@ describe('StoryFeed', () => {
       },
       downloadSessionChronicle: vi.fn(async () => {}),
     })
-    render(<StoryFeed board={ended} textSize="default" onExitToTitle={onExitToTitle} />)
+    render(<StoryFeed board={ended} textSize="default" onExitToTitle={onExitToTitle} onOpenBeatTarget={vi.fn()} />)
 
     const epilogue = screen.getByRole('region', { name: 'The Road Remembers' })
     expect(within(epilogue).getByText('The end')).toHaveClass('story-label')
@@ -321,12 +321,183 @@ describe('StoryFeed', () => {
     fireEvent.click(within(epilogue).getByRole('button', { name: 'Keep playing' }))
     expect(screen.queryByRole('region', { name: 'The Road Remembers' })).not.toBeInTheDocument()
     cleanup()
-    render(<StoryFeed board={ended} textSize="default" onExitToTitle={onExitToTitle} />)
+    render(<StoryFeed board={ended} textSize="default" onExitToTitle={onExitToTitle} onOpenBeatTarget={vi.fn()} />)
     expect(screen.queryByRole('region', { name: 'The Road Remembers' })).not.toBeInTheDocument()
   })
 
   it('has no epilogue before the ending', () => {
-    render(<StoryFeed board={board({ turnRows: [entry('log-2', 'dm', 'DM', 'Rain.', { turn_id: 1 })] })} textSize="default" onExitToTitle={vi.fn()} />)
+    render(<StoryFeed board={board({ turnRows: [entry('log-2', 'dm', 'DM', 'Rain.', { turn_id: 1 })] })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
     expect(screen.queryByText('The end')).not.toBeInTheDocument()
   })
 })
+
+describe('StoryFeed beats from the server', () => {
+  it('shows exactly the turn’s beats, opens the Journal, Map or Settings from them, and reads a check on its roll', () => {
+    const onOpenBeatTarget = vi.fn()
+    const { container } = render(
+      <StoryFeed
+        board={board({
+          turnRows: [
+            entry('log-1', 'player', 'Ysolde Marrow', 'I roll a d20+3 for investigation: 11 = 14', { turn_id: 4, dc_hint: '10' }),
+            entry('log-2', 'dm', 'DM', 'The ledger lists erased names.', {
+              turn_id: 4,
+              storyBeats: [
+                { kind: 'check', text: 'Investigation check: 14 — success' },
+                { kind: 'clue', text: 'Clue — The erased caravan ledger' },
+                { kind: 'place', text: 'New place on the map — The Old North Road' },
+                { kind: 'item_gained', text: 'Taken — Caravan Strongbox Key' },
+                { kind: 'hint', text: 'Scripted narrator — use the suggestions, or connect an AI narrator in Settings for free-form play' },
+                { kind: 'omen', text: 'The bell rings again' },
+              ],
+            }),
+            entry('log-3', 'system', 'System', 'State updated', {
+              turn_id: 4,
+              state_log: { lines: [{ status: 'applied', changeType: 'scene.interactable.action', message: 'scene.interactable.action update applied' }] },
+            }),
+          ],
+        })}
+        textSize="default"
+        onExitToTitle={vi.fn()}
+        onOpenBeatTarget={onOpenBeatTarget}
+      />,
+    )
+
+    expect(container.querySelector('.story-roll-check')).toHaveTextContent('Investigation check: 14 — success')
+    expect(container.querySelector('.story-roll-outcome')).toBeNull()
+    const changes = screen.getByRole('list', { name: 'What changed' })
+    expect(within(changes).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'Clue — The erased caravan ledger',
+      'New place on the map — The Old North Road',
+      'Taken — Caravan Strongbox Key',
+      'Scripted narrator — use the suggestions, or connect an AI narrator in Settings for free-form play',
+      'The bell rings again',
+    ])
+    expect(screen.getByRole('log', { name: 'Session timeline' })).not.toHaveTextContent(/update applied|scene\.interactable/)
+
+    fireEvent.click(within(changes).getByRole('button', { name: 'Clue — The erased caravan ledger' }))
+    fireEvent.click(within(changes).getByRole('button', { name: 'New place on the map — The Old North Road' }))
+    fireEvent.click(within(changes).getByRole('button', { name: /^Scripted narrator/ }))
+    expect(onOpenBeatTarget.mock.calls).toEqual([['journal'], ['map'], ['settings']])
+    expect(within(changes).queryByRole('button', { name: 'Taken — Caravan Strongbox Key' })).toBeNull()
+    expect(within(changes).getByText('The bell rings again')).toHaveClass('story-turn-note')
+  })
+
+  it('without server beats, keeps the client’s change lines but never a raw change type', () => {
+    render(
+      <StoryFeed
+        board={board({
+          turnRows: [
+            entry('log-1', 'dm', 'DM', 'You search the bench.', { turn_id: 4 }),
+            entry('log-2', 'system', 'System', 'scene.interactable.action update applied', {
+              turn_id: 4,
+              state_log: { lines: [{ status: 'applied', changeType: 'scene.interactable.action', message: 'scene.interactable.action update applied' }] },
+            }),
+          ],
+        })}
+        textSize="default"
+        onExitToTitle={vi.fn()}
+        onOpenBeatTarget={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('log', { name: 'Session timeline' })).not.toHaveTextContent(/update applied|scene\.interactable/)
+    expect(screen.queryByRole('list', { name: 'What changed' })).toBeNull()
+  })
+})
+
+/** Lays the feed out in jsdom: beats 100px tall in a 400px window, scrolled by scrollTop. */
+function layOutFeed() {
+  const LINE = 100
+  const VIEW = 400
+  const feed = () => document.querySelector<HTMLElement>('.story-feed')
+  const rect = (top: number, height: number) =>
+    ({ top, bottom: top + height, left: 0, right: 800, width: 800, height, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+  const geometry = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const container = feed()
+    if (this === container) return rect(0, VIEW)
+    const beats = container ? [...container.querySelectorAll('[data-beat-key]')] : []
+    const index = beats.indexOf(this)
+    return index < 0 ? rect(0, 0) : rect(index * LINE - (container?.scrollTop ?? 0), LINE)
+  })
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('story-feed') ? this.querySelectorAll('[data-beat-key]').length * LINE + 120 : 0
+    },
+  })
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('story-feed') ? VIEW : 0
+    },
+  })
+  const scrollTo = vi.fn(function (this: HTMLElement, options?: ScrollToOptions | number) {
+    if (typeof options === 'object') this.scrollTop = options.top ?? this.scrollTop
+  })
+  const originalScrollTo = Element.prototype.scrollTo
+  Element.prototype.scrollTo = scrollTo as unknown as typeof Element.prototype.scrollTo
+  return {
+    scrollTo,
+    restore() {
+      geometry.mockRestore()
+      delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight
+      delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight
+      Element.prototype.scrollTo = originalScrollTo
+    },
+  }
+}
+
+describe('StoryFeed following the reader', () => {
+  const history = Array.from({ length: 8 }, (_, index) =>
+    entry(`log-${index + 1}`, 'dm', 'DM', `Narration ${index + 1}.`, { turn_id: index + 1 }),
+  )
+  const feedFor = (turnRows: TimelineEntry[], currentResponseEntry: TimelineEntry | null = null) => (
+    <StoryFeed
+      board={board({ turnRows, currentResponseEntry })}
+      textSize="default"
+      onExitToTitle={vi.fn()}
+      onOpenBeatTarget={vi.fn()}
+    />
+  )
+  let layout: ReturnType<typeof layOutFeed>
+
+  beforeEach(() => {
+    layout = layOutFeed()
+  })
+
+  afterEach(() => layout.restore())
+
+  it('pins the feed to the viewer’s own action from wherever they were, and follows its narration', () => {
+    const { rerender } = render(feedFor(history))
+    const log = screen.getByRole('log', { name: 'Session timeline' })
+    fireEvent.wheel(log)
+    log.scrollTop = 0
+    fireEvent.scroll(log)
+    layout.scrollTo.mockClear()
+
+    const own = entry('pending-1', 'player', 'Ysolde Marrow', 'Read the caravan ledger.', { client_message_id: 'c-1', persistence_status: 'pending' })
+    rerender(feedFor([...history, own]))
+    // Nine beats: the bottom of the feed, where the action is the latest line.
+    expect(layout.scrollTo).toHaveBeenLastCalledWith({ top: 9 * 100 + 120 - 400, behavior: 'smooth' })
+    expect(screen.queryByRole('button', { name: 'New — jump to latest' })).toBeNull()
+
+    rerender(feedFor([...history, own], entry('stream-9', 'dm', 'DM', 'The ledger…', { turn_id: 9 }, true)))
+    // The narration streams in under the action, which settles just below the top.
+    expect(layout.scrollTo).toHaveBeenLastCalledWith({ top: 8 * 100 - 96, behavior: 'smooth' })
+    expect(screen.queryByRole('button', { name: 'New — jump to latest' })).toBeNull()
+  })
+
+  it('offers the jump to the latest line only to a reader who scrolled up by hand', () => {
+    const { rerender } = render(feedFor(history))
+    const log = screen.getByRole('log', { name: 'Session timeline' })
+    log.scrollTop = 0
+    fireEvent.scroll(log)
+
+    rerender(feedFor([...history, entry('log-9', 'dm', 'DM', 'Someone else’s turn.', { turn_id: 9 })]))
+    expect(screen.queryByRole('button', { name: 'New — jump to latest' })).toBeNull()
+
+    fireEvent.wheel(log)
+    rerender(feedFor([...history, entry('log-9', 'dm', 'DM', 'Someone else’s turn.', { turn_id: 9 }), entry('log-10', 'dm', 'DM', 'And another.', { turn_id: 10 })]))
+    expect(screen.getByRole('button', { name: 'New — jump to latest' })).toBeInTheDocument()
+  })
+})
+

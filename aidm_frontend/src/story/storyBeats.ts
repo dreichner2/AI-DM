@@ -14,6 +14,7 @@ export type StoryGap = 'none' | 'tight' | 'speaker' | 'turn'
 
 export type StoryChangeTone = 'default' | 'fail' | 'success' | 'gold' | 'arcane'
 export type StoryChangeGlyph =
+  | 'dice'
   | 'heart'
   | 'coin'
   | 'star'
@@ -29,6 +30,24 @@ export type StoryChange = {
   text: string
   tone: StoryChangeTone
   glyph: StoryChangeGlyph
+}
+
+/** Where a server beat leads when tapped: the drawer's Journal or Map, or the Settings sheet. */
+export type StoryTurnBeatTarget = 'journal' | 'map' | 'settings'
+
+/**
+ * One of the server's `storyBeats` for a turn, shown exactly as sent. `chip`
+ * beats have an icon; `hint` is a quiet label-style line; any kind the client
+ * does not know is a plain quiet line, so later kinds need no client change.
+ */
+export type StoryTurnBeat = {
+  kind: string
+  text: string
+  refId: string
+  look: 'chip' | 'hint' | 'plain'
+  tone: StoryChangeTone
+  glyph: StoryChangeGlyph | null
+  target: StoryTurnBeatTarget | null
 }
 
 export type StoryRollMode = 'normal' | 'advantage' | 'disadvantage'
@@ -81,11 +100,18 @@ export type ActionBeat = BeatBase & {
   delivery: StoryActionDelivery
   own: boolean
 }
-export type RollBeat = BeatBase & { kind: 'roll'; entry: TimelineEntry; roll: StoryRoll }
+export type RollBeat = BeatBase & {
+  kind: 'roll'
+  entry: TimelineEntry
+  roll: StoryRoll
+  /** The server's check beat for this roll ("Investigation check: 14 — success"), shown instead of the client's outcome. */
+  checkText?: string
+}
 export type ChangesBeat = BeatBase & { kind: 'changes'; entry: TimelineEntry; changes: StoryChange[] }
+export type TurnBeatsBeat = BeatBase & { kind: 'turnBeats'; entry: TimelineEntry; beats: StoryTurnBeat[] }
 export type NoticeBeat = BeatBase & { kind: 'notice'; entry: TimelineEntry; text: string }
 
-export type StoryBeat = ChapterBeat | NarrationBeat | ActionBeat | RollBeat | ChangesBeat | NoticeBeat
+export type StoryBeat = ChapterBeat | NarrationBeat | ActionBeat | RollBeat | ChangesBeat | TurnBeatsBeat | NoticeBeat
 
 export type BuildStoryBeatsOptions = {
   selectedPlayerName?: string | null
@@ -102,7 +128,8 @@ const BOOKKEEPING_RE =
 const CANONICAL_ROLL_RE =
   /\broll(?:s|ed)?\s+(?:a\s+|an\s+)?(d\d+)\s*(?:([+\-−])\s*(\d+))?(?:\s+for\s+([^:\n]+?))?\s*:\s*(\d+)(?:\s*\(([^)]*)\))?(?:\s+[+\-−]?\d*d\d+\s*\(-?\d+\))*(?:\s*\+\s*Bardic Inspiration\s+(d\d+)\s*\((\d+)\))?\s*=\s*(-?\d+)/i
 const RESOLVED_ROLL_RE = /^\**\s*(?:check|roll) resolved\**\s*:.*?\b(?:with roll|result)\s+(-?\d+)/i
-const DC_RE = /(?:dc\s*)?(\d{1,2})/i
+// A target number only when the server states one: "DC 13", or a hint that leads with it ("13 (roll mod +4…)").
+const DC_RE = /\bDC\s*(\d{1,2})\b|^\s*(\d{1,2})(?![\d.]|\s*[-–])/i
 const CONDITION_RE =
   /\b(?:spell|slot|condition|concentrat|cantrip|blinded|charmed|deafened|exhaust|frightened|grappled|incapacitated|invisible|paralyzed|petrified|poisoned|prone|restrained|stunned|unconscious)/
 const LEADING_LABEL_RE =/^([A-Za-z][\w .'-]{0,31}?):\s+(?=\S)/
@@ -111,6 +138,58 @@ const BARE_WORD_RE = /^[a-z]+$/
 const ATTACK_RULE_TYPES = new Set(['attack', 'spell_attack'])
 const DEATH_SAVE_CHANGE = 'combat.death_save'
 const DEATH_SAVE_RE = /^death saving throw:\s*(.+?)\s+rolled\s+(\d{1,2})\s*\(([^)]*)\)/i
+/** Engine wording that must never reach the Story view: a dotted change type, or "update applied". */
+const RAW_CHANGE_TYPE_RE = /\b[a-z][a-z_]*\.[a-z_]+\b/
+const UPDATE_APPLIED_RE = /\bupdate applied\b/i
+
+type TurnBeatStyle = Pick<StoryTurnBeat, 'tone' | 'glyph' | 'target'>
+
+const TURN_BEAT_STYLES: Record<string, TurnBeatStyle> = {
+  check: { tone: 'default', glyph: 'dice', target: null },
+  clue: { tone: 'default', glyph: 'scroll', target: 'journal' },
+  objective_complete: { tone: 'success', glyph: 'scroll', target: 'journal' },
+  objective_new: { tone: 'default', glyph: 'scroll', target: 'journal' },
+  place: { tone: 'default', glyph: 'place', target: 'map' },
+  item_gained: { tone: 'gold', glyph: 'pack', target: null },
+  item_lost: { tone: 'default', glyph: 'pack', target: null },
+  coins: { tone: 'gold', glyph: 'coin', target: null },
+  xp: { tone: 'gold', glyph: 'star', target: null },
+  level: { tone: 'gold', glyph: 'star', target: null },
+  condition: { tone: 'arcane', glyph: 'spark', target: null },
+  hp: { tone: 'default', glyph: 'heart', target: null },
+  death_save: { tone: 'default', glyph: 'dice', target: null },
+  defeat: { tone: 'fail', glyph: 'swords', target: null },
+  ending: { tone: 'success', glyph: 'scroll', target: null },
+}
+
+/** The raw engine wording a client-built line may carry; such lines are never shown. */
+export function hasRawChangeType(text: string) {
+  return RAW_CHANGE_TYPE_RE.test(text) || UPDATE_APPLIED_RE.test(text)
+}
+
+function turnBeatTone(kind: string, text: string, fallback: StoryChangeTone): StoryChangeTone {
+  if (kind === 'hp') return /^took\b/i.test(text) ? 'fail' : /^healed\b/i.test(text) ? 'success' : fallback
+  if (kind === 'coins' && /^[−-]/.test(text)) return 'default'
+  return fallback
+}
+
+function turnBeat(value: JsonRecord): StoryTurnBeat | null {
+  const kind = stringValue(value.kind).trim()
+  const text = stringValue(value.text).trim()
+  if (!text) return null
+  const refId = stringValue(value.refId)
+  if (kind === 'hint') return { kind, text, refId, look: 'hint', tone: 'default', glyph: null, target: 'settings' }
+  const style = TURN_BEAT_STYLES[kind]
+  if (!style) return { kind, text, refId, look: 'plain', tone: 'default', glyph: null, target: null }
+  return { kind, text, refId, look: 'chip', ...style, tone: turnBeatTone(kind, text, style.tone) }
+}
+
+/** The server's `storyBeats` on an entry; null when the entry carries none (an older server). */
+export function entryTurnBeats(entry: TimelineEntry): StoryTurnBeat[] | null {
+  const raw = entry.metadata.storyBeats
+  if (!Array.isArray(raw)) return null
+  return raw.filter(isRecord).map(turnBeat).filter((beat): beat is StoryTurnBeat => beat !== null)
+}
 
 function metadataRecord(metadata: JsonRecord, key: string): JsonRecord | null {
   const value = metadata[key]
@@ -138,11 +217,13 @@ function numberList(value: unknown): number[] {
 
 function dcValue(...values: unknown[]): number | null {
   for (const value of values) {
-    const direct = numberValue(value)
-    if (direct !== null && direct > 0) return direct
+    if (typeof value === 'number') {
+      if (Number.isFinite(value) && value > 0) return value
+      continue
+    }
     const text = stringValue(value)
     const match = text ? DC_RE.exec(text) : null
-    if (match) return Number(match[1])
+    if (match) return Number(match[1] ?? match[2])
   }
   return null
 }
@@ -364,13 +445,17 @@ export function deathSaveRolls(entry: TimelineEntry): StoryRoll[] {
   })
 }
 
-/** "What changed" lines of a state-update entry, as chips. Hidden lines and death saves (roll lines) are skipped. */
+/**
+ * "What changed" lines of a state-update entry, as chips: the fallback when the
+ * server sends no story beats. Hidden lines, death saves (roll lines) and any
+ * line carrying raw engine wording are skipped.
+ */
 export function storyChanges(entry: TimelineEntry): StoryChange[] {
   return visibleStateLines(entry).flatMap((line): StoryChange[] => {
     if (isDeathSaveLine(line) && DEATH_SAVE_RE.test(stringValue(line.message))) return []
     const message = stringValue(line.message).trim()
     const text = chipText(message)
-    if (!text || BARE_WORD_RE.test(text)) return []
+    if (!text || BARE_WORD_RE.test(text) || hasRawChangeType(message)) return []
     const style =
       stringValue(line.status).toLowerCase() === 'rejected'
         ? { tone: 'fail' as const, glyph: 'mark' as const }
@@ -393,6 +478,30 @@ function isBookkeeping(entry: TimelineEntry) {
   return BOOKKEEPING_RE.test(entry.text.trim())
 }
 
+/** A state-update entry: its changes are shown as chips (or as the turn's story beats), never as its text. */
+function isStateUpdate(entry: TimelineEntry) {
+  return metadataRecord(entry.metadata, 'state_log') !== null
+}
+
+/**
+ * Each turn's story beats from the server, from every entry of the turn that
+ * carries them (the narration, its realtime completion or the state update),
+ * in the server's order without repeats. A turn listed here with no beats
+ * still shows nothing derived on the client.
+ */
+function turnBeatsByTurn(entries: TimelineEntry[]) {
+  const byTurn = new Map<number, StoryTurnBeat[]>()
+  entries.forEach((entry) => {
+    const turnId = turnIdOf(entry)
+    const beats = turnId === null ? null : entryTurnBeats(entry)
+    if (turnId === null || !beats) return
+    const known = byTurn.get(turnId) ?? []
+    const seen = new Set(known.map((beat) => `${beat.kind}|${beat.text}`))
+    byTurn.set(turnId, [...known, ...beats.filter((beat) => !seen.has(`${beat.kind}|${beat.text}`))])
+  })
+  return byTurn
+}
+
 function actionDelivery(entry: TimelineEntry): StoryActionDelivery {
   const status = persistenceStatus(entry)
   if (status === 'failed') return 'failed'
@@ -410,6 +519,7 @@ function gapBefore(beat: PendingBeat, previous: PendingBeat | undefined): StoryG
   if (!previous) return 'none'
   switch (beat.kind) {
     case 'changes':
+    case 'turnBeats':
       return 'tight'
     case 'action':
       if (previous.kind === 'action' || previous.kind === 'roll') {
@@ -460,6 +570,22 @@ export function buildStoryBeats(
     }
   })
 
+  // The server's beats for each turn. A turn's first check beat reads out its
+  // roll; the rest follow the narration (or stand where the turn's state update
+  // does when it has none).
+  const serverBeats = turnBeatsByTurn(entries)
+  const rollTurnIds = new Set(
+    [...rolls.keys()].filter((entry) => entry.role === 'player').map(turnIdOf).filter((turnId): turnId is number => turnId !== null),
+  )
+  const checkTexts = new Map<number, string>()
+  serverBeats.forEach((turnBeats, turnId) => {
+    const check = rollTurnIds.has(turnId) ? turnBeats.find((beat) => beat.kind === 'check') : undefined
+    if (!check) return
+    checkTexts.set(turnId, check.text)
+    serverBeats.set(turnId, turnBeats.filter((beat) => beat !== check))
+  })
+  const emittedTurnBeats = new Set<number>()
+
   const beats: PendingBeat[] = []
   const usedKeys = new Map<string, number>()
   const uniqueKey = (base: string) => {
@@ -469,6 +595,13 @@ export function buildStoryBeats(
   }
   let sawNarration = false
   let sawStory = false
+
+  const pushTurnBeats = (turnId: number, entry: TimelineEntry) => {
+    const turnBeats = serverBeats.get(turnId)
+    if (!turnBeats || emittedTurnBeats.has(turnId)) return
+    emittedTurnBeats.add(turnId)
+    if (turnBeats.length) beats.push({ kind: 'turnBeats', key: uniqueKey(`beats-${turnId}`), entry, beats: turnBeats })
+  }
 
   entries.forEach((entry) => {
     const turnId = turnIdOf(entry)
@@ -489,6 +622,7 @@ export function buildStoryBeats(
       })
       sawNarration = true
       sawStory = true
+      if (turnId !== null && !entry.streaming) pushTurnBeats(turnId, entry)
       return
     }
 
@@ -525,7 +659,14 @@ export function buildStoryBeats(
           })
         }
       }
-      beats.push({ kind: 'roll', key: uniqueKey(`roll-${turnId ?? entry.id}`), entry, roll: finalRoll })
+      const checkText = turnId !== null && entry.role === 'player' ? checkTexts.get(turnId) : undefined
+      beats.push({
+        kind: 'roll',
+        key: uniqueKey(`roll-${turnId ?? entry.id}`),
+        entry,
+        roll: finalRoll,
+        ...(checkText ? { checkText } : {}),
+      })
       sawStory = true
       return
     }
@@ -546,6 +687,15 @@ export function buildStoryBeats(
       return
     }
 
+    if (turnId !== null && serverBeats.has(turnId)) {
+      // The server's beats replace everything the client would derive for this turn.
+      if (!loggedDmTurnIds.has(turnId)) pushTurnBeats(turnId, entry)
+      if (isStateUpdate(entry)) {
+        sawStory = true
+        return
+      }
+    }
+
     const deathSaves = deathSaveRolls(entry)
     deathSaves.forEach((deathSave, index) => {
       beats.push({ kind: 'roll', key: uniqueKey(`death-${entry.id}-${index}`), entry, roll: deathSave })
@@ -563,9 +713,9 @@ export function buildStoryBeats(
       beats.push({ kind: 'chapter', key: uniqueKey(`chapter-${entry.id}`), entry, chapterLabel: chapterLabel(entry) })
       return
     }
-    if (isBookkeeping(entry)) return
+    if (isBookkeeping(entry) || isStateUpdate(entry)) return
     const text = entry.text.replace(/\*\*/g, '').trim()
-    if (!text) return
+    if (!text || hasRawChangeType(text)) return
     beats.push({ kind: 'notice', key: uniqueKey(`note-${entry.id}`), entry, text })
   })
 

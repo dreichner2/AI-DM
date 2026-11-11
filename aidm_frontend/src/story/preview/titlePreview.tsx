@@ -58,9 +58,7 @@ const RESUME: TitleResume = {
   chapterNumber: 3,
   scene: 'The Lantern Post Inn',
   lastPlayedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-  recap:
-    'Mara Reedwake swore the caravan came in empty. Tovin Bell’s ledger says otherwise, and the last name in it, ' +
-    'half scratched away, looks a great deal like yours.',
+  continueLine: 'The Lantern Post Inn — At dusk, an empty caravan rolls into the Lantern Post.',
 }
 
 const heroesStatus: TitleHeroesStatus =
@@ -85,7 +83,10 @@ export function TitlePreview() {
         onSelectHero={setSelectedHeroId}
         resume={previewState === 'returning' ? RESUME : null}
         safeMode={params.get('safe') === '1'}
-        onPlayNow={() => setPending(true)}
+        onPlayNow={({ fresh }) => {
+          console.info(`[title preview] play now${fresh ? ' (fresh)' : ''}`)
+          setPending(true)
+        }}
         onContinue={log('continue')}
         onCreateCampaign={log('create campaign')}
         onOpenAdventures={log('all adventures')}

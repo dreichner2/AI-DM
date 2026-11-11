@@ -318,6 +318,7 @@
 .story-shell .story-sheet .story-quest-list > li { display: flex; flex-direction: column; gap: 4px; }
 .story-shell .story-sheet .story-quest-title { font-family: var(--story-prose); font-size: 1.2rem; line-height: 1.25; color: var(--story-ink); }
 .story-shell .story-sheet .story-quest-summary { font-size: 0.88rem; line-height: 1.45; color: var(--story-ink-soft); }
+.story-shell .story-sheet .story-quest-stage { margin-top: 4px; }
 .story-shell .story-sheet .story-objective-list { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 0; padding: 0; list-style: none; }
 .story-shell .story-sheet .story-quest-objective {
   display: flex;
@@ -373,6 +374,7 @@
 .story-shell .story-sheet .story-journal-list li { font-size: 0.9rem; line-height: 1.4; }
 .story-shell .story-sheet .story-journal-name { font-family: var(--story-prose); font-size: 1.04rem; color: var(--story-ink); }
 .story-shell .story-sheet .story-journal-detail { font-size: 0.8rem; color: var(--story-muted); }
+.story-shell .story-sheet .story-journal-summary { display: block; font-size: 0.84rem; line-height: 1.45; color: var(--story-ink-soft); }
 .story-shell .story-sheet .story-memory-list li {
   font-family: var(--story-prose);
   font-size: 1rem;

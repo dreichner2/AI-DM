@@ -316,3 +316,107 @@ describe('death saves', () => {
     expect(beats[0]).toMatchObject({ roll: { name: 'Wren', total: 20, outcome: 'success', natural: 'twenty' } })
   })
 })
+
+describe('server story beats', () => {
+  const stateUpdate = (id: string, turnId: number, lines: Array<[string, string]>, metadata: JsonRecord = {}) =>
+    entry(id, 'system', 'System', `State updated:\n${lines.map(([, message]) => `- ${message}`).join('\n')}`, {
+      turn_id: turnId,
+      state_log: { lines: lines.map(([changeType, message]) => ({ status: 'applied', changeType, message })) },
+      ...metadata,
+    })
+
+  it('renders exactly the turn’s beats after its narration, and nothing derived from its changes', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'player', 'Liora', 'Read the caravan ledger.', { turn_id: 4 }),
+      entry('log-2', 'dm', 'DM', 'The ledger is a list of erased names.', {
+        turn_id: 4,
+        storyBeats: [
+          { kind: 'clue', text: 'Clue — The erased caravan ledger', refId: 'clue_erased_caravan_ledger' },
+          { kind: 'objective_complete', text: 'Objective complete — Read the ledger' },
+          { kind: 'place', text: 'New place on the map — The Old North Road' },
+          { kind: 'coins', text: '−5 gp' },
+        ],
+      }),
+      stateUpdate('log-3', 4, [['scene.interactable.action', 'scene.interactable.action update applied'], ['currency.remove', 'Lost 5 gp.']]),
+    ])
+
+    expect(kinds(beats)).toEqual(['action', 'narration', 'turnBeats'])
+    const turn = beats[2]
+    if (turn.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ kind, text, look, glyph, target, tone }) => ({ kind, text, look, glyph, target, tone }))).toEqual([
+      { kind: 'clue', text: 'Clue — The erased caravan ledger', look: 'chip', glyph: 'scroll', target: 'journal', tone: 'default' },
+      { kind: 'objective_complete', text: 'Objective complete — Read the ledger', look: 'chip', glyph: 'scroll', target: 'journal', tone: 'success' },
+      { kind: 'place', text: 'New place on the map — The Old North Road', look: 'chip', glyph: 'place', target: 'map', tone: 'default' },
+      { kind: 'coins', text: '−5 gp', look: 'chip', glyph: 'coin', target: null, tone: 'default' },
+    ])
+  })
+
+  it('reads beats from the state update too, places them after the narration, and shows a turn with none as nothing', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'The bell rings three times.', { turn_id: 5 }),
+      stateUpdate('log-2', 5, [['inventory.add', 'Took the key.']], { storyBeats: [{ kind: 'item_gained', text: 'Taken — Caravan Strongbox Key' }] }),
+      entry('log-3', 'dm', 'DM', 'Nothing more stirs.', { turn_id: 6, storyBeats: [] }),
+      stateUpdate('log-4', 6, [['combat.death_save', 'Death saving throw: Liora rolled 12 (success); 1 success, 0 failures.'], ['xp.add', 'Gained 25 XP.']]),
+    ])
+    expect(kinds(beats)).toEqual(['narration', 'turnBeats', 'narration'])
+    expect(beats[1]).toMatchObject({ kind: 'turnBeats', beats: [{ kind: 'item_gained', text: 'Taken — Caravan Strongbox Key' }] })
+  })
+
+  it('reads a check beat out on the roll it settles and keeps it out of the chips', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'player', 'Liora', 'I roll a d20+3 for investigation: 11 = 14', { turn_id: 7, dc_hint: '10' }),
+      entry('log-2', 'dm', 'DM', 'Under the bench, a key.', {
+        turn_id: 7,
+        storyBeats: [
+          { kind: 'check', text: 'Investigation check: 14 — success' },
+          { kind: 'item_gained', text: 'Taken — Caravan Strongbox Key' },
+        ],
+      }),
+    ])
+    expect(kinds(beats)).toEqual(['roll', 'narration', 'turnBeats'])
+    expect(beats[0]).toMatchObject({ kind: 'roll', checkText: 'Investigation check: 14 — success' })
+    expect(beats[2]).toMatchObject({ beats: [{ kind: 'item_gained' }] })
+  })
+
+  it('shows a hint as a quiet Settings line and any unknown kind as plain text, dropping empty beats', () => {
+    const [, turn] = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'The road waits.', {
+        turn_id: 8,
+        storyBeats: [
+          { kind: 'hint', text: 'Scripted narrator — use the suggestions, or connect an AI narrator in Settings for free-form play' },
+          { kind: 'weather', text: 'Rain sets in' },
+          { kind: 'xp', text: '' },
+          { kind: 'hp', text: 'Took 7 damage' },
+        ],
+      }),
+    ])
+    if (turn.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ kind, look, glyph, target, tone }) => ({ kind, look, glyph, target, tone }))).toEqual([
+      { kind: 'hint', look: 'hint', glyph: null, target: 'settings', tone: 'default' },
+      { kind: 'weather', look: 'plain', glyph: null, target: null, tone: 'default' },
+      { kind: 'hp', look: 'chip', glyph: 'heart', target: null, tone: 'fail' },
+    ])
+  })
+
+  it('never shows a raw change type: a turn whose only change is scene.interactable.action shows nothing', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'You search the bench.', { turn_id: 9 }),
+      stateUpdate('log-2', 9, [['scene.interactable.action', 'scene.interactable.action update applied']]),
+      entry('log-3', 'system', 'System', 'combat.move update applied', { turn_id: 10 }),
+    ])
+    expect(kinds(beats)).toEqual(['narration'])
+    expect(JSON.stringify(beats)).not.toMatch(/scene\.interactable|update applied|combat\.move/)
+    expect(storyChanges(stateUpdate('log-4', 11, [['scene.item.add', 'Found the key.'], ['combat.move', 'combat.move update applied']]))).toEqual([
+      { text: 'Found the key', tone: 'gold', glyph: 'pack' },
+    ])
+  })
+
+  it('takes a DC only when the server states one', () => {
+    const roll = (metadata: JsonRecord) =>
+      rollFromEntry(entry('log-1', 'player', 'Liora', 'I roll a d20+3 for investigation: 11 = 14', metadata))
+    expect(roll({ dc_hint: 'roll mod +4, INT 16 mod +3' })?.dc).toBeNull()
+    expect(roll({ dc_hint: 'DC 13' })?.dc).toBe(13)
+    expect(roll({ dc_hint: '12 (roll mod +4)' })?.dc).toBe(12)
+    expect(roll({})?.dc).toBeNull()
+  })
+})

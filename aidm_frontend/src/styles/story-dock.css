@@ -178,7 +178,8 @@
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  width: 66px;
+  /* Room for a name on two lines ("Burning-hand / lanternman") rather than an ellipsis. */
+  width: 92px;
 }
 .story-shell .story-combatant-disc {
   position: relative;
@@ -244,14 +245,20 @@
   box-shadow: 0 0 0 1.5px var(--story-bg);
 }
 .story-shell .story-combatant-name {
+  display: -webkit-box;
   max-width: 100%;
   overflow: hidden;
   font-size: 0.62rem;
   font-weight: 560;
+  line-height: 1.25;
   letter-spacing: 0.06em;
-  text-overflow: ellipsis;
+  text-align: center;
   text-transform: uppercase;
-  white-space: nowrap;
+  overflow-wrap: break-word;
+  hyphens: auto;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   color: var(--story-muted);
 }
 .story-shell .story-combatant[data-current] .story-combatant-name { color: var(--story-ink); }
@@ -259,6 +266,7 @@
   margin-top: -4px;
   font-size: 0.6rem;
   letter-spacing: 0.06em;
+  text-align: center;
   color: var(--dock-quiet);
 }
 .story-shell .story-combatant[data-vitality] .story-combatant-disc { --ring: var(--story-faint); }
@@ -341,7 +349,7 @@
 .story-shell .story-ribbon-choices {
   grid-area: choices;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 2px 18px;
   min-width: 0;
@@ -355,14 +363,6 @@
   font-weight: 600;
   letter-spacing: 0.1em;
   color: var(--story-muted);
-}
-/* Between groups of actions: attacks | spells and abilities | movement | other. */
-.story-shell .story-ribbon-gap {
-  flex: none;
-  align-self: center;
-  width: 1px;
-  height: 18px;
-  background: var(--story-hairline-strong);
 }
 .story-shell .story-ribbon-back { display: inline-flex; align-items: center; gap: 2px; flex: none; font-size: 0.82rem; }
 .story-shell .story-end-turn { grid-area: end; justify-self: end; }
@@ -700,6 +700,27 @@
 .story-shell .story-tray-freeform { display: flex; flex-direction: column; gap: 14px; }
 .story-shell .story-tray-object { display: flex; flex-direction: column; gap: 2px; }
 .story-shell .story-tray-object-heading { display: flex; align-items: baseline; gap: 12px; }
+/* An object's offered actions: links; one that cannot be taken is dimmed, its reason beneath on hover or focus. */
+.story-shell .story-tray-offers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 22px;
+}
+.story-shell .story-tray-offer { display: inline-flex; flex-direction: column; max-width: 100%; }
+.story-shell .story-tray-offer .story-link { align-self: flex-start; min-height: 32px; font-size: 0.92rem; }
+.story-shell .story-tray-offer[data-blocked] .story-link { color: var(--story-muted); cursor: not-allowed; }
+.story-shell .story-tray-offer-reason {
+  display: none;
+  /* As wide as its link, so showing it never moves the links beside it. */
+  width: 0;
+  min-width: 100%;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--story-muted);
+}
+.story-shell .story-tray-offer:hover .story-tray-offer-reason,
+.story-shell .story-tray-offer:focus-within .story-tray-offer-reason { display: block; }
 .story-shell .story-tray-admin { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 22px; }
 .story-shell .story-tray-admin .story-field { min-width: 200px; }
 /* What a spell, ability or item does, in one quiet line. */
@@ -833,8 +854,7 @@
   .story-shell .story-tray-aside,
   .story-shell .story-ribbon-back { min-height: 40px; }
   .story-shell .story-economy { gap: 4px 10px; }
-  .story-shell .story-ribbon-choices { flex-wrap: nowrap; }
-  .story-shell .story-combatant { width: 50px; }
+  .story-shell .story-combatant { width: 78px; }
 
   /* The tray becomes a bottom sheet. */
   .story-shell .story-tray {

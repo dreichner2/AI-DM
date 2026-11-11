@@ -42,7 +42,7 @@ type ResumeChapter = {
   chapterNumber: number | null
   scene: string | null
   lastPlayedAt: string | null
-  recap: string | null
+  continueLine: string | null
 }
 
 type UsePlayNowOnboardingOptions = {
@@ -157,17 +157,16 @@ function currentChapterSession(sessions: SessionSummary[]) {
   return sessions.find((session) => session.is_current) ?? sessions[0] ?? null
 }
 
+// The rolling summary is never shown on the title screen: only the server's continue line.
 function resumeChapterFromWorkspace(campaignId: number, workspace: CampaignWorkspace): ResumeChapter {
   const session = currentChapterSession(workspace.sessions ?? [])
-  // A chapter with no turns yet has nothing to recap; its summary is only the import note.
-  const summary = session && session.turn_count > 0 ? text(session.summary_excerpt) : ''
   return {
     campaignId,
     sessionId: session?.session_id ?? null,
     chapterNumber: session?.chapter_number ?? null,
     scene: text(session?.scene_title) || text(workspace.campaign?.location) || null,
     lastPlayedAt: session?.latest_activity_at ?? null,
-    recap: text(session?.chapter_recap) || summary || null,
+    continueLine: text(session?.continue_line) || null,
   }
 }
 
@@ -334,7 +333,8 @@ export function usePlayNowOnboarding({
   // Without the hero list the server's default hero plays, exactly as before heroes were choosable.
   const playNowCharacterId = heroLibrary.status === 'ready' ? selectedHeroId : null
 
-  const playNowFromTitleScreen = useCallback(async () => {
+  // `fresh` always starts a new ready-made adventure; the first Play now sends nothing.
+  const playNowFromTitleScreen = useCallback(async ({ fresh = false }: { fresh?: boolean } = {}) => {
     if (playNowPendingRef.current) return
     const hostedGuestPlayNow = authRequired === true && !hostedAccessReady
     playNowPendingRef.current = true
@@ -346,7 +346,10 @@ export function usePlayNowOnboarding({
         auth,
         {
           method: 'POST',
-          body: JSON.stringify(playNowCharacterId ? { character_id: playNowCharacterId } : {}),
+          body: JSON.stringify({
+            ...(playNowCharacterId ? { character_id: playNowCharacterId } : {}),
+            ...(fresh ? { fresh: true } : {}),
+          }),
         },
       )
       if (hostedGuestPlayNow && !payload.account_session) {
@@ -532,7 +535,7 @@ export function usePlayNowOnboarding({
         chapterNumber: resumeChapterForCampaign?.chapterNumber ?? null,
         scene: resumeChapterForCampaign?.scene ?? (text(resumeCampaign.location) || null),
         lastPlayedAt: resumeChapterForCampaign?.lastPlayedAt ?? campaignActivityAt(resumeCampaign),
-        recap: resumeChapterForCampaign?.recap ?? null,
+        continueLine: resumeChapterForCampaign?.continueLine ?? null,
       }
     : null
 
@@ -545,7 +548,7 @@ export function usePlayNowOnboarding({
     onSelectHero: selectTitleHero,
     resume,
     safeMode,
-    onPlayNow: () => void playNowFromTitleScreen(),
+    onPlayNow: (options) => void playNowFromTitleScreen(options),
     onContinue: continueFromTitleScreen,
     onCreateCampaign: createCampaignFromTitleScreen,
     onOpenAdventures: openAdventuresFromTitleScreen,

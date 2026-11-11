@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import {
   Backpack,
-  Clapperboard,
   Coins,
   Compass,
   Dices,
@@ -11,6 +10,7 @@ import {
   Plus,
   Quote,
   Sparkles,
+  Swords,
   Users,
   Zap,
   type LucideIcon,
@@ -35,43 +35,49 @@ import {
 } from '../gameActions'
 import type {
   GameplayCapabilityControl,
+  GameplayInteractableControl,
   GameplayItemControl,
   GameplayNarratedSpell,
+  GameplayObjectAction,
   GameplaySpellControl,
   GameplayTarget,
   GameplayTradeGood,
 } from '../gameplayControlState'
-import type { WorldMerchantStockEntry } from '../gameSelectors'
+import type { CombatLegalAction, WorldMerchantStockEntry } from '../gameSelectors'
 import type { SessionBoardProps } from '../SessionBoard'
-import type { ActivePlayer, TurnControlMode } from '../types'
+import type { ActivePlayer } from '../types'
 import {
   buySubmission,
   capabilitySubmission,
   capabilityTarget,
+  combatActionSubmission,
   itemUseSubmission,
   objectActionSubmission,
+  pickupSubmission,
   restSubmission,
   selectedHealingAmount,
   sellSubmission,
   spellCastSubmission,
   type ActionSubmission,
 } from './actionIntents'
+import { combatTargetLabel } from './combatLabels'
 import { CoinGlyph } from './glyphs'
+import { objectChoices } from './storySuggestions'
 import { coinLabel, copperValue, sellOffer, tradeLineKey, tradeRefusals, type Coins as CoinAmounts } from './trade'
 import { useEdgeFades } from './useEdgeFades'
 
 export type TraySection =
   | 'speak'
-  | 'roll'
+  | 'combat'
+  | 'scene'
   | 'magic'
   | 'abilities'
   | 'items'
   | 'trade'
+  | 'roll'
   | 'interact'
-  | 'scene'
   | 'emote'
   | 'ooc'
-  | 'director'
 
 /** Runs `run` once the composer state satisfies `ready` (see useStagedComposerAction). */
 export type StageComposerAction = (
@@ -81,8 +87,11 @@ export type StageComposerAction = (
 
 type StoryActionTrayProps = {
   board: SessionBoardProps
-  canUseOperatorTools: boolean
+  /** Someone besides the viewer is connected: Emote and Out of character are offered. */
+  othersConnected: boolean
   section: TraySection
+  /** The spell Magic opens at (chosen on the combat ribbon). */
+  initialSpellId?: string
   onSectionChange: (section: TraySection) => void
   /** The merchant the Trade section shows (the first open one when unset). */
   tradeMerchantId: string
@@ -99,16 +108,16 @@ type StoryActionTrayProps = {
 
 const SECTION_META: Record<TraySection, { label: string; icon: LucideIcon; mode?: ComposerMode }> = {
   speak: { label: 'Speak / act', icon: MessageCircle, mode: 'action' },
-  roll: { label: 'Roll', icon: Dices },
+  combat: { label: 'Combat', icon: Swords },
+  scene: { label: 'Scene', icon: Compass },
   magic: { label: 'Magic', icon: Sparkles },
   abilities: { label: 'Abilities', icon: Zap },
   items: { label: 'Items', icon: Backpack },
   trade: { label: 'Trade', icon: Coins },
+  roll: { label: 'Roll', icon: Dices },
   interact: { label: 'Interact', icon: Users },
-  scene: { label: 'Scene', icon: Compass },
   emote: { label: 'Emote', icon: Drama, mode: 'emote' },
   ooc: { label: 'Out of character', icon: Quote, mode: 'ooc' },
-  director: { label: 'Director', icon: Clapperboard },
 }
 
 const TRAY_DICE = ['d20', ...DICE_OPTIONS.filter((die) => die !== 'd20')]
@@ -116,11 +125,6 @@ const ROLL_MODES: Array<{ value: RollMode; label: string }> = [
   { value: 'normal', label: 'Normal' },
   { value: 'advantage', label: 'Advantage' },
   { value: 'disadvantage', label: 'Disadvantage' },
-]
-const TURN_MODES: Array<{ value: TurnControlMode; label: string }> = [
-  { value: 'free', label: 'Free' },
-  { value: 'spotlight', label: 'Spotlight' },
-  { value: 'structured', label: 'Structured' },
 ]
 
 const CASTING_TIME_LABELS: Record<string, string> = {
@@ -206,8 +210,9 @@ function PoolPips({ name, current, max }: { name: string; current: number; max: 
  */
 export function StoryActionTray({
   board,
-  canUseOperatorTools,
+  othersConnected,
   section,
+  initialSpellId,
   onSectionChange,
   tradeMerchantId,
   onTradeMerchantChange,
@@ -230,8 +235,9 @@ export function StoryActionTray({
   const consumables = controls.items ?? []
   const merchants = board.worldState.merchants ?? []
   const [spellId, setSpellId] = useState(
-    () => (castableSpells.find((spell) => spell.available) ?? castableSpells[0])?.id ?? '',
+    () => initialSpellId ?? (castableSpells.find((spell) => spell.available) ?? castableSpells[0])?.id ?? '',
   )
+  const [combatTargetingId, setCombatTargetingId] = useState('')
   const [spellTargets, setSpellTargets] = useState<string[]>([])
   const [castLevels, setCastLevels] = useState<Record<string, number>>({})
   const [freeformSpell, setFreeformSpell] = useState(false)
@@ -284,18 +290,20 @@ export function StoryActionTray({
         ? 'Choose a character first.'
         : ''
 
+  const combatBundle = board.combatState.active
+    ? board.combatState.legalActionBundles.find((bundle) => bundle.playerId === board.playerId) ?? null
+    : null
   const sections: TraySection[] = [
     'speak',
-    'roll',
-    'magic',
-    ...(controls.capabilities.length ? ['abilities' as const] : []),
-    ...(composer.itemOptions.length || consumables.length ? ['items' as const] : []),
-    ...(merchants.length ? ['trade' as const] : []),
-    ...(composer.interactionTargets.length ? ['interact' as const] : []),
+    ...(combatBundle ? ['combat' as const] : []),
     'scene',
-    'emote',
-    'ooc',
-    ...(canUseOperatorTools ? ['director' as const] : []),
+    ...(controls.spells.length || narratedSpells.length ? ['magic' as const] : []),
+    ...(controls.capabilities.length ? ['abilities' as const] : []),
+    'items',
+    ...(merchants.length ? ['trade' as const] : []),
+    'roll',
+    'interact',
+    ...(othersConnected ? ['emote' as const, 'ooc' as const] : []),
   ]
   const contentSections = sections.filter((candidate) => !SECTION_META[candidate].mode)
   const activeSection = contentSections.includes(section) ? section : contentSections[0]
@@ -888,6 +896,7 @@ export function StoryActionTray({
     const otherItems = composer.itemOptions
       .map((item, index) => ({ item, index }))
       .filter(({ item }) => !item.id || !consumableIds.has(item.id))
+    if (!consumables.length && !otherItems.length) return <p className="story-tray-note">You carry nothing.</p>
     return (
       <>
         {consumables.length ? (
@@ -1009,7 +1018,9 @@ export function StoryActionTray({
     onDone()
   }
 
-  const renderInteract = () => (
+  const renderInteract = () => !composer.interactionTargets.length ? (
+    <p className="story-tray-note">There is no one here to turn to.</p>
+  ) : (
     <>
       <TrayGroup label="How">
         {INTERACTION_TYPE_OPTIONS.map((option) => (
@@ -1040,41 +1051,122 @@ export function StoryActionTray({
   )
 
   /* ---- Scene ---- */
-  const renderScene = () => (
-    <>
-      {controls.interactables.map((object) => (
-        <div key={object.id} className="story-tray-object">
-          <div className="story-tray-object-heading">
-            <span className="story-tray-row-name">{object.name}</span>
-            {object.states.length ? <span className="story-tray-row-meta">{object.states.join(' · ')}</span> : null}
-          </div>
-          <div className="story-chip-row" role="group" aria-label={`${object.name} actions`}>
-            {object.actions.map((action) => {
-              const blocked = mechanicsBusy || !object.available || !action.available
-              const reason = blocked
-                ? mechanicsBusyReason || object.reason || action.reason || 'Not available right now.'
-                : ''
-              const key = `object-${object.id}-${action.id}`
-              return (
-                <button
-                  key={action.id}
-                  type="button"
-                  className="story-chip"
-                  {...blockedProps(reason, key)}
-                  onClick={() => {
-                    if (!reason) submitTyped(objectActionSubmission(controls.actorName, object, action))
-                  }}
-                >
-                  {action.label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      ))}
-      {renderRest()}
-    </>
+  /**
+   * One offered action: a link when it can be taken; dimmed, with the server's
+   * reason beneath on hover or focus (and as its description), when it cannot.
+   */
+  const renderOffer = (key: string, label: string, reason: string, take: () => void) => (
+    <span key={key} className="story-tray-offer" data-blocked={reason ? '' : undefined}>
+      <button
+        type="button"
+        className="story-link"
+        aria-disabled={reason ? true : undefined}
+        aria-description={reason || undefined}
+        onClick={() => {
+          if (!reason) take()
+        }}
+      >
+        {label}
+      </button>
+      {reason ? <span className="story-tray-offer-reason" aria-hidden="true">{reason}</span> : null}
+    </span>
   )
+
+  /** The server's offered actions (done ones omitted), or only Examine from an older server. */
+  const sceneOffers = (object: GameplayInteractableControl): GameplayObjectAction[] =>
+    object.offered ? object.actions.filter((action) => !action.done) : objectChoices(object)
+
+  const renderScene = () => {
+    const loose = board.worldState.sceneItems.filter((item) => item.id && item.takeLabel)
+    const objects = controls.interactables
+      .map((object) => ({ object, offers: sceneOffers(object) }))
+      .filter(({ offers }) => offers.length)
+    return (
+      <>
+        {loose.length ? (
+          <div className="story-tray-object" role="group" aria-label="Lying here">
+            <span className="story-label" aria-hidden="true">Lying here</span>
+            <div className="story-tray-offers">
+              {loose.map((item) =>
+                renderOffer(`take-${item.id}`, item.takeLabel ?? '', worldActionReason, () =>
+                  submitTyped(pickupSubmission(item, item.takeLabel ?? '')),
+                ),
+              )}
+            </div>
+          </div>
+        ) : null}
+        {objects.map(({ object, offers }) => (
+          <div key={object.id} className="story-tray-object">
+            <div className="story-tray-object-heading">
+              <span className="story-tray-row-name">{object.name}</span>
+              {object.states.length ? <span className="story-tray-row-meta">{object.states.join(' · ')}</span> : null}
+            </div>
+            <div className="story-tray-offers" role="group" aria-label={`${object.name} actions`}>
+              {offers.map((action) =>
+                renderOffer(
+                  `${object.id}-${action.id}`,
+                  action.label,
+                  action.available ? mechanicsBusyReason : action.reason || 'Not possible right now.',
+                  () => submitTyped(objectActionSubmission(controls.actorName, object, action)),
+                ),
+              )}
+            </div>
+          </div>
+        ))}
+        {renderRest()}
+      </>
+    )
+  }
+
+  /* ---- Combat ---- */
+  const renderCombat = () => {
+    if (!combatBundle) return null
+    const choices = combatBundle.actions.filter(
+      (action) => action.available && action.type !== 'end_turn' && action.id !== 'combat.end_turn',
+    )
+    const take = (action: CombatLegalAction, target: CombatLegalAction['targets'][number] | null) => {
+      const submission = combatActionSubmission(combatBundle.actorName, action, target)
+      if (submission && submitTyped(submission)) setCombatTargetingId('')
+    }
+    if (!choices.length) return <p className="story-tray-note">Nothing more you can do this turn.</p>
+    return (
+      <ul className="story-tray-list" aria-label="Combat actions">
+        {choices.map((action) => {
+          const selected = action.id === combatTargetingId
+          return (
+            <li key={action.id} data-selected={selected || undefined}>
+              <button
+                type="button"
+                className="story-tray-row"
+                aria-expanded={action.requiresTarget ? selected : undefined}
+                aria-disabled={mechanicsBusyReason ? true : undefined}
+                title={mechanicsBusyReason || undefined}
+                onClick={() => {
+                  if (mechanicsBusyReason) return
+                  if (action.requiresTarget) setCombatTargetingId(selected ? '' : action.id)
+                  else take(action, null)
+                }}
+              >
+                <span className="story-tray-row-name">{action.label}</span>
+                {action.description ? <span className="story-tray-row-summary">{action.description}</span> : null}
+              </button>
+              {selected ? (
+                <div className="story-tray-detail">
+                  <TrayGroup label={`${action.label} target`} heading="Target">
+                    {action.targets.filter((target) => target.available).map((target) => (
+                      <button key={target.id} type="button" className="story-chip" onClick={() => take(action, target)}>
+                        {combatTargetLabel(board.combatState, target)}
+                      </button>
+                    ))}
+                  </TrayGroup>
+                </div>
+              ) : null}
+            </li>
+          )
+        })}
+      </ul>
+    )
+  }
 
   const renderRest = () => {
     const rest = controls.rest
@@ -1241,92 +1333,6 @@ export function StoryActionTray({
     )
   }
 
-  /* ---- Director ---- */
-  const renderDirector = () => {
-    const turnControl = composer.turnControl
-    const activeTurnPlayerId =
-      turnControl.activePlayerId ?? composer.selectedPlayerId ?? composer.activePlayers[0]?.id ?? null
-    const conductorControlled = turnControl.source === 'auto' || turnControl.source === 'ai'
-    const manualOverride = turnControl.source === 'manual' || turnControl.source === 'admin'
-    const noPlayer = !composer.selectedPlayerId
-    return (
-      <>
-        <TrayGroup label="Turn flow">
-          <button
-            type="button"
-            className="story-chip"
-            aria-pressed={conductorControlled}
-            disabled={noPlayer}
-            onClick={() => composer.updateTurnControl('free', null, 'auto')}
-          >
-            Auto
-          </button>
-          {TURN_MODES.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className="story-chip"
-              aria-pressed={manualOverride && turnControl.mode === option.value}
-              disabled={noPlayer}
-              onClick={() =>
-                composer.updateTurnControl(
-                  option.value,
-                  option.value === 'free' ? null : activeTurnPlayerId,
-                  'manual',
-                )
-              }
-            >
-              {option.label}
-            </button>
-          ))}
-        </TrayGroup>
-        {turnControl.mode !== 'free' && composer.activePlayers.length ? (
-          <TrayGroup label="Active player">
-            {composer.activePlayers.map((player) => (
-              <button
-                key={player.id}
-                type="button"
-                className="story-chip"
-                aria-pressed={activeTurnPlayerId === player.id}
-                disabled={noPlayer}
-                onClick={() => composer.updateTurnControl(turnControl.mode, player.id)}
-              >
-                {playerName(player)}
-              </button>
-            ))}
-          </TrayGroup>
-        ) : null}
-        {composer.adminToolsUnlocked ? (
-          <div className="story-tray-admin">
-            <label className="story-field">
-              <span className="story-label">Admin passcode</span>
-              <input
-                type="password"
-                value={composer.adminPasscode}
-                autoComplete="off"
-                onChange={(event) => composer.setAdminPasscode(event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              className="story-chip"
-              aria-pressed={composer.composerMode === 'admin'}
-              onClick={() => {
-                composer.applyComposerMode('admin')
-                onDone()
-              }}
-            >
-              Admin mode
-            </button>
-          </div>
-        ) : null}
-        <button type="button" className="story-link story-tray-aside" onClick={composer.toggleAdminTools}>
-          {composer.adminToolsUnlocked ? 'Lock admin tools' : 'Unlock admin tools'}
-        </button>
-      </>
-    )
-  }
-
   const content: Partial<Record<TraySection, () => ReactNode>> = {
     roll: renderRoll,
     magic: renderMagic,
@@ -1335,7 +1341,7 @@ export function StoryActionTray({
     trade: renderTrade,
     interact: renderInteract,
     scene: renderScene,
-    director: renderDirector,
+    combat: renderCombat,
   }
   const renderContent = content[activeSection]
 

@@ -1,8 +1,14 @@
 import { useState } from 'react'
 import { Check, Circle, Lock, X, type LucideIcon } from 'lucide-react'
-import type { QuestObjectiveStatus, WorldQuestSummary, WorldRecordSummary } from '../../gameSelectors'
+import {
+  UNKNOWN_NPC_ROLE,
+  type QuestObjectiveStatus,
+  type WorldQuestSummary,
+  type WorldRecordSummary,
+} from '../../gameSelectors'
 import type { InspectorPanelProps } from '../../InspectorPanel'
 import type { SessionBoardProps } from '../../SessionBoard'
+import { humanizedRole, storyJournalFromSnapshot, type StoryJournal } from './storyJournal'
 
 type JournalSectionProps = {
   board: SessionBoardProps
@@ -23,13 +29,9 @@ function ObjectiveGlyph({ status }: { status: QuestObjectiveStatus }) {
   )
 }
 
-/** A quest's objectives, or (for quests recorded without any) its one open objective. */
-function QuestObjectives({ quest }: { quest: WorldQuestSummary }) {
-  const objectives = quest.objectives?.length
-    ? quest.objectives
-    : quest.objective
-      ? [{ id: 'objective', description: quest.objective, status: 'open' as const, optional: false }]
-      : []
+type ObjectiveLine = { id: string; title: string; status: QuestObjectiveStatus; optional: boolean }
+
+function ObjectiveList({ objectives }: { objectives: ObjectiveLine[] }) {
   if (!objectives.length) return null
   return (
     <ul className="story-objective-list">
@@ -37,12 +39,41 @@ function QuestObjectives({ quest }: { quest: WorldQuestSummary }) {
         <li key={objective.id} className="story-quest-objective" data-status={objective.status}>
           <ObjectiveGlyph status={objective.status} />
           <span className="story-objective-text">
-            {objective.description}
+            {objective.title}
             {objective.optional ? <span className="story-objective-optional"> optional</span> : null}
           </span>
         </li>
       ))}
     </ul>
+  )
+}
+
+/** A quest's objectives by title, or (for quests recorded without any) its one open objective. */
+function QuestObjectives({ quest }: { quest: WorldQuestSummary }) {
+  const objectives: ObjectiveLine[] = quest.objectives?.length
+    ? quest.objectives.map((objective) => ({ ...objective, title: objective.title || objective.description }))
+    : quest.objective
+      ? [{ id: 'objective', title: quest.objective, status: 'open', optional: false }]
+      : []
+  return <ObjectiveList objectives={objectives} />
+}
+
+/** The quest from the server's journal: its title, the current stage, and the objectives so far. */
+function JournalQuest({ journal }: { journal: StoryJournal }) {
+  const { quest } = journal
+  if (!quest) return null
+  return (
+    <li>
+      <span className="story-quest-title">{quest.title}</span>
+      {quest.stageTitle ? <span className="story-label story-quest-stage">{quest.stageTitle}</span> : null}
+      {quest.stageSummary ? <span className="story-quest-summary">{quest.stageSummary}</span> : null}
+      <ObjectiveList
+        objectives={journal.objectives.map((objective) => ({
+          ...objective,
+          status: objective.status === 'completed' ? 'completed' : 'open',
+        }))}
+      />
+    </li>
   )
 }
 
@@ -65,25 +96,50 @@ function Paper({ paper }: { paper: WorldRecordSummary }) {
   )
 }
 
+function npcRole(role: string) {
+  return role === UNKNOWN_NPC_ROLE ? '' : humanizedRole(role)
+}
+
+/**
+ * The Journal tab: from the server's player-safe journal when it sends one,
+ * otherwise derived from the world state (objective titles, plain roles, no
+ * dispositions). Papers, finished quests and recent memory come from the world
+ * state either way.
+ */
 export function JournalSection({ board, inspector }: JournalSectionProps) {
   const [finishedOpen, setFinishedOpen] = useState(false)
-  const { activeQuests, knownNpcs, knownLocations } = inspector.worldStatePanel
-  const finishedQuests = inspector.worldStatePanel.finishedQuests ?? []
-  const clues = inspector.worldStatePanel.clues ?? []
-  const papers = [...(inspector.worldStatePanel.handouts ?? []), ...(inspector.worldStatePanel.lore ?? [])]
-  const memory = inspector.visibleRecentMemory
+  const journal = storyJournalFromSnapshot(board.sessionState?.state_snapshot)
+  const world = inspector.worldStatePanel
+  const activeQuests = journal ? [] : world.activeQuests
+  const finishedQuests = world.finishedQuests ?? []
+  const clues = journal
+    ? journal.clues.map((clue) => ({ id: clue.id, title: clue.title, text: clue.text }))
+    : (world.clues ?? []).map((clue) => ({ id: clue.id, title: clue.title, text: clue.summary }))
+  const papers = [...(world.handouts ?? []), ...(world.lore ?? [])]
+  const people = journal
+    ? journal.people
+    : world.knownNpcs.map((npc) => ({ id: npc.id, name: npc.name, role: npcRole(npc.role), summary: '' }))
+  const places = journal
+    ? journal.places.map((place) => ({ id: place.id, name: place.name, detail: place.state }))
+    : world.knownLocations.map((location) => ({
+        id: location.id,
+        name: location.name,
+        detail: location.status && location.status !== 'unknown' ? location.status : '',
+      }))
+  const memory = inspector.visibleRecentMemory.map(([text]) => text)
+  const hasQuest = Boolean(journal?.quest) || activeQuests.length > 0
   const empty =
-    !activeQuests.length && !finishedQuests.length && !clues.length && !papers.length &&
-    !knownNpcs.length && !knownLocations.length && !memory.length
+    !hasQuest && !finishedQuests.length && !clues.length && !papers.length &&
+    !people.length && !places.length && !memory.length
 
   return (
     <div className="story-sheet story-sheet-journal">
-      {activeQuests.length || finishedQuests.length ? (
+      {hasQuest || finishedQuests.length ? (
         <section aria-labelledby="story-journal-quests">
           <h3 id="story-journal-quests" className="story-label">Quests</h3>
-          {activeQuests.length ? (
+          {hasQuest ? (
             <ul className="story-quest-list">
-              {activeQuests.map((quest) => (
+              {journal ? <JournalQuest journal={journal} /> : activeQuests.map((quest) => (
                 <li key={quest.id || quest.title}>
                   <span className="story-quest-title">{quest.title}</span>
                   {quest.stage ? <span className="story-quest-summary">{quest.stage}</span> : null}
@@ -127,7 +183,7 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
             {clues.map((clue) => (
               <li key={clue.id}>
                 <span className="story-journal-name">{clue.title}</span>
-                {clue.summary ? <span className="story-clue-summary">{clue.summary}</span> : null}
+                {clue.text ? <span className="story-clue-summary">{clue.text}</span> : null}
               </li>
             ))}
           </ul>
@@ -143,30 +199,29 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
         </section>
       ) : null}
 
-      {knownNpcs.length ? (
+      {people.length ? (
         <section aria-labelledby="story-journal-people">
           <h3 id="story-journal-people" className="story-label">People</h3>
           <ul className="story-journal-list">
-            {knownNpcs.map((npc) => (
-              <li key={npc.id || npc.name}>
-                <span className="story-journal-name">{npc.name}</span>
-                <span className="story-journal-detail"> — {[npc.role, npc.disposition].filter(Boolean).join(' / ')}</span>
+            {people.map((person) => (
+              <li key={person.id || person.name}>
+                <span className="story-journal-name">{person.name}</span>
+                {person.role ? <span className="story-journal-detail"> — {person.role}</span> : null}
+                {person.summary ? <span className="story-journal-summary">{person.summary}</span> : null}
               </li>
             ))}
           </ul>
         </section>
       ) : null}
 
-      {knownLocations.length ? (
+      {places.length ? (
         <section aria-labelledby="story-journal-places">
           <h3 id="story-journal-places" className="story-label">Places</h3>
           <ul className="story-journal-list">
-            {knownLocations.map((location) => (
-              <li key={location.id || location.name}>
-                <span className="story-journal-name">{location.name}</span>
-                {location.status && location.status !== 'unknown' ? (
-                  <span className="story-journal-detail"> — {location.status}</span>
-                ) : null}
+            {places.map((place) => (
+              <li key={place.id || place.name}>
+                <span className="story-journal-name">{place.name}</span>
+                {place.detail ? <span className="story-journal-detail"> — {place.detail}</span> : null}
               </li>
             ))}
           </ul>
@@ -177,12 +232,7 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
         <section aria-labelledby="story-journal-memory">
           <h3 id="story-journal-memory" className="story-label">Recent memory</h3>
           <ul className="story-memory-list">
-            {memory.map(([text, source]) => (
-              <li key={`${source}-${text}`}>
-                {text}
-                <span className="story-journal-detail"> · {source}</span>
-              </li>
-            ))}
+            {memory.map((text, index) => <li key={`${index}-${text}`}>{text}</li>)}
           </ul>
         </section>
       ) : null}

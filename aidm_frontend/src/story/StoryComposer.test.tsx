@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActionComposerProps } from '../ActionComposer'
 import type { SessionBoardProps } from '../SessionBoard'
-import { testBoard, testCombat, testRollNotice, testWorld } from './dockTestFixtures'
+import { testBoard, testCombat, testControls, testRollNotice, testWorld, VIEWER_ID } from './dockTestFixtures'
 import { StoryComposer } from './StoryComposer'
 import type { StoryComposerProps } from './types'
 
@@ -234,17 +234,59 @@ describe('StoryComposer', () => {
     expect(screen.getByRole('button', { name: 'Actions' })).toHaveAttribute('data-mode', 'ooc')
   })
 
-  it('fills the input for people and items, and submits typed travel and object actions', () => {
-    const { props } = renderComposer()
+  it('fills the input for people, and submits typed pickups, object and travel actions as their labels', () => {
+    const { props } = renderComposer({
+      board: {
+        worldState: testWorld({
+          sceneItems: [{ id: 'key', name: 'Caravan Strongbox Key', quantity: 1, type: 'key', takeLabel: 'Take the Caravan Strongbox Key' }],
+        }),
+        gameplayControls: testControls({
+          interactables: [{
+            id: 'ledger',
+            name: 'Caravan Ledger',
+            kind: 'object',
+            description: '',
+            revision: 3,
+            states: [],
+            available: true,
+            reason: '',
+            offered: true,
+            actions: [{ id: 'inspect', label: 'Read the caravan ledger', available: true, reason: '', phrase: true, authored: true }],
+          }],
+        }),
+      },
+    })
     const composer = props.board.actionComposerProps
     const suggestions = screen.getByRole('group', { name: 'Suggestions' })
+    expect(within(suggestions).getAllByRole('button').map((chip) => chip.textContent)).toEqual([
+      'Take the Caravan Strongbox Key',
+      'Read the caravan ledger',
+      'Talk to Marta Vell',
+      'Go to North causeway',
+    ])
 
     fireEvent.click(within(suggestions).getByRole('button', { name: 'Talk to Marta Vell' }))
     expect(composer.updateActionText).toHaveBeenCalledWith('I talk to Marta Vell.')
     expect(screen.getByLabelText('Your Action')).toHaveFocus()
 
-    fireEvent.click(within(suggestions).getByRole('button', { name: 'Examine caravan ledger' }))
-    expect(composer.updateActionText).toHaveBeenCalledWith('I examine the caravan ledger.')
+    fireEvent.click(within(suggestions).getByRole('button', { name: 'Take the Caravan Strongbox Key' }))
+    expect(composer.submitAction).toHaveBeenLastCalledWith('Take the Caravan Strongbox Key.', {
+      kind: 'item',
+      source: 'scene_panel',
+      text: 'Take the Caravan Strongbox Key.',
+      client_message_id: expect.any(String),
+      inventory_action: 'pick_up',
+      item: { id: 'key', name: 'Caravan Strongbox Key', quantity: 1 },
+    })
+
+    fireEvent.click(within(suggestions).getByRole('button', { name: 'Read the caravan ledger' }))
+    expect(composer.submitAction).toHaveBeenLastCalledWith('Read the caravan ledger.', {
+      kind: 'object',
+      source: 'scene_panel',
+      text: 'Read the caravan ledger.',
+      client_message_id: expect.any(String),
+      object: { id: 'ledger', action: 'inspect', revision: 3 },
+    })
 
     fireEvent.click(within(suggestions).getByRole('button', { name: 'Go to North causeway' }))
     expect(composer.submitAction).toHaveBeenLastCalledWith('The party travels to North causeway.', {
@@ -254,15 +296,33 @@ describe('StoryComposer', () => {
       client_message_id: expect.any(String),
       location: { id: 'causeway', name: 'North causeway' },
     })
+  })
 
-    fireEvent.click(within(suggestions).getByRole('button', { name: 'Open Lead wagon' }))
-    expect(composer.submitAction).toHaveBeenLastCalledWith('Ysolde attempts to open Lead wagon.', {
+  it('offers only Examine for an object from an older server, sent as its label', () => {
+    const { props } = renderComposer()
+    fireEvent.click(screen.getByRole('button', { name: 'Examine Lead wagon' }))
+    expect(props.board.actionComposerProps.submitAction).toHaveBeenLastCalledWith('Examine Lead wagon.', expect.objectContaining({
       kind: 'object',
-      source: 'scene_panel',
-      text: 'Ysolde attempts to open Lead wagon.',
-      client_message_id: expect.any(String),
-      object: { id: 'lead-wagon', action: 'open', revision: 4 },
-    })
+      object: { id: 'lead-wagon', action: 'inspect', revision: 4 },
+    }))
+    expect(screen.queryByRole('button', { name: /Open Lead wagon|Search Lead wagon/ })).not.toBeInTheDocument()
+  })
+
+  it('opens the tray on Scene from More…, and on the Combat list during a fight', () => {
+    const many = ['Mara', 'Tovin', 'Osric'].map((name) => ({ id: name, name, race: '', role: '', disposition: '', status: 'present' }))
+    renderComposer({ board: { worldState: testWorld({ presentNpcs: many }) } })
+    fireEvent.click(screen.getByRole('button', { name: 'More…' }))
+    expect(screen.getByRole('region', { name: 'Scene' })).toBeInTheDocument()
+    cleanup()
+
+    renderComposer({ board: { worldState: testWorld({ combat: testCombat() }) } })
+    fireEvent.click(screen.getByRole('button', { name: 'More…' }))
+    expect(screen.getByRole('region', { name: 'Combat' })).toBeInTheDocument()
+    cleanup()
+
+    renderComposer({ board: { worldState: testWorld({ combat: testCombat() }) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
+    expect(screen.getByRole('region', { name: 'Combat' })).toBeInTheDocument()
   })
 
   it('returns to plain text before filling a suggestion from another mode', () => {
@@ -312,11 +372,11 @@ describe('StoryComposer', () => {
     expect(props.board.actionComposerProps.toggleAdminTools).toHaveBeenCalledTimes(1)
   })
 
-  it('tells a dying viewer they are down and keeps the input closed until they are back up', () => {
+  it('closes everything but out-of-character speech to a hero who is down: dying, stable or at 0 HP', () => {
     const fixture = testBoard()
     const sessionState = fixture.sessionState
     if (!sessionState) throw new Error('fixture has a session state')
-    const downed = {
+    const dying = {
       ...sessionState,
       state_snapshot: {
         combat: {
@@ -325,21 +385,39 @@ describe('StoryComposer', () => {
         },
       },
     }
-    const { container } = renderComposer({
-      board: { sessionState: downed, worldState: testWorld({ combat: testCombat() }) },
+    const { container, props } = renderComposer({
+      board: { sessionState: dying, worldState: testWorld({ combat: testCombat() }) },
       composer: { actionText: 'I crawl.' },
     })
 
-    expect(statusLine(container)).toBe('You are down. Your companions can still reach you.')
-    expect(screen.getByLabelText('Your Action')).toBeDisabled()
+    expect(statusLine(container)).toBe('You are down. Your companions can still reach you.Speak out of character')
+    expect(screen.queryByRole('region', { name: 'Combat, round 2' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Suggestions' })).not.toBeInTheDocument()
+    const input = screen.getByLabelText('Your Action')
+    expect(input).toBeDisabled()
+    expect(input).toHaveAttribute('placeholder', 'You are down.')
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Actions' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Speak out of character' }))
+    expect(props.board.actionComposerProps.applyComposerMode).toHaveBeenCalledWith('ooc')
     cleanup()
 
-    const stable = { ...downed, state_snapshot: { playerCharacters: [{ playerId: 30, health: { conditions: ['unconscious', 'stable'] } }] } }
-    const { container: stableDock } = renderComposer({ board: { sessionState: stable }, composer: { actionText: 'I wait.' } })
-    expect(statusLine(stableDock)).not.toContain('You are down')
+    const stable = { ...dying, state_snapshot: { playerCharacters: [{ playerId: 30, health: { conditions: ['unconscious', 'stable'] } }] } }
+    renderComposer({ board: { sessionState: stable }, composer: { actionText: 'I wait.' } })
+    expect(screen.getByLabelText('Your Action')).toBeDisabled()
+    expect(screen.queryByRole('group', { name: 'Suggestions' })).not.toBeInTheDocument()
+    cleanup()
+
+    renderComposer({ board: { sessionState: stable }, composer: { actionText: 'Hold on, I need a minute.', composerMode: 'ooc' } })
     expect(screen.getByLabelText('Your Action')).toBeEnabled()
+    expect(screen.getByLabelText('Your Action')).toHaveAttribute('placeholder', 'Say it out of character…')
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled()
+    cleanup()
+
+    const alone = [{ id: VIEWER_ID, character_name: 'Ysolde', name: 'Danny', health: { tone: 'dead' as const, label: 'Dead', currentHp: 0, maxHp: 14 } }]
+    const { container: aloneDock } = renderComposer({ board: { activePlayers: alone }, composer: { composerMode: 'ooc' } })
+    expect(statusLine(aloneDock)).toBe('You are down. Your companions can still reach you.')
+    expect(screen.getByLabelText('Your Action')).toBeDisabled()
   })
 
   it('shows the keyboard hint until three actions have been sent from this browser', () => {

@@ -12,7 +12,7 @@ import type {
   SessionSummary,
 } from './types'
 import { ApiClientError } from './api'
-import { useWorkspaceQueries } from './useWorkspaceQueries'
+import { playerViewQuery, useWorkspaceQueries } from './useWorkspaceQueries'
 import { useWorkspaceStore } from './useWorkspaceStore'
 
 const apiFetchMock = vi.hoisted(() => vi.fn())
@@ -749,6 +749,49 @@ describe('useWorkspaceQueries request ownership', () => {
 
     expect(callbacks.setLogEntries).not.toHaveBeenCalled()
     expect(result.current.queries.olderLogLoading).toBe(false)
+  })
+
+  it('reads state, log, older log and workspace through the hero’s eyes in Story, and in full in Table tools', async () => {
+    expect(playerViewQuery(true, 30)).toBe('view=player&player_id=30')
+    expect(playerViewQuery(true, null)).toBe('view=player')
+    expect(playerViewQuery(false, 30)).toBe('')
+
+    apiFetchMock.mockImplementation((_baseUrl: string, path: string) => {
+      if (path.startsWith('/api/sessions/1/log')) return Promise.resolve(logResponse(1, [logEntry(1)]))
+      if (path.startsWith('/api/sessions/1/state')) return Promise.resolve(sessionState(1))
+      if (path.startsWith('/api/campaigns/1/workspace')) return Promise.resolve(workspace(1))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const callbacks = createCallbacks()
+    const scope = { ...defaultScope, sessionLogCursor: 10, sessionLogHasMore: true }
+    const { result, rerender } = renderHook(
+      (props: ScopeProps & { playerView: string }) => useQueryHarness(props, callbacks),
+      { initialProps: { ...scope, playerView: playerViewQuery(true, 30) } },
+    )
+    const load = async () => {
+      apiFetchMock.mockClear()
+      await act(async () => {
+        await result.current.queries.loadSessionData(1)
+        await result.current.queries.loadOlderSessionLog()
+        await result.current.queries.refreshCampaignWorkspace(1)
+      })
+      return apiFetchMock.mock.calls.map((call) => call[1])
+    }
+
+    expect(await load()).toEqual([
+      '/api/sessions/1/log?limit=200&view=player&player_id=30',
+      '/api/sessions/1/state?view=player&player_id=30',
+      '/api/sessions/1/log?limit=200&before_id=10&view=player&player_id=30',
+      '/api/campaigns/1/workspace?view=player&player_id=30',
+    ])
+
+    rerender({ ...scope, playerView: playerViewQuery(false, 30) })
+    expect(await load()).toEqual([
+      '/api/sessions/1/log?limit=200',
+      '/api/sessions/1/state',
+      '/api/sessions/1/log?limit=200&before_id=10',
+      '/api/campaigns/1/workspace',
+    ])
   })
 
   it('pages older chapters from the workspace cursor and keeps an older chapter selected through a refresh', async () => {

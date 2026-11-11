@@ -50,6 +50,8 @@ type DmResponseEndPayload = {
   text?: string
   requires_roll?: boolean
   rules_hint?: RulesHint
+  /** The turn's player-visible story beats (see the Story feed). */
+  storyBeats?: unknown
   ok?: boolean
   error?: string
 }
@@ -758,6 +760,7 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
               requires_roll: requiresRoll,
               ...(!ok ? { stream_status: 'failed', error: payload.error ?? null } : {}),
               ...rulesHint,
+              ...(Array.isArray(payload.storyBeats) ? { storyBeats: payload.storyBeats } : {}),
             },
             streaming: false,
           }

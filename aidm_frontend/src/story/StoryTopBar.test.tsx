@@ -2,6 +2,7 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { UNRECORDED_SCENE_NAME } from '../gameSelectors'
 import type { SessionBoardProps } from '../SessionBoard'
 import { makeBoardFixture } from './preview/fixtures'
 import { StoryTopBar } from './StoryTopBar'
@@ -72,6 +73,20 @@ describe('StoryTopBar', () => {
     renderTopBar()
     expect(screen.getByRole('banner')).toHaveTextContent('The Lantern Road')
     expect(screen.getByText('The Drowned Lantern')).toBeInTheDocument()
+  })
+
+  it('never shows the "No scene recorded" placeholder', () => {
+    const board = makeBoardFixture('exploration')
+    renderTopBar({
+      board: {
+        ...board,
+        sceneState: null,
+        activeSessionTitle: 'Chapter 1',
+        worldState: { ...board.worldState, sceneName: UNRECORDED_SCENE_NAME },
+      },
+    })
+    expect(screen.getByRole('banner')).not.toHaveTextContent('No scene recorded')
+    expect(document.querySelector('.story-scene-name')).toHaveTextContent('Chapter 1')
   })
 
   it('shows the day clock after the scene name', () => {

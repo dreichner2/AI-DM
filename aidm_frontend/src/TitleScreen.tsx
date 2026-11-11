@@ -9,7 +9,8 @@ export type TitleResume = {
   chapterNumber: number | null
   scene: string | null
   lastPlayedAt: string | null
-  recap: string | null
+  /** The server's one line: "{place} — {first sentence of the latest narration}". */
+  continueLine: string | null
 }
 
 export type TitleScreenProps = {
@@ -22,7 +23,8 @@ export type TitleScreenProps = {
   resume: TitleResume | null
   /** No AI provider is active, so the scripted narrator runs. */
   safeMode: boolean
-  onPlayNow: () => void
+  /** `fresh` starts a new ready-made adventure rather than rejoining one (a returning player's choice). */
+  onPlayNow: (options: { fresh: boolean }) => void
   onContinue: () => void
   onCreateCampaign: () => void
   onOpenAdventures: () => void
@@ -103,10 +105,11 @@ export function TitleScreen({
         ? DEFAULT_HERO_NAME
         : null
 
+  // The continue line names the place itself; without it the place joins the meta line.
   const resumeMeta = resume
     ? [
         resume.chapterNumber ? `Chapter ${resume.chapterNumber}` : null,
-        resume.scene,
+        resume.continueLine ? null : resume.scene,
         playedAgo(resume.lastPlayedAt, now),
       ]
         .filter(Boolean)
@@ -145,9 +148,9 @@ export function TitleScreen({
                   {resumeMeta}
                 </p>
               ) : null}
-              {resume.recap ? (
+              {resume.continueLine ? (
                 <p className="story-title-recap story-title-rise" style={continueStep()}>
-                  {resume.recap}
+                  {resume.continueLine}
                 </p>
               ) : null}
               <div className="story-title-actions story-title-rise" style={continueStep()}>
@@ -210,7 +213,7 @@ export function TitleScreen({
                   className="story-primary story-title-play"
                   disabled={pending}
                   aria-busy={pending || undefined}
-                  onClick={onPlayNow}
+                  onClick={() => onPlayNow({ fresh: returning })}
                 >
                   {pending ? (
                     <>

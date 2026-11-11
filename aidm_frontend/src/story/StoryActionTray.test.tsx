@@ -11,7 +11,7 @@ import { SessionBoard, type SessionBoardProps } from '../SessionBoard'
 import type { GameplayItemControl } from '../gameplayControlState'
 import type { WorldMerchantSummary } from '../gameSelectors'
 import type { JsonRecord, TimelineEntry } from '../types'
-import { testBoard, testComposer, testControls, testWorld, VIEWER_ID } from './dockTestFixtures'
+import { testBoard, testCombat, testComposer, testControls, testWorld, VIEWER_ID } from './dockTestFixtures'
 import { StoryComposer } from './StoryComposer'
 
 type Submit = (message?: string, intent?: ActionIntent) => boolean
@@ -331,12 +331,17 @@ describe('StoryActionTray', () => {
       })
     }
 
-    it('opens from the leading suggestion with the purse, the stock and the offers', () => {
+    it('opens from the trade suggestion with the purse, the stock and the offers', () => {
       const board = tradeBoard()
       renderDock(board)
       const suggestions = within(screen.getByRole('group', { name: 'Suggestions' })).getAllByRole('button')
-      expect(suggestions[0]).toHaveTextContent("Trade with Mara's Sundries")
-      fireEvent.click(suggestions[0])
+      expect(suggestions.map((chip) => chip.textContent)).toEqual([
+        'Examine Lead wagon',
+        'Talk to Marta Vell',
+        "Trade with Mara's Sundries",
+        'Go to North causeway',
+      ])
+      fireEvent.click(suggestions[2])
 
       const tray = screen.getByRole('dialog', { name: 'Actions' })
       expect(within(tray).getByRole('button', { name: 'Trade' })).toHaveAttribute('aria-pressed', 'true')
@@ -409,36 +414,106 @@ describe('StoryActionTray', () => {
     })
   })
 
-  it('runs a scene object action with the same intent as the classic panel, and blocks spent ones', () => {
+  it('lists what can be taken and each object’s offered actions: legal ones as links, others dimmed with the reason, done ones omitted', () => {
     const board = testBoard({
+      worldState: testWorld({
+        sceneItems: [
+          { id: 'key', name: 'Caravan Strongbox Key', quantity: 1, type: 'key', takeLabel: 'Take the Caravan Strongbox Key' },
+          { id: 'mud', name: 'Road mud', quantity: 1, type: 'object' },
+        ],
+      }),
       gameplayControls: testControls({
         interactables: [{
           ...testControls().interactables[0],
+          id: 'strongbox',
+          name: 'Wagon Strongbox',
+          states: ['Closed', 'Locked'],
+          offered: true,
           actions: [
-            { id: 'open', label: 'Open', available: true, reason: '' },
-            { id: 'unlock', label: 'Unlock', available: false, reason: 'Already unlocked.' },
+            { id: 'search', label: 'Search the strongbox', available: false, reason: 'It is locked.', phrase: true, authored: true },
+            { id: 'unlock', label: 'Unlock the strongbox', available: true, reason: '', phrase: true, authored: true },
+            { id: 'inspect', label: 'Examine Wagon Strongbox', available: false, reason: '', phrase: true, done: true },
           ],
         }],
       }),
     })
     renderDock(board)
     const tray = openSection('Scene')
-    const actions = within(tray).getByRole('group', { name: 'Lead wagon actions' })
 
-    fireEvent.click(within(actions).getByRole('button', { name: 'Unlock' }))
+    const loose = within(tray).getByRole('group', { name: 'Lying here' })
+    expect(within(loose).getAllByRole('button').map((link) => link.textContent)).toEqual(['Take the Caravan Strongbox Key'])
+    fireEvent.click(within(loose).getByRole('button', { name: 'Take the Caravan Strongbox Key' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith('Take the Caravan Strongbox Key.', expect.objectContaining({
+      kind: 'item',
+      inventory_action: 'pick_up',
+      item: { id: 'key', name: 'Caravan Strongbox Key', quantity: 1 },
+    }))
+    cleanup()
+    vi.mocked(board.actionComposerProps.submitAction).mockClear()
+
+    renderDock(board)
+    const actions = within(openSection('Scene')).getByRole('group', { name: 'Wagon Strongbox actions' })
+    expect(within(actions).getAllByRole('button').map((link) => link.textContent)).toEqual([
+      'Search the strongbox',
+      'Unlock the strongbox',
+    ])
+    const search = within(actions).getByRole('button', { name: 'Search the strongbox' })
+    expect(search).toHaveAttribute('aria-disabled', 'true')
+    expect(search).toHaveAttribute('aria-description', 'It is locked.')
+    expect(search.closest('.story-tray-offer')).toHaveTextContent('Search the strongboxIt is locked.')
+    fireEvent.click(search)
     expect(board.actionComposerProps.submitAction).not.toHaveBeenCalled()
-    expect(within(actions).getByRole('button', { name: 'Unlock' })).toHaveAccessibleDescription('Already unlocked.')
 
-    fireEvent.click(within(actions).getByRole('button', { name: 'Open' }))
+    fireEvent.click(within(actions).getByRole('button', { name: 'Unlock the strongbox' }))
     const storySubmit = vi.mocked(board.actionComposerProps.submitAction)
+    expect(storySubmit).toHaveBeenCalledWith('Unlock the strongbox.', expect.objectContaining({
+      kind: 'object',
+      object: { id: 'strongbox', action: 'unlock', revision: 4 },
+    }))
     cleanup()
 
+    // Table tools offers the same server actions and sends them the same way.
     const classicSubmit = vi.fn<(message: string, intent: ActionIntent) => boolean>(() => true)
     render(<GameplayControls state={board.gameplayControls} disabled={false} onSubmit={classicSubmit} />)
-    fireEvent.click(within(screen.getByRole('group', { name: 'Scene interactions' })).getByRole('button', { name: 'Open' }))
-
+    fireEvent.click(within(screen.getByRole('group', { name: 'Scene interactions' })).getByRole('button', { name: 'Unlock the strongbox' }))
     expect(storySubmit.mock.calls[0][0]).toBe(classicSubmit.mock.calls[0][0])
     expect(withoutClientId(storySubmit.mock.calls[0][1])).toEqual(withoutClientId(classicSubmit.mock.calls[0][1]))
+  })
+
+  it('offers only Examine for an object from an older server', () => {
+    renderDock(testBoard())
+    const actions = within(openSection('Scene')).getByRole('group', { name: 'Lead wagon actions' })
+    expect(within(actions).getAllByRole('button').map((link) => link.textContent)).toEqual(['Examine Lead wagon'])
+  })
+
+  it('opens on Scene outside combat, and holds every legal combat action in a Combat list during a fight', () => {
+    renderDock(testBoard())
+    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
+    expect(screen.getByRole('region', { name: 'Scene' })).toBeInTheDocument()
+    cleanup()
+
+    const combat = testCombat({
+      bundle: {
+        actions: [
+          ...testCombat().legalActionBundles[0].actions,
+          { ...testCombat().legalActionBundles[0].actions[1], id: 'combat.dodge', type: 'dodge', label: 'Dodge', available: true, message: 'Ysolde Marrow dodges.' },
+        ],
+      },
+    })
+    const board = testBoard({ worldState: testWorld({ combat }) })
+    renderDock(board)
+    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
+    const list = within(screen.getByRole('region', { name: 'Combat' })).getByRole('list', { name: 'Combat actions' })
+    expect(within(list).getAllByRole('listitem').map((item) => item.querySelector('.story-tray-row-name')?.textContent)).toEqual([
+      'Attack with Longsword',
+      'Dodge',
+    ])
+    fireEvent.click(within(list).getByRole('button', { name: 'Attack with Longsword' }))
+    fireEvent.click(within(list).getByRole('button', { name: 'Goblin Sentry · Wounded' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith(
+      'Ysolde Marrow attacks Goblin Sentry with Longsword.',
+      expect.objectContaining({ combat: { action_id: 'combat.attack.longsword', target_id: 'goblin_1' } }),
+    )
   })
 
   it('takes a short rest spending the chosen hit dice, otherwise with the classic rest intent', async () => {
@@ -641,50 +716,40 @@ describe('StoryActionTray', () => {
     expect(screen.queryByRole('dialog', { name: 'Actions' })).not.toBeInTheDocument()
   })
 
-  it('hides sections with nothing in them', () => {
-    renderDock(testBoard({ gameplayControls: testControls({ capabilities: [] }) }, { itemOptions: [], interactionTargets: [] }))
+  it.each([
+    {
+      name: 'a spellcaster with abilities and company',
+      board: {},
+      composer: {},
+      tabs: ['Speak / act', 'Scene', 'Magic', 'Abilities', 'Items', 'Roll', 'Interact', 'Emote', 'Out of character'],
+    },
+    {
+      name: 'a hero alone, without spells or abilities',
+      board: {
+        activePlayers: [{ id: VIEWER_ID, character_name: 'Ysolde', name: 'Danny' }],
+        gameplayControls: testControls({ spells: [], narratedSpells: [], capabilities: [] }),
+      },
+      composer: { itemOptions: [], interactionTargets: [] },
+      tabs: ['Speak / act', 'Scene', 'Items', 'Roll', 'Interact'],
+    },
+    {
+      name: 'a fight, with a merchant open',
+      board: { worldState: testWorld({ combat: testCombat(), merchants: [{ id: 'm', name: 'Mara', npcId: 'mara', buyRate: 0.5, stock: [] }] }) },
+      composer: {},
+      tabs: ['Speak / act', 'Combat', 'Scene', 'Magic', 'Abilities', 'Items', 'Trade', 'Roll', 'Interact', 'Emote', 'Out of character'],
+    },
+  ])('shows the tabs that fit: $name, never Director', ({ board, composer, tabs }) => {
+    renderDock(testBoard(board, { canUseOperatorTools: true, ...composer }), true)
     fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
-    const tray = screen.getByRole('dialog', { name: 'Actions' })
-    expect(within(tray).queryByRole('button', { name: 'Abilities' })).not.toBeInTheDocument()
-    expect(within(tray).queryByRole('button', { name: 'Items' })).not.toBeInTheDocument()
-    expect(within(tray).queryByRole('button', { name: 'Interact' })).not.toBeInTheDocument()
+    const nav = within(screen.getByRole('dialog', { name: 'Actions' })).getByRole('navigation', { name: 'Kinds of action' })
+    expect(within(nav).getAllByRole('button').map((tab) => tab.textContent)).toEqual(tabs)
   })
 
-  it('offers the Director section only to operators', () => {
-    renderDock(testBoard())
-    fireEvent.click(screen.getByRole('button', { name: 'Actions' }))
-    expect(screen.queryByRole('button', { name: 'Director' })).not.toBeInTheDocument()
-    cleanup()
-
-    const board = testBoard({}, {
-      canUseOperatorTools: true,
-      turnControl: { mode: 'spotlight', source: 'manual', activePlayerId: 31, activePlayerName: 'Brannoc' },
-    })
-    renderDock(board, true)
-    const tray = openSection('Director')
-    const composer = board.actionComposerProps
-
-    fireEvent.click(within(tray).getByRole('button', { name: 'Structured' }))
-    expect(composer.updateTurnControl).toHaveBeenCalledWith('structured', 31, 'manual')
-    fireEvent.click(within(tray).getByRole('button', { name: 'Auto' }))
-    expect(composer.updateTurnControl).toHaveBeenCalledWith('free', null, 'auto')
-    fireEvent.click(within(within(tray).getByRole('group', { name: 'Active player' })).getByRole('button', { name: 'Ysolde' }))
-    expect(composer.updateTurnControl).toHaveBeenCalledWith('spotlight', 30)
-
-    expect(within(tray).queryByLabelText('Admin passcode')).not.toBeInTheDocument()
-    fireEvent.click(within(tray).getByRole('button', { name: 'Unlock admin tools' }))
-    expect(composer.toggleAdminTools).toHaveBeenCalledTimes(1)
-  })
-
-  it('shows the admin passcode and Admin mode once admin tools are unlocked', () => {
-    const board = testBoard({}, { canUseOperatorTools: true, adminToolsUnlocked: true })
-    renderDock(board, true)
-    const tray = openSection('Director')
-
-    fireEvent.change(within(tray).getByLabelText('Admin passcode'), { target: { value: 'secret' } })
-    expect(board.actionComposerProps.setAdminPasscode).toHaveBeenCalledWith('secret')
-    fireEvent.click(within(tray).getByRole('button', { name: 'Admin mode' }))
-    expect(board.actionComposerProps.applyComposerMode).toHaveBeenCalledWith('admin')
+  it('says so when there is nothing to use or no one to turn to', () => {
+    renderDock(testBoard({ gameplayControls: testControls({ items: [] }) }, { itemOptions: [], interactionTargets: [] }))
+    expect(within(openSection('Items')).getByText('You carry nothing.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Interact' }))
+    expect(screen.getByText('There is no one here to turn to.')).toBeInTheDocument()
   })
 
   it('closes on an outside click and returns focus to the actions button', () => {

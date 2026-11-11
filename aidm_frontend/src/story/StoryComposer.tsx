@@ -5,7 +5,6 @@ import {
   Coins,
   Dices,
   Drama,
-  Eye,
   Footprints,
   Hand,
   KeyRound,
@@ -18,9 +17,10 @@ import {
 } from 'lucide-react'
 import type { ComposerMode } from '../gameActions'
 import { partyVitalityFromSnapshot } from '../gameSelectors'
-import { objectActionSubmission, travelSubmission, type ActionSubmission } from './actionIntents'
+import { objectActionSubmission, pickupSubmission, travelSubmission, type ActionSubmission } from './actionIntents'
 import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
+import { recentSpellNames } from './recentSpells'
 import { StoryRollPrompt } from './StoryRollPrompt'
 import { storySuggestions, type StorySuggestion } from './storySuggestions'
 import type { StoryComposerProps } from './types'
@@ -50,15 +50,16 @@ const MODE_SECTIONS: Partial<Record<ComposerMode, TraySection>> = {
   interact: 'interact',
 }
 
-const SUGGESTION_ICONS: Record<StorySuggestion['kind'], LucideIcon> = {
-  trade: Coins,
-  talk: MessageCircle,
+const SUGGESTION_ICONS: Partial<Record<StorySuggestion['kind'], LucideIcon>> = {
+  take: Backpack,
   object: Hand,
-  examine: Eye,
+  talk: MessageCircle,
+  trade: Coins,
   travel: Footprints,
 }
 
 const DOWN_STATUS = 'You are down. Your companions can still reach you.'
+const DOWN_PLACEHOLDER = 'You are down.'
 
 const CONNECTION_LABELS = {
   connecting: 'Connecting…',
@@ -66,9 +67,10 @@ const CONNECTION_LABELS = {
   offline: 'Offline',
 } as const
 
-function placeholderFor(mode: ComposerMode, hasCharacter: boolean) {
+function placeholderFor(mode: ComposerMode, hasCharacter: boolean, down: boolean) {
   if (!hasCharacter) return 'Choose a character first'
   if (mode === 'ooc') return 'Say it out of character…'
+  if (down) return DOWN_PLACEHOLDER
   if (mode === 'item') return 'Describe what you do with it…'
   if (mode === 'emote') return 'Describe the gesture…'
   return 'What do you do?'
@@ -111,9 +113,8 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   } = composer
   const toggleRef = useRef<HTMLButtonElement | null>(null)
   const [trayOpen, setTrayOpen] = useState(false)
-  const [traySection, setTraySection] = useState<TraySection>(
-    () => (board.gameplayControls.spells.length ? 'magic' : 'roll'),
-  )
+  const [traySection, setTraySection] = useState<TraySection>('scene')
+  const [traySpellId, setTraySpellId] = useState<string | undefined>(undefined)
   const [sentCount, setSentCount] = useState(readSentCount)
   const [tradeMerchantId, setTradeMerchantId] = useState('')
   const stage = useStagedComposerAction(composer)
@@ -124,15 +125,22 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const notice = board.pendingRollNotice
   const rollPromptActive = Boolean(notice?.isWaitingOnSelectedPlayer)
   const hasCharacter = Boolean(composer.selectedPlayerId)
-  const viewerDown = composer.selectedPlayerId !== null && vitality[composer.selectedPlayerId]?.state === 'dying'
+  const viewerHealth = board.activePlayers.find((player) => player.id === composer.selectedPlayerId)?.health
+  // Dying, stable, unconscious or dead: a hero at 0 HP cannot act.
+  const viewerDown =
+    composer.selectedPlayerId !== null &&
+    (Boolean(vitality[composer.selectedPlayerId]) || (viewerHealth ? viewerHealth.currentHp <= 0 : false))
+  const othersConnected = board.activePlayers.some((player) => player.id !== composer.selectedPlayerId)
+  const speakingOutOfCharacter = viewerDown && othersConnected && composerMode === 'ooc'
   const dmWorking = board.sendPending || board.streamingTurnActive
   const deliveryUncertain = Boolean(composer.queuedActionRetryable)
   const connected = chrome.connection === 'ready'
   const combatBundle = board.combatState.active
     ? board.combatState.legalActionBundles.find((bundle) => bundle.playerId === board.playerId)
     : undefined
-  const ribbonActive = !rollPromptActive && Boolean(combatBundle)
-  const inputDisabled = !hasCharacter || Boolean(board.turnRecoveryGate) || viewerDown
+  const ribbonActive = !rollPromptActive && !viewerDown && Boolean(combatBundle)
+  const inputDisabled =
+    !hasCharacter || Boolean(board.turnRecoveryGate) || (viewerDown && !speakingOutOfCharacter)
   const sendBlocked =
     inputDisabled || dmWorking || deliveryUncertain || !connected || !actionText.trim()
   const quietMoment =
@@ -148,6 +156,12 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const suggestions = quietMoment && !ribbonActive
     ? storySuggestions(board.worldState, board.gameplayControls)
     : []
+  const { turnRows, currentResponseEntry } = board
+  const heroName = composer.selectedCharacterName ?? ''
+  const recentSpells = useMemo(
+    () => recentSpellNames(currentResponseEntry ? [...turnRows, currentResponseEntry] : turnRows, heroName),
+    [currentResponseEntry, heroName, turnRows],
+  )
 
   // Story mode has no standing roll mode: dice are chosen in the tray or the
   // roll prompt, so a finished roll returns the composer to plain text.
@@ -180,8 +194,10 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
 
   const focusInput = () => actionInputRef.current?.focus()
 
-  const openTray = () => {
-    setTraySection((current) => MODE_SECTIONS[composerMode] ?? current)
+  // Outside combat the tray opens on Scene; in a fight, on the Combat list.
+  const openTray = (section?: TraySection, spellId?: string) => {
+    setTraySection(section ?? MODE_SECTIONS[composerMode] ?? (combatBundle ? 'combat' : 'scene'))
+    setTraySpellId(spellId)
     setTrayOpen(true)
   }
 
@@ -203,8 +219,15 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const chooseSuggestion = (suggestion: StorySuggestion) => {
     if (suggestion.kind === 'trade') {
       setTradeMerchantId(suggestion.merchant.id)
-      setTraySection('trade')
-      setTrayOpen(true)
+      openTray('trade')
+      return
+    }
+    if (suggestion.kind === 'more') {
+      openTray('scene')
+      return
+    }
+    if (suggestion.kind === 'take') {
+      submitTyped(pickupSubmission(suggestion.item, suggestion.label))
       return
     }
     if (suggestion.kind === 'object') {
@@ -227,7 +250,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
       send()
       return
     }
-    if (event.key === '/' && !actionText && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (event.key === '/' && !actionText && !viewerDown && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault()
       openTray()
       return
@@ -308,7 +331,23 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
       )
     }
     if (viewerDown) {
-      return <p className="story-dock-status" data-tone="down" role="status">{DOWN_STATUS}</p>
+      return (
+        <p className="story-dock-status" data-tone="down" role="status">
+          <span>{DOWN_STATUS}</span>
+          {othersConnected && composerMode !== 'ooc' ? (
+            <button
+              type="button"
+              className="story-link"
+              onClick={() => {
+                applyComposerMode('ooc')
+                focusInput()
+              }}
+            >
+              Speak out of character
+            </button>
+          ) : null}
+        </p>
+      )
     }
     if (notice && !notice.isWaitingOnSelectedPlayer) {
       return (
@@ -348,6 +387,9 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               combat={board.combatState}
               playerId={board.playerId}
               activePlayers={board.activePlayers}
+              controls={board.gameplayControls}
+              recentSpellNames={recentSpells}
+              onOpenTray={openTray}
               disabled={
                 dmWorking ||
                 Boolean(board.turnRecoveryGate) ||
@@ -375,10 +417,11 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
                     key={suggestion.key}
                     type="button"
                     className="story-chip"
+                    data-kind={suggestion.kind}
                     style={{ animationDelay: `${index * 30}ms` }}
                     onClick={() => chooseSuggestion(suggestion)}
                   >
-                    <Icon aria-hidden="true" />
+                    {Icon ? <Icon aria-hidden="true" /> : null}
                     {suggestion.label}
                   </button>
                 )
@@ -395,7 +438,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               aria-expanded={trayOpen}
               aria-haspopup="dialog"
               data-mode={composerMode === 'action' ? undefined : composerMode}
-              disabled={inputDisabled}
+              disabled={inputDisabled || viewerDown}
               onClick={() => (trayOpen ? closeTray('toggle') : openTray())}
             >
               <ModeIcon size={20} strokeWidth={1.6} aria-hidden="true" />
@@ -407,7 +450,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               className="story-input"
               rows={1}
               value={actionText}
-              placeholder={placeholderFor(composerMode, hasCharacter)}
+              placeholder={placeholderFor(composerMode, hasCharacter, viewerDown)}
               disabled={inputDisabled}
               onChange={(event) => composer.updateActionText(event.target.value)}
               onKeyDown={handleKeyDown}
@@ -423,9 +466,11 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
             </button>
             {trayOpen ? (
               <StoryActionTray
+                key={traySpellId ?? ''}
                 board={board}
-                canUseOperatorTools={chrome.canUseOperatorTools}
+                othersConnected={othersConnected}
                 section={traySection}
+                initialSpellId={traySpellId}
                 onSectionChange={setTraySection}
                 tradeMerchantId={tradeMerchantId}
                 onTradeMerchantChange={setTradeMerchantId}

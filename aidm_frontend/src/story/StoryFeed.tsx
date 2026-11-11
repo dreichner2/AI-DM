@@ -25,6 +25,8 @@ import {
   type RollBeat,
   type StoryBeat,
   type StoryChangeGlyph,
+  type StoryTurnBeatTarget,
+  type TurnBeatsBeat,
 } from './storyBeats'
 
 type StoryFeedProps = {
@@ -32,6 +34,8 @@ type StoryFeedProps = {
   textSize: StoryTextSize
   /** Leaves the adventure for the title screen (the epilogue's "Start another adventure"). */
   onExitToTitle: () => void
+  /** Opens where a story beat leads: the drawer's Journal or Map, or the Settings sheet. */
+  onOpenBeatTarget: (target: StoryTurnBeatTarget) => void
 }
 
 /** Session storage key under which a dismissed epilogue is remembered for one session. */
@@ -107,21 +111,44 @@ function readingAnchor(container: HTMLElement): ReadingAnchor | null {
 type ScrollMemory = {
   sessionId: number | null | undefined
   positioned: boolean
+  /** The reader scrolled by hand since the feed last followed them. */
   userMoved: boolean
   keys: string[]
   scrollTop: number
   reading: ReadingAnchor | null
   follow: { anchorKey: string } | null
+  /** The viewer's own action, followed until its turn's narration ends. */
+  pin: { anchorKey: string } | null
+}
+
+/** A line the viewer sent: their action, or a roll in their name. */
+function isOwnBeat(beat: StoryBeat, viewerName: string | null) {
+  if (beat.kind === 'action') return beat.own
+  return beat.kind === 'roll' && beat.entry.role === 'player' && Boolean(viewerName) && beat.roll.name === viewerName
+}
+
+/** True once a narration after `anchorKey` has finished streaming. */
+function narrationEndedAfter(beats: StoryBeat[], anchorKey: string) {
+  const index = beats.findIndex((beat) => beat.key === anchorKey)
+  return index >= 0 && beats.slice(index + 1).some((beat) => beat.kind === 'narration' && !beat.streaming)
 }
 
 /**
  * The feed's reading behaviour: open on the latest narration's first line, keep
  * the line being read still when anything above it changes (older pages
  * prepended, the feedback glyphs moving on), settle a new narration under the
- * action that caused it and then stop, and never move a reader who has
- * scrolled away.
+ * action that caused it and then stop. Sending an action pins the feed to it
+ * and follows until that turn's narration ends, wherever the reader was; a
+ * reader who scrolled away by hand is otherwise never moved, and only they are
+ * offered the jump to the latest line.
  */
-function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: StoryBeat[], sessionId: number | null, loading: boolean) {
+function useStoryScroll(
+  scrollRef: RefObject<HTMLDivElement | null>,
+  beats: StoryBeat[],
+  sessionId: number | null,
+  loading: boolean,
+  viewerName: string | null,
+) {
   const memory = useRef<ScrollMemory>({
     sessionId: undefined,
     positioned: false,
@@ -130,6 +157,7 @@ function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: Stor
     scrollTop: 0,
     reading: null,
     follow: null,
+    pin: null,
   })
   const [jumpVisible, setJumpVisible] = useState(false)
 
@@ -147,6 +175,7 @@ function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: Stor
       memo.userMoved = false
       memo.keys = []
       memo.follow = null
+      memo.pin = null
       setJumpVisible(false)
     }
     const keys = beats.map((beat) => beat.key)
@@ -188,14 +217,20 @@ function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: Stor
     const previousLast = previousKeys[previousKeys.length - 1]
     const previousLastIndex = previousLast ? keys.indexOf(previousLast) : -1
     const appended = previousLastIndex >= 0 ? beats.slice(previousLastIndex + 1) : previousKeys.length ? [] : beats
-    if (appended.length) {
+    const ownBeat = appended.find((beat) => isOwnBeat(beat, viewerName))
+    if (ownBeat) {
+      memo.pin = { anchorKey: ownBeat.key }
+      memo.follow = { anchorKey: ownBeat.key }
+      memo.userMoved = false
+      setJumpVisible(false)
+    } else if (appended.length && !memo.pin) {
       const previousElement = previousLast ? findBeat(container, previousLast) : null
       const away =
         previousElement !== null &&
         previousElement.getBoundingClientRect().bottom - container.getBoundingClientRect().bottom > AWAY_THRESHOLD
       if (away) {
         memo.follow = null
-        setJumpVisible(true)
+        if (memo.userMoved) setJumpVisible(true)
       } else {
         const narration = appended.find((beat) => beat.kind === 'narration')
         if (narration) {
@@ -217,6 +252,14 @@ function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: Stor
       }
     }
 
+    if (memo.pin) {
+      // Pinned to the viewer's action: the narration it caused stays followed.
+      const narration = [...beats].reverse().find((beat) => beat.kind === 'narration')
+      if (narration && narration.streaming && beats.indexOf(narration) > keys.indexOf(memo.pin.anchorKey)) {
+        memo.follow = { anchorKey: memo.pin.anchorKey }
+      }
+    }
+
     if (memo.follow && !memo.userMoved) {
       // Follow the text down until the anchor reaches its line, then stop.
       const anchor = findBeat(container, memo.follow.anchorKey)
@@ -225,12 +268,14 @@ function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: Stor
         if (target > container.scrollTop + 1) container.scrollTo({ top: target, behavior: 'smooth' })
       }
     }
+    if (memo.pin && narrationEndedAfter(beats, memo.pin.anchorKey)) memo.pin = null
     record()
-  }, [beats, loading, scrollRef, sessionId])
+  }, [beats, loading, scrollRef, sessionId, viewerName])
 
   const markUserMoved = () => {
     memory.current.userMoved = true
     memory.current.follow = null
+    memory.current.pin = null
   }
 
   const onScroll = () => {
@@ -240,11 +285,12 @@ function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: Stor
     if (container.scrollTop < memo.scrollTop - 2 && memo.follow) markUserMoved()
     memo.scrollTop = container.scrollTop
     memo.reading = readingAnchor(container)
-    if (!jumpVisible) return
     const lastKey = memo.keys[memo.keys.length - 1]
     const last = lastKey ? findBeat(container, lastKey) : null
     if (!last || last.getBoundingClientRect().top < container.getBoundingClientRect().bottom - 48) {
-      setJumpVisible(false)
+      // Back at the latest line: arrivals are followed again.
+      memo.userMoved = false
+      if (jumpVisible) setJumpVisible(false)
     }
   }
 
@@ -277,6 +323,8 @@ function useStoryScroll(scrollRef: RefObject<HTMLDivElement | null>, beats: Stor
 function ChangeGlyph({ glyph }: { glyph: StoryChangeGlyph }) {
   const props = { size: 14, strokeWidth: 1.6, 'aria-hidden': true } as const
   switch (glyph) {
+    case 'dice':
+      return <D20Glyph size={14} />
     case 'heart':
       return <Heart {...props} />
     case 'coin':
@@ -496,8 +544,26 @@ function formatModifier(modifier: number) {
   return modifier < 0 ? `− ${Math.abs(modifier)}` : `+ ${modifier}`
 }
 
+/** "Investigation check: 14 — success" reads as a success. */
+function checkOutcome(text: string) {
+  return /—\s*success\b/i.test(text) ? 'success' : /—\s*failure\b/i.test(text) ? 'failure' : undefined
+}
+
 function RollBeatView({ beat }: { beat: RollBeat }) {
   const { roll } = beat
+  if (beat.checkText) {
+    return (
+      <p className="story-roll-line">
+        <span className="story-roll-who">
+          <D20Glyph className="story-roll-glyph" size={18} />
+          {roll.name ? <span className="story-label story-roll-label">{roll.name}</span> : null}
+        </span>
+        <span className="story-roll-result">
+          <span className="story-roll-check" data-outcome={checkOutcome(beat.checkText)}>{beat.checkText}</span>
+        </span>
+      </p>
+    )
+  }
   const label = roll.name ? `${roll.name} · ${roll.checkLabel}` : roll.checkLabel
   const breakdown =
     roll.kept !== null
@@ -556,14 +622,63 @@ function ChangesBeatView({ beat }: { beat: ChangesBeat }) {
   )
 }
 
+/** The server's beats for a turn, exactly as sent: icon chips (some open the Journal or Map), then quiet lines. */
+function TurnBeatsView({ beat, onOpen }: { beat: TurnBeatsBeat; onOpen: (target: StoryTurnBeatTarget) => void }) {
+  return (
+    <ul className="story-change-list" aria-label="What changed">
+      {beat.beats.map((turnBeat, index) => {
+        const key = `${index}-${turnBeat.kind}-${turnBeat.text}`
+        const style = { '--story-chip-index': index } as CSSProperties
+        if (turnBeat.look === 'hint') {
+          return (
+            <li key={key} className="story-turn-line" style={style}>
+              <button type="button" className="story-label story-turn-hint" onClick={() => onOpen('settings')}>
+                {turnBeat.text}
+              </button>
+            </li>
+          )
+        }
+        if (turnBeat.look === 'plain') {
+          return (
+            <li key={key} className="story-turn-line story-turn-note" style={style}>
+              {turnBeat.text}
+            </li>
+          )
+        }
+        const tone = turnBeat.tone === 'default' ? undefined : turnBeat.tone
+        const content = (
+          <>
+            {turnBeat.glyph ? <ChangeGlyph glyph={turnBeat.glyph} /> : null}
+            {turnBeat.text}
+          </>
+        )
+        const target = turnBeat.target
+        return (
+          <li key={key} style={style}>
+            {target ? (
+              <button type="button" className="story-chip" data-tone={tone} data-kind={turnBeat.kind} onClick={() => onOpen(target)}>
+                {content}
+              </button>
+            ) : (
+              <span className="story-chip" data-tone={tone} data-kind={turnBeat.kind}>{content}</span>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 function BeatView({
   beat,
   board,
   feedbackKey,
+  onOpenBeatTarget,
 }: {
   beat: StoryBeat
   board: SessionBoardProps
   feedbackKey: string | null
+  onOpenBeatTarget: (target: StoryTurnBeatTarget) => void
 }) {
   switch (beat.kind) {
     case 'chapter':
@@ -576,6 +691,8 @@ function BeatView({
       return <RollBeatView beat={beat} />
     case 'changes':
       return <ChangesBeatView beat={beat} />
+    case 'turnBeats':
+      return <TurnBeatsView beat={beat} onOpen={onOpenBeatTarget} />
     case 'notice':
       return <p className="story-notice-text">{beat.text}</p>
   }
@@ -643,7 +760,7 @@ function LoadingStory() {
   )
 }
 
-export function StoryFeed({ board, textSize, onExitToTitle }: StoryFeedProps) {
+export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: StoryFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [dismissedEndings, setDismissedEndings] = useState<ReadonlySet<number | null>>(() => new Set())
   const { turnRows, currentResponseEntry, sessionLogHasMore } = board
@@ -661,7 +778,7 @@ export function StoryFeed({ board, textSize, onExitToTitle }: StoryFeedProps) {
   )
   const loading = board.sessionLoading && entries.length === 0
   const empty = !loading && isEmptyStory(beats)
-  const scroll = useStoryScroll(scrollRef, beats, board.sessionId, loading)
+  const scroll = useStoryScroll(scrollRef, beats, board.sessionId, loading, selectedPlayerName)
   const feedbackKey =
     [...beats].reverse().find(
       (beat): beat is NarrationBeat => beat.kind === 'narration' && !beat.streaming && beat.turnId !== null,
@@ -721,14 +838,14 @@ export function StoryFeed({ board, textSize, onExitToTitle }: StoryFeedProps) {
             ? beats.map((beat) => (
                 <div
                   key={beat.key}
-                  className={`story-beat story-${beat.kind}`}
+                  className={`story-beat story-${beat.kind === 'turnBeats' ? 'changes' : beat.kind}`}
                   data-beat-key={beat.key}
                   data-gap={beat.gap}
                   data-opening={beat.kind === 'narration' && beat.opening ? '' : undefined}
                   data-streaming={beat.kind === 'narration' && beat.streaming ? '' : undefined}
                   data-delivery={beat.kind === 'action' ? beat.delivery : undefined}
                 >
-                  <BeatView beat={beat} board={board} feedbackKey={feedbackKey} />
+                  <BeatView beat={beat} board={board} feedbackKey={feedbackKey} onOpenBeatTarget={onOpenBeatTarget} />
                 </div>
               ))
             : null}

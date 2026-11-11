@@ -15,8 +15,10 @@ import {
   type RollMode,
 } from '../../gameActions'
 import { abilityOptionsFromStatBlock, itemOptionsFromInventory } from '../../gameSelectors'
+import type { GameplayInteractableControl, GameplayObjectAction, GameplaySpellControl } from '../../gameplayControlState'
 import type { InspectorPanelProps } from '../../InspectorPanel'
 import type { SessionBoardProps } from '../../SessionBoard'
+import type { TimelineEntry } from '../../types'
 import { StoryComposer } from '../StoryComposer'
 import { StoryDrawer } from '../StoryDrawer'
 import { StoryView } from '../StoryView'
@@ -26,6 +28,9 @@ import { isStoryPreviewState, makeBoardFixture, makeInspectorFixture, type Story
 /**
  * Development-only harness for the Story dock and drawer (story-dock-preview.html).
  * `?state=idle|tray|roll|combat|combat-waiting|narrating|uncertain|ended|dying|trade|rest|ending`,
+ * or the server-offered states `offered` (chips and the Scene tab from `offeredActions`, the
+ * journal block and story beats), `wizard` (the combat ribbon for a spellcaster) and `downed`
+ * (a stable hero out of combat, someone else at the table),
  * plus `drawer=character|pack|magic|journal|map`, `section=<tray section>` (opens the tray there),
  * `operator=1` and `shell=1` (inside the real StoryView instead of a bare column). The composer
  * state is simulated locally so typing, the tray and the drawer can be exercised.
@@ -44,6 +49,9 @@ type DockPreviewState =
   | 'trade'
   | 'rest'
   | 'ending'
+  | 'offered'
+  | 'wizard'
+  | 'downed'
 
 const DOCK_STATES: DockPreviewState[] = [
   'idle',
@@ -58,6 +66,9 @@ const DOCK_STATES: DockPreviewState[] = [
   'trade',
   'rest',
   'ending',
+  'offered',
+  'wizard',
+  'downed',
 ]
 const DRAWER_TABS: StoryDrawerTab[] = ['character', 'pack', 'magic', 'journal', 'map']
 const params = new URLSearchParams(window.location.search)
@@ -67,11 +78,12 @@ const traySection = params.get('section')
 const operator = params.get('operator') === '1'
 const inShell = params.get('shell') === '1'
 document.body.style.margin = '0'
-const combatState = dockState === 'combat' || dockState === 'combat-waiting' || dockState === 'dying'
+const combatState = dockState === 'combat' || dockState === 'combat-waiting' || dockState === 'dying' || dockState === 'wizard'
 
 function fixtureState(): StoryPreviewState {
-  if (dockState === 'combat-waiting') return 'combat'
+  if (dockState === 'combat-waiting' || dockState === 'wizard') return 'combat'
   if (dockState === 'narrating') return 'streaming'
+  if (dockState === 'offered' || dockState === 'downed') return 'exploration'
   return isStoryPreviewState(dockState) ? dockState : 'exploration'
 }
 
@@ -115,8 +127,190 @@ const proseStyle: CSSProperties = {
 
 const noop = () => {}
 
+function offer(id: GameplayObjectAction['id'], label: string, extra: Partial<GameplayObjectAction> = {}): GameplayObjectAction {
+  return { id, label, available: true, reason: '', phrase: true, ...extra }
+}
+
+function sceneObject(id: string, name: string, states: string[], actions: GameplayObjectAction[]): GameplayInteractableControl {
+  return { id, name, kind: 'object', description: '', revision: 1, states, available: true, reason: '', offered: true, actions }
+}
+
+/** The Lantern Post as the server now describes it: offered actions, take labels, the journal and story beats. */
+function offeredBoard(board: SessionBoardProps): SessionBoardProps {
+  const interactables = [
+    sceneObject('inn_caravan_ledger', 'Caravan Ledger', [], [
+      offer('search', 'Search Caravan Ledger'),
+      offer('inspect', 'Read the caravan ledger', { authored: true, check: { skill: 'investigation', ability: 'intelligence' } }),
+    ]),
+    sceneObject('inn_drivers_bench', "Driver's Bench", ['Open'], [
+      offer('search', "Search under the driver's bench", { authored: true }),
+      offer('inspect', "Look over the driver's bench", { authored: true, done: true, available: false }),
+    ]),
+    sceneObject('inn_wagon_strongbox', 'Wagon Strongbox', ['Closed', 'Locked'], [
+      offer('search', 'Search the strongbox', { authored: true, available: false, reason: 'It is closed and locked.' }),
+      offer('unlock', 'Unlock the strongbox', { authored: true, available: false, reason: 'It is locked, and you carry no key that fits.' }),
+      offer('break', 'Break the strongbox open', { authored: true }),
+      offer('inspect', 'Examine Wagon Strongbox'),
+    ]),
+    sceneObject('inn_wagon_bell', 'Wagon Bell', [], [offer('use', 'Ring the wagon bell', { authored: true })]),
+  ]
+  const storyBeats = [
+    { kind: 'clue', text: 'Clue — The erased caravan ledger' },
+    { kind: 'item_gained', text: 'Taken — Caravan Strongbox Key' },
+    { kind: 'place', text: 'New place on the map — The Old North Road' },
+    { kind: 'hint', text: 'Scripted narrator — use the suggestions, or connect an AI narrator in Settings for free-form play' },
+  ]
+  const withBeats = (row: TimelineEntry): TimelineEntry => ({ ...row, metadata: { ...row.metadata, storyBeats } })
+  const lastDm = [...board.turnRows, ...(board.currentResponseEntry ? [board.currentResponseEntry] : [])]
+    .reverse()
+    .find((row) => row.role === 'dm')
+  const turnRows = board.turnRows.map((row) => (row === lastDm ? withBeats(row) : row))
+  const currentResponseEntry =
+    board.currentResponseEntry && board.currentResponseEntry === lastDm ? withBeats(board.currentResponseEntry) : board.currentResponseEntry
+  const journal = {
+    quest: {
+      id: 'road',
+      title: 'The Road of Unremembered Kings',
+      summary: 'Find out who erased the caravan’s names.',
+      status: 'active',
+      stageTitle: 'The Caravan Without Names',
+      stageSummary: 'Question the witnesses at the Lantern Post and learn what the ledger hides.',
+    },
+    objectives: [
+      { id: 'ledger', title: 'Read the caravan ledger', optional: false, status: 'completed' },
+      { id: 'stone', title: 'Recover the road-stone chip', optional: true, status: 'active' },
+    ],
+    clues: [{ id: 'clue_ledger', title: 'The erased caravan ledger', text: 'Every driver’s and guard’s name has been scratched out in black strokes that smell faintly of cold ash.' }],
+    people: [{ id: 'mara', name: 'Mara Reedwake', role: 'innkeeper and local witness', summary: 'Keeps the Lantern Post and saw the caravan arrive.', met: true }],
+    places: [
+      { id: 'post', name: 'The Lantern Post', state: 'current' },
+      { id: 'road', name: 'The Old North Road', state: 'discovered' },
+    ],
+  }
+  return {
+    ...board,
+    turnRows,
+    currentResponseEntry,
+    worldState: {
+      ...board.worldState,
+      sceneItems: [
+        { id: 'key', name: 'Caravan Strongbox Key', quantity: 1, type: 'key', takeLabel: 'Take the Caravan Strongbox Key' },
+        { id: 'coins', name: 'gp', quantity: 15, type: 'currency', takeLabel: 'Take 15 gp' },
+      ],
+    },
+    gameplayControls: { ...board.gameplayControls, interactables },
+    sessionState: board.sessionState
+      ? { ...board.sessionState, state_snapshot: { ...board.sessionState.state_snapshot, journal } }
+      : null,
+  }
+}
+
+function wizardSpell(id: string, name: string, level: number, maxTargets: number, extra: Partial<GameplaySpellControl> = {}): GameplaySpellControl {
+  return {
+    id,
+    name,
+    level,
+    description: '',
+    delivery: 'spell attack',
+    castingTime: 'action',
+    castLevels: level ? [level] : [],
+    effectLabel: '',
+    effectSummary: level ? 'three darts of force, 1d4+1 each' : 'Ranged spell attack · 1d10 fire',
+    rulesBacked: true,
+    relation: 'enemy',
+    rangeBands: ['near', 'far'],
+    minTargets: 1,
+    maxTargets,
+    concentration: false,
+    prepared: true,
+    resourceLabel: level ? 'Level 1 slot · 2 left' : 'Cantrip',
+    available: true,
+    reason: '',
+    targets: [
+      { id: 'lanternman-1', name: 'Cracked lanternman', team: 'enemy', rangeBand: 'melee', currentHp: null, maxHp: null, conditions: [], available: true, reason: '' },
+      { id: 'lanternman-3', name: 'Burning-hand lanternman', team: 'enemy', rangeBand: 'far', currentHp: null, maxHp: null, conditions: [], available: true, reason: '' },
+    ],
+    ...extra,
+  }
+}
+
+/** The combat ribbon for a wizard who has cast two spells this fight, with a story action the server allows mid-fight. */
+function wizardBoard(board: SessionBoardProps): SessionBoardProps {
+  const [bundle] = board.combatState.legalActionBundles
+  const quarterstaff = { ...bundle.actions[0], id: 'combat.attack.quarterstaff', label: 'Attack with Quarterstaff', weaponName: 'Quarterstaff' }
+  const arcaneRecovery = {
+    ...bundle.actions[0],
+    id: 'class.use.arcane_recovery',
+    type: 'class_feature',
+    label: 'Arcane Recovery',
+    description: 'Recover spell slots during a short rest.',
+    available: false,
+    reason: 'Only during a short rest.',
+    requiresTarget: false,
+    targets: [],
+    capabilityEffect: 'restore_slots',
+  }
+  const movement = bundle.actions
+    .filter((action) => action.type === 'advance' || action.type === 'reposition')
+    .map((action) => ({ ...action, available: true, reason: '' }))
+  const rest = bundle.actions.filter((action) => !['attack', 'advance', 'reposition'].includes(action.type))
+  const combat = {
+    ...board.combatState,
+    legalActionBundles: [{ ...bundle, actions: [quarterstaff, arcaneRecovery, ...movement, ...rest] }],
+  }
+  const cast = (id: string, turnId: number, spell: string): TimelineEntry => ({
+    id,
+    role: 'player',
+    speaker: 'Ysolde Marrow',
+    text: `Ysolde Marrow casts ${spell} at Cracked lanternman.`,
+    timestamp: null,
+    metadata: { turn_id: turnId, action_intent: { kind: 'spell', spell: { name: spell } } },
+  })
+  return {
+    ...board,
+    turnRows: [...board.turnRows, cast('cast-1', 90, 'Magic Missile'), cast('cast-2', 91, 'Fire Bolt')],
+    combatState: combat,
+    worldState: { ...board.worldState, combat },
+    gameplayControls: {
+      ...board.gameplayControls,
+      spells: [
+        wizardSpell('spell_fire_bolt', 'Fire Bolt', 0, 1),
+        wizardSpell('spell_magic_missile', 'Magic Missile', 1, 3),
+        wizardSpell('spell_shield', 'Shield', 1, 1, { castingTime: 'reaction', available: false, reason: 'This reaction triggers automatically.' }),
+      ],
+      interactables: [
+        sceneObject('cairn_banner_stone', 'Banner-stone', [], [
+          offer('inspect', 'Examine Banner-stone'),
+          offer('use', 'Speak the names at the banner-stone', { authored: true }),
+        ]),
+      ],
+    },
+  }
+}
+
+/** A stable hero at 0 HP outside combat, with the rest of the party connected. */
+function downedBoard(board: SessionBoardProps): SessionBoardProps {
+  const [viewer, ...others] = board.activePlayers
+  return {
+    ...board,
+    activePlayers: [{ ...viewer, health: { tone: 'dead', label: 'Dead', currentHp: 0, maxHp: 24 } }, ...others],
+    sessionState: board.sessionState
+      ? {
+          ...board.sessionState,
+          state_snapshot: {
+            ...board.sessionState.state_snapshot,
+            playerCharacters: [{ playerId: viewer.id, health: { conditions: ['unconscious', 'stable'] } }],
+          },
+        }
+      : null,
+  }
+}
+
 function previewBoard(): SessionBoardProps {
   const board = makeBoardFixture(fixtureState())
+  if (dockState === 'offered') return offeredBoard(board)
+  if (dockState === 'wizard') return wizardBoard(board)
+  if (dockState === 'downed') return downedBoard(board)
   if (dockState !== 'combat-waiting') return board
   const [bundle] = board.combatState.legalActionBundles
   const combat = {

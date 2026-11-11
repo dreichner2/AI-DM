@@ -383,6 +383,25 @@
   animation-delay: calc(var(--story-chip-index, 0) * 30ms);
 }
 .story-shell .story-change-list .story-chip { white-space: normal; }
+.story-shell .story-change-list button.story-chip { cursor: pointer; }
+/* A server beat that is not a chip: a hint (label style, opens Settings) or a quiet line. */
+.story-shell .story-change-list .story-turn-line { flex-basis: 100%; }
+.story-shell .story-turn-hint {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.story-shell .story-turn-hint:hover,
+.story-shell .story-turn-hint:focus-visible { color: var(--story-ink-soft); }
+.story-shell .story-turn-note {
+  font-family: var(--story-ui);
+  font-size: 0.84rem;
+  color: var(--story-muted);
+}
+.story-shell .story-roll-check { font-family: var(--story-ui); font-size: 0.9rem; color: var(--story-ink-soft); }
+.story-shell .story-roll-check[data-outcome='success'] { color: var(--story-success); }
 .story-shell .story-change-mark {
   flex: none;
   width: 5px;
@@ -462,9 +481,10 @@
 .story-shell .story-earlier .story-link:hover,
 .story-shell .story-earlier .story-link:focus-visible { color: var(--story-ink-soft); }
 
+/* Just above the dock, where the feed has faded into the page; never over the open tray. */
 .story-shell .story-jump {
   position: absolute;
-  bottom: 14px;
+  bottom: 2px;
   left: 50%;
   z-index: 2;
   translate: -50% 0;
@@ -475,6 +495,7 @@
   white-space: nowrap;
   animation: story-rise var(--story-base) var(--story-ease) backwards;
 }
+.story-shell:has(.story-dock[data-tray-open]) .story-jump { display: none; }
 
 .story-shell .story-empty {
   display: grid;

@@ -39,7 +39,7 @@ function resumeFixture(overrides: Partial<TitleResume> = {}): TitleResume {
     chapterNumber: 3,
     scene: 'The Lantern Post Inn',
     lastPlayedAt: new Date(Date.now() - 2 * 60 * 60 * 1000 - 60_000).toISOString(),
-    recap: 'The ledger in the empty caravan names every traveller but one.',
+    continueLine: 'The Lantern Post Inn — At dusk, an empty caravan rolls into the Lantern Post.',
     ...overrides,
   }
 }
@@ -114,8 +114,8 @@ describe('TitleScreen', () => {
 
     expect(screen.getByRole('heading', { name: 'Continue your adventure' })).toBeInTheDocument()
     expect(screen.getByText('The Road of Unremembered Kings')).toBeInTheDocument()
-    expect(screen.getByText('Chapter 3 · The Lantern Post Inn · played 2 hours ago')).toBeInTheDocument()
-    expect(screen.getByText('The ledger in the empty caravan names every traveller but one.')).toBeInTheDocument()
+    expect(screen.getByText('Chapter 3 · played 2 hours ago')).toBeInTheDocument()
+    expect(screen.getByText('The Lantern Post Inn — At dusk, an empty caravan rolls into the Lantern Post.')).toBeInTheDocument()
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Play now/i })).not.toBeInTheDocument()
 
@@ -127,9 +127,16 @@ describe('TitleScreen', () => {
     expect(props.onOpenAdventures).toHaveBeenCalledOnce()
   })
 
+  it('without a continue line, shows only the chapter, the place and when it was played', () => {
+    const { container } = renderTitleScreen({ resume: resumeFixture({ continueLine: null }) })
+
+    expect(screen.getByText('Chapter 3 · The Lantern Post Inn · played 2 hours ago')).toBeInTheDocument()
+    expect(container.querySelector('.story-title-recap')).toBeNull()
+  })
+
   it('leaves unknown parts out of the resume line', () => {
     renderTitleScreen({
-      resume: resumeFixture({ chapterNumber: null, scene: null, lastPlayedAt: null, recap: null }),
+      resume: resumeFixture({ chapterNumber: null, scene: null, lastPlayedAt: null, continueLine: null }),
     })
 
     expect(screen.getByText('The Road of Unremembered Kings')).toBeInTheDocument()
@@ -152,7 +159,7 @@ describe('TitleScreen', () => {
     expect(screen.queryByRole('button', { name: 'Create your own adventure' })).not.toBeInTheDocument()
 
     fireEvent.click(within(block!).getByRole('button', { name: 'Play now as Arden Vale' }))
-    expect(props.onPlayNow).toHaveBeenCalledOnce()
+    expect(props.onPlayNow).toHaveBeenCalledExactlyOnceWith({ fresh: true })
 
     fireEvent.click(reveal)
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument()
@@ -199,7 +206,7 @@ describe('TitleScreen', () => {
     fireEvent.click(play)
 
     expect(props.onSelectHero).toHaveBeenCalledWith('mara-fen')
-    expect(props.onPlayNow).toHaveBeenCalledOnce()
+    expect(props.onPlayNow).toHaveBeenCalledExactlyOnceWith({ fresh: false })
   })
 
   it('shows the adventure being prepared and locks the choices', () => {

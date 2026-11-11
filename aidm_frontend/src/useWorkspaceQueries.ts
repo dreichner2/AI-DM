@@ -32,6 +32,20 @@ type ValueUpdater<T> = T | ((current: T) => T)
 
 type WorkspaceQueryErrorCategory = 'connection' | 'workspace'
 
+/**
+ * The query the Story view adds to every state, log and workspace read: the
+ * player-safe projection, with legality and private data for one hero. Table
+ * tools reads without it ('').
+ */
+export function playerViewQuery(storyView: boolean, playerId: number | null) {
+  if (!storyView) return ''
+  return playerId === null ? 'view=player' : `view=player&player_id=${playerId}`
+}
+
+function withQuery(path: string, query: string) {
+  return query ? `${path}${path.includes('?') ? '&' : '?'}${query}` : path
+}
+
 type OlderLogLoadingScope = {
   auth: string
   baseUrl: string
@@ -48,6 +62,8 @@ type OlderSessionsLoadingScope = {
 type UseWorkspaceQueriesOptions = {
   auth: string
   baseUrl: string
+  /** `playerViewQuery(...)` for the current play view and hero. */
+  playerView?: string
   operatorDataEnabled: boolean
   runtimeConfigHeaders?: HeadersInit
   sessions: SessionSummary[]
@@ -120,6 +136,7 @@ function sessionMetaFromCampaign(campaign: Campaign): CampaignSessionMeta {
 export function useWorkspaceQueries({
   auth,
   baseUrl,
+  playerView = '',
   operatorDataEnabled,
   runtimeConfigHeaders,
   sessions,
@@ -160,7 +177,7 @@ export function useWorkspaceQueries({
   // Read at call time so a workspace cache update or an auth-dialog change
   // never gives loadSessionData a new identity (that would re-run every
   // effect keyed on it and reload the session).
-  const latest = useLatest({ sessions, onSessionLogLoaded, onUnauthorized, pendingSubmissionCampaignId })
+  const latest = useLatest({ sessions, onSessionLogLoaded, onUnauthorized, pendingSubmissionCampaignId, playerView })
   const rootRequestRef = useRef(0)
   const operatorRequestRef = useRef(0)
   const operatorDataEnabledRef = useRef(operatorDataEnabled)
@@ -301,15 +318,16 @@ export function useWorkspaceQueries({
       const requestAuth = auth
       const requestBaseUrl = baseUrl
       const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+      const view = latest.current.playerView
       setSessionLoading(true)
       try {
         const [logData, stateData] = await Promise.all([
           apiFetch<SessionLogResponse>(
             baseUrl,
-            `/api/sessions/${sessionId}/log?limit=200`,
+            withQuery(`/api/sessions/${sessionId}/log?limit=200`, view),
             requestAuth,
           ),
-          apiFetch<SessionState>(baseUrl, `/api/sessions/${sessionId}/state`, requestAuth),
+          apiFetch<SessionState>(baseUrl, withQuery(`/api/sessions/${sessionId}/state`, view), requestAuth),
         ])
         if (!isCurrentRequest(
           sessionRequestRef,
@@ -406,7 +424,7 @@ export function useWorkspaceQueries({
     try {
       const data = await apiFetch<SessionLogResponse>(
         baseUrl,
-        `/api/sessions/${requestSessionId}/log?limit=200&before_id=${sessionLogCursor}`,
+        withQuery(`/api/sessions/${requestSessionId}/log?limit=200&before_id=${sessionLogCursor}`, latest.current.playerView),
         requestAuth,
       )
       if (
@@ -445,6 +463,7 @@ export function useWorkspaceQueries({
     auth,
     baseUrl,
     isCurrentRequest,
+    latest,
     onUnauthorized,
     pushError,
     selectedSessionId,
@@ -698,7 +717,7 @@ export function useWorkspaceQueries({
       try {
         const workspace = await apiFetch<CampaignWorkspace>(
           requestBaseUrl,
-          `/api/campaigns/${campaignId}/workspace`,
+          withQuery(`/api/campaigns/${campaignId}/workspace`, latest.current.playerView),
           requestAuth,
         )
         if (!isCurrentRequest(

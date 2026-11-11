@@ -484,6 +484,65 @@ describe('gameplayControlsFromSnapshot', () => {
   })
 })
 
+describe('gameplayControlsFromSnapshot offered actions', () => {
+  function offeredSnapshot(combatStatus: string, offeredActions?: unknown[]) {
+    return {
+      playerCharacters: [{ id: 'player_30', playerId: 30, name: 'Ilyra' }],
+      combat: { status: combatStatus },
+      currentScene: {
+        interactables: [{
+          id: 'strongbox',
+          name: 'Wagon Strongbox',
+          kind: 'container',
+          open: false,
+          locked: true,
+          revision: 2,
+          ...(offeredActions ? { offeredActions } : {}),
+        }],
+      },
+    }
+  }
+
+  const offers = [
+    { action: 'search', label: 'Search the strongbox', legal: false, done: false, authored: true, reason: 'It is locked.' },
+    { action: 'unlock', label: 'Unlock the strongbox', legal: true, done: false, authored: true, check: { skill: 'thieves_tools', ability: 'dexterity', dc: 12 } },
+    { action: 'inspect', label: 'Examine Wagon Strongbox', legal: true, done: true },
+    { action: 'teleport', label: 'Teleport the strongbox', legal: true, done: false },
+  ]
+
+  it('takes the server’s offered actions in its order instead of guessing verbs', () => {
+    const [strongbox] = gameplayControlsFromSnapshot(offeredSnapshot('none', offers), 30).interactables
+    expect(strongbox.offered).toBe(true)
+    expect(strongbox.actions).toEqual([
+      { id: 'search', label: 'Search the strongbox', available: false, reason: 'It is locked.', phrase: true, authored: true, done: false },
+      {
+        id: 'unlock',
+        label: 'Unlock the strongbox',
+        available: true,
+        reason: '',
+        phrase: true,
+        authored: true,
+        done: false,
+        check: { skill: 'thieves_tools', ability: 'dexterity', dc: 12 },
+      },
+      { id: 'inspect', label: 'Examine Wagon Strongbox', available: false, reason: '', phrase: true, authored: false, done: true },
+    ])
+  })
+
+  it('leaves combat legality to the server when it offers actions, and blocks everything during combat when it does not', () => {
+    const [offered] = gameplayControlsFromSnapshot(offeredSnapshot('active', offers), 30).interactables
+    expect(offered).toMatchObject({ available: true, reason: '' })
+    expect(offered.actions.find((action) => action.id === 'unlock')?.available).toBe(true)
+
+    const [guessed] = gameplayControlsFromSnapshot(offeredSnapshot('active'), 30).interactables
+    expect(guessed.offered).toBeUndefined()
+    expect(guessed).toMatchObject({
+      available: false,
+      reason: 'Scene interactions are unavailable during combat until they consume turn economy.',
+    })
+  })
+})
+
 function itemSnapshot(): Record<string, unknown> {
   return {
     clock: { day: 2, phase: 'evening', shortRestsSinceLong: 0 },

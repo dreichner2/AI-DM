@@ -78,11 +78,28 @@ export type GameplayCapabilityControl = {
   poolCost?: number | null
 }
 
+/** The roll an offered object action will ask for; `dc` only when the pack shows it. */
+export type GameplayObjectCheck = {
+  skill: string
+  ability: string
+  dc?: number
+}
+
 export type GameplayObjectAction = {
   id: SceneObjectAction
   label: string
   available: boolean
   reason: string
+  /**
+   * The label is a whole phrase naming the object ("Read the caravan ledger"):
+   * the server's offered label, sent as the feed line.
+   */
+  phrase?: boolean
+  /** The pack authored the label. */
+  authored?: boolean
+  /** Already taken; taking it again yields nothing new. */
+  done?: boolean
+  check?: GameplayObjectCheck
 }
 
 export type GameplayInteractableControl = {
@@ -94,6 +111,11 @@ export type GameplayInteractableControl = {
   states: string[]
   available: boolean
   reason: string
+  /**
+   * True when the server sent `offeredActions`: `actions` are then exactly the
+   * server's, in its order, and nothing is guessed on the client.
+   */
+  offered?: boolean
   actions: GameplayObjectAction[]
 }
 
@@ -840,6 +862,41 @@ function objectActions(entry: JsonRecord, kind: string): GameplayObjectAction[] 
   })
 }
 
+const SCENE_OBJECT_ACTIONS = new Set<string>(Object.keys(OBJECT_ACTION_LABELS))
+
+function objectCheck(value: unknown): GameplayObjectCheck | undefined {
+  if (!isRecord(value)) return undefined
+  const dc = numberValue(value.dc)
+  return {
+    skill: stringValue(value.skill),
+    ability: stringValue(value.ability),
+    ...(dc === null ? {} : { dc }),
+  }
+}
+
+/** The server's `offeredActions` for one object, in the server's order; null when it sent none. */
+function offeredObjectActions(entry: JsonRecord): GameplayObjectAction[] | null {
+  if (!Array.isArray(entry.offeredActions)) return null
+  return records(entry.offeredActions).flatMap((offer): GameplayObjectAction[] => {
+    const id = stringValue(offer.action)
+    const label = stringValue(offer.label)
+    if (!SCENE_OBJECT_ACTIONS.has(id) || !label) return []
+    const done = offer.done === true
+    const legal = offer.legal === true
+    const check = objectCheck(offer.check)
+    return [{
+      id: id as SceneObjectAction,
+      label,
+      available: legal && !done,
+      reason: legal ? '' : stringValue(offer.reason),
+      phrase: true,
+      authored: offer.authored === true,
+      done,
+      ...(check ? { check } : {}),
+    }]
+  })
+}
+
 function interactableControls(scene: JsonRecord, inCombat: boolean) {
   return [
     ...records(scene.interactables).map((entry) => ({ entry, collection: 'interactable' })),
@@ -847,7 +904,9 @@ function interactableControls(scene: JsonRecord, inCombat: boolean) {
   ].map(({ entry, collection }): GameplayInteractableControl => {
     const kind = normalized(entry.kind) || collection
     const revision = numberValue(entry.revision)
-    const reason = inCombat
+    const offered = offeredObjectActions(entry)
+    // The server's own legality already covers combat; the blanket rule is for older servers.
+    const reason = inCombat && !offered
       ? 'Scene interactions are unavailable during combat until they consume turn economy.'
       : ''
     return {
@@ -859,7 +918,8 @@ function interactableControls(scene: JsonRecord, inCombat: boolean) {
       states: objectStates(entry),
       available: Boolean(stringValue(entry.id)) && !reason,
       reason,
-      actions: objectActions(entry, kind),
+      ...(offered ? { offered: true } : {}),
+      actions: offered ?? objectActions(entry, kind),
     }
   }).filter((entry) => Boolean(entry.id))
 }

@@ -4,6 +4,7 @@ import {
   buildMapMeta,
   buildTimeline,
   recentMemoryFromSnippets,
+  UNRECORDED_SCENE_NAME,
   inventoryCapacity,
   inventoryGoldLabel,
   inventoryWeightLabel,
@@ -930,7 +931,7 @@ describe('game selector helpers', () => {
     expect(panel.activeQuests[0].objectives).toEqual([
       { id: 'stone', description: 'Recover the road-stone fragment', status: 'completed', optional: false },
       { id: 'names', description: 'Learn why the names were erased', status: 'open', optional: false },
-      { id: 'cairns', description: 'Pass the cairns', status: 'blocked', optional: false },
+      { id: 'cairns', description: 'Pass the cairns', title: 'Pass the cairns', status: 'blocked', optional: false },
       { id: 'ward', description: 'Spare the wardens', status: 'failed', optional: false },
       { id: 'shrine', description: 'Light the roadside shrine', status: 'open', optional: true },
       { id: 'toll', description: 'Pay the ferry toll', status: 'open', optional: false },
@@ -1418,5 +1419,46 @@ describe('worldMapFromSnapshot', () => {
     expect(worldMapFromSnapshot({})).toBeNull()
     expect(worldMapFromSnapshot({ worldMap: { nodes: [] } })).toBeNull()
     expect(worldMapFromSnapshot(null)).toBeNull()
+  })
+})
+
+describe('Story screen fields', () => {
+  it('reads take labels, exact hit points only when sent (else the server’s health word), and a capability’s effect', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: {
+        items: [
+          { id: 'key', name: 'Caravan Strongbox Key', takeLabel: 'Take the Caravan Strongbox Key' },
+          { id: 'mud', name: 'Road mud' },
+        ],
+      },
+      combat: {
+        status: 'active',
+        participants: [
+          { id: 'goblin_1', name: 'Goblin', team: 'enemy', hp: { current: 4, max: 7 } },
+          { id: 'wolf_1', name: 'Wolf', team: 'enemy' },
+          { id: 'bandit_1', name: 'Bandit', team: 'enemy', health: 'Critical' },
+        ],
+        legalActions: [{
+          playerId: 30,
+          actions: [
+            { id: 'class.use.arcane_recovery', type: 'class_feature', label: 'Arcane Recovery', capability: { effectType: 'restore_slots' } },
+            { id: 'combat.dodge', type: 'dodge', label: 'Dodge' },
+          ],
+        }],
+      },
+    })
+    expect(panel.sceneItems.map((item) => item.takeLabel)).toEqual(['Take the Caravan Strongbox Key', undefined])
+    expect(panel.combat.enemies.map((enemy) => [enemy.health, enemy.healthTone, enemy.hp])).toEqual([
+      ['Wounded', 'hurt', { current: 4, max: 7 }],
+      ['Unknown', 'healthy', null],
+      ['Critical', 'critical', null],
+    ])
+    expect(panel.combat.legalActionBundles[0].actions.map((action) => action.capabilityEffect)).toEqual(['restore_slots', ''])
+  })
+
+  it('records no placeholder stage and keeps the scene placeholder recognisable', () => {
+    const panel = worldStateFromSnapshot({ quests: [{ id: 'road', title: 'The Road', status: 'active' }] })
+    expect(panel.activeQuests[0].stage).toBe('')
+    expect(panel.sceneName).toBe(UNRECORDED_SCENE_NAME)
   })
 })

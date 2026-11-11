@@ -7,46 +7,74 @@ import {
   type CombatActionCost,
   type CombatLegalAction,
   type CombatLegalActionBundle,
-  type CombatLegalTarget,
   type CombatParticipantSummary,
   type CombatStatePanel,
 } from '../gameSelectors'
+import type {
+  GameplayControlState,
+  GameplayInteractableControl,
+  GameplayObjectAction,
+  GameplaySpellControl,
+} from '../gameplayControlState'
 import type { ActivePlayer } from '../types'
-import { combatActionSubmission } from './actionIntents'
+import { combatActionSubmission, objectActionSubmission, spellCastSubmission } from './actionIntents'
+import { combatTargetLabel, enemyDetail, rangeBand } from './combatLabels'
 import { StoryVitality } from './StoryVitality'
 import { useEdgeFades } from './useEdgeFades'
 
 const RESOLVING_REASON = 'Actions are unavailable while the current turn resolves.'
 const MAX_TELEGRAPHS = 2
 const MAX_CONDITION_DOTS = 2
-const RANGE_BANDS = new Set(['melee', 'near', 'far', 'distant'])
 /** Shown by the vitality mark, so not repeated as condition dots. */
 const VITALITY_CONDITIONS = new Set(['dying', 'stable', 'dead', 'unconscious'])
-const MOVEMENT_ACTION_TYPES = new Set(['advance', 'reposition', 'dash', 'disengage'])
-const ACTION_GROUPS = ['attack', 'ability', 'movement', 'other'] as const
 /** How high an engagement arc rises above the discs it links. */
 const ARC_RISE = 11
+const MAX_ATTACKS = 2
+const MAX_SPELLS = 2
+const MAX_ABILITIES = 3
+const MAX_STORY_OBJECT_ACTIONS = 2
+/** Features used only at rest (Arcane Recovery) never appear on the ribbon. */
+const REST_ONLY_EFFECTS = new Set(['restore_slots'])
+const SPELL_COSTS: Record<string, string> = { action: 'A', bonus_action: 'B', reaction: 'R' }
 
-type ActionGroup = (typeof ACTION_GROUPS)[number]
+/** Where the action tray opens from the ribbon: Magic (at one spell) or the full Combat list. */
+export type RibbonTraySection = 'magic' | 'combat'
 
 type StoryCombatRibbonProps = {
   combat: CombatStatePanel
   playerId: number | null
   activePlayers: ActivePlayer[]
+  /** The viewer's spells and scene objects. */
+  controls: GameplayControlState
+  /** Names of the spells the hero cast in this fight, most recent first. */
+  recentSpellNames: string[]
   disabled: boolean
   submitAction: (overrideMessage?: string, overrideIntent?: ActionIntent) => boolean
+  onOpenTray: (section: RibbonTraySection, spellId?: string) => void
 }
+
+/** One ribbon choice: a server combat action, a castable spell or an authored scene action. */
+type RibbonChoice =
+  | { kind: 'action'; key: string; label: string; cost: string; action: CombatLegalAction }
+  | { kind: 'spell'; key: string; label: string; cost: string; spell: GameplaySpellControl }
+  | { kind: 'object'; key: string; label: string; cost: string; object: GameplayInteractableControl; action: GameplayObjectAction }
+  | { kind: 'tray'; key: string; label: string; cost: string; section: RibbonTraySection }
+
+type Targeting =
+  | { kind: 'action'; action: CombatLegalAction }
+  | { kind: 'spell'; spell: GameplaySpellControl }
 
 function isEndTurn(action: CombatLegalAction) {
   return action.type === 'end_turn' || action.id === 'combat.end_turn'
 }
 
-/** Attacks; spells and class abilities; movement; everything else (Dodge, Help, Hide, Stabilize, items). */
-function actionGroup(action: CombatLegalAction): ActionGroup {
-  if (action.type === 'attack') return 'attack'
-  if (action.type === 'class_feature' || action.type === 'spell' || /^(class|spell)\./.test(action.id)) return 'ability'
-  if (MOVEMENT_ACTION_TYPES.has(action.type)) return 'movement'
-  return 'other'
+function isClassAbility(action: CombatLegalAction) {
+  return (action.type === 'class_feature' || action.id.startsWith('class.')) &&
+    !REST_ONLY_EFFECTS.has(action.capabilityEffect ?? '')
+}
+
+function isHealingPotion(action: CombatLegalAction) {
+  return action.id.startsWith('item.use.') && /\bhealing\b/i.test(`${action.label} ${action.description}`)
 }
 
 /** What an action spends: A(ction), B(onus action), M(ovement), R(eaction). */
@@ -54,6 +82,12 @@ function costLetters(cost: CombatActionCost | undefined) {
   if (!cost) return ''
   return [cost.action ? 'A' : '', cost.bonusAction ? 'B' : '', cost.movement ? 'M' : '', cost.reaction ? 'R' : ''].join('')
 }
+
+/** A spell the ribbon can aim itself: one target, one cast level. Anything else opens the tray. */
+function aimsInRibbon(spell: GameplaySpellControl) {
+  return spell.maxTargets === 1 && spell.castLevels.length <= 1
+}
+
 
 function combatantLabel(participant: CombatParticipantSummary) {
   const conditions = participant.conditions.length ? `, ${participant.conditions.join(', ')}` : ''
@@ -89,7 +123,7 @@ function Combatant({
   const dots = vitality
     ? participant.conditions.filter((condition) => !VITALITY_CONDITIONS.has(condition.toLowerCase()))
     : participant.conditions
-  const band = participant.rangeBand && RANGE_BANDS.has(participant.rangeBand) ? participant.rangeBand : ''
+  const detail = ally ? rangeBand(participant) : enemyDetail(participant)
   return (
     <li
       className="story-combatant"
@@ -119,8 +153,8 @@ function Combatant({
       <span className="story-combatant-name" aria-hidden="true">{participant.name}</span>
       {vitality ? (
         <StoryVitality vitality={vitality} className="story-combatant-vitality" />
-      ) : band ? (
-        <span className="story-combatant-range" aria-hidden="true">{band}</span>
+      ) : detail ? (
+        <span className="story-combatant-range" aria-hidden="true">{detail}</span>
       ) : null}
     </li>
   )
@@ -225,17 +259,23 @@ function EconomyPips({ bundle }: { bundle: CombatLegalActionBundle }) {
 
 /**
  * Combat in one or two quiet lines: who is fighting and how they are holding
- * up, then — on the viewer's turn — what they can still spend and do.
+ * up, then — on the viewer's turn — one row of what they can do now: weapon
+ * attacks, their latest spells, Cast…, class abilities, a story action the
+ * scene offers, Advance, Fall back, a healing potion, More… and End turn.
+ * Nothing that is not legal now is shown; everything else lives in More….
  */
 export function StoryCombatRibbon({
   combat,
   playerId,
   activePlayers,
+  controls,
+  recentSpellNames: recentSpells,
   disabled,
   submitAction,
+  onOpenTray,
 }: StoryCombatRibbonProps) {
   const hintPrefix = useId()
-  const [targetingActionId, setTargetingActionId] = useState('')
+  const [targeting, setTargeting] = useState<Targeting | null>(null)
   const [blockedNote, setBlockedNote] = useState('')
   const choicesRef = useRef<HTMLDivElement | null>(null)
   const fadeChoicesRef = useEdgeFades<HTMLDivElement>()
@@ -245,11 +285,11 @@ export function StoryCombatRibbon({
     fadeChoicesRef(element)
   }, [fadeChoicesRef])
   const bundle = combat.legalActionBundles.find((candidate) => candidate.playerId === playerId) ?? null
-  const targetingAction = bundle?.actions.find((action) => action.id === targetingActionId) ?? null
+  const targetingKey = targeting ? `${targeting.kind}:${targeting.kind === 'action' ? targeting.action.id : targeting.spell.id}` : ''
 
   useEffect(() => {
-    if (targetingActionId) choicesRef.current?.querySelector<HTMLElement>('button')?.focus()
-  }, [targetingActionId])
+    if (targetingKey) choicesRef.current?.querySelector<HTMLElement>('button')?.focus()
+  }, [targetingKey])
 
   if (!combat.active || !bundle) return null
 
@@ -257,10 +297,48 @@ export function StoryCombatRibbon({
     activePlayers.find((player) => player.character_name === participant.name)?.profile_image ?? ''
   const viewersTurn = bundle.isCurrentActor
   const endTurn = bundle.actions.find(isEndTurn) ?? null
-  const choices = bundle.actions.filter((action) => !isEndTurn(action))
-  const groupedChoices = ACTION_GROUPS
-    .map((group) => choices.filter((action) => actionGroup(action) === group))
-    .filter((group) => group.length)
+  const legal = bundle.actions.filter((action) => action.available && !isEndTurn(action))
+  const firstOfType = (type: string) => legal.filter((action) => action.type === type).slice(0, 1)
+  const castable = controls.spells.filter((spell) => spell.available)
+  const latestSpells = recentSpells
+    .map((name) => castable.find((spell) => spell.name.toLowerCase() === name.toLowerCase()))
+    .filter((spell): spell is GameplaySpellControl => Boolean(spell))
+    .slice(0, MAX_SPELLS)
+  const storyActions = controls.interactables
+    .filter((object) => object.offered && object.available)
+    .flatMap((object) => object.actions.filter((action) => action.authored && action.available).map((action) => ({ object, action })))
+    .slice(0, MAX_STORY_OBJECT_ACTIONS)
+  const actionChoice = (action: CombatLegalAction): RibbonChoice => ({
+    kind: 'action',
+    key: `action-${action.id}`,
+    label: action.label,
+    cost: costLetters(action.cost),
+    action,
+  })
+  const choices: RibbonChoice[] = [
+    ...legal.filter((action) => action.type === 'attack').slice(0, MAX_ATTACKS).map(actionChoice),
+    ...latestSpells.map((spell): RibbonChoice => ({
+      kind: 'spell',
+      key: `spell-${spell.id}`,
+      label: spell.name,
+      cost: SPELL_COSTS[spell.castingTime] ?? '',
+      spell,
+    })),
+    ...(castable.length ? [{ kind: 'tray', key: 'cast', label: 'Cast…', cost: '', section: 'magic' } as const] : []),
+    ...legal.filter(isClassAbility).slice(0, MAX_ABILITIES).map(actionChoice),
+    ...storyActions.map(({ object, action }): RibbonChoice => ({
+      kind: 'object',
+      key: `object-${object.id}-${action.id}`,
+      label: action.label,
+      cost: '',
+      object,
+      action,
+    })),
+    ...firstOfType('advance').map(actionChoice),
+    ...firstOfType('reposition').map(actionChoice),
+    ...legal.filter(isHealingPotion).slice(0, 1).map(actionChoice),
+    { kind: 'tray', key: 'more', label: 'More…', cost: '', section: 'combat' },
+  ]
   const actionSpent = bundle.subTurnCountersTracked && bundle.actionRemaining <= 0
   const telegraphs = combat.telegraphs.slice(0, MAX_TELEGRAPHS)
   const { combatants, dividerAfter } = orderedCombatants(combat)
@@ -272,44 +350,53 @@ export function StoryCombatRibbon({
     )
     .map((participant) => participant.id)
   const layoutKey = `${combatants.map((participant) => participant.id).join('|')}@${bundle.currentActorId}`
+  const endTurnReason = endTurn
+    ? [endTurn.available ? '' : endTurn.reason || 'This action is not currently legal.', disabled ? RESOLVING_REASON : '']
+        .filter(Boolean)
+        .join(' ')
+    : ''
 
-  const actionBlockedReason = (action: CombatLegalAction) => [
-    action.available ? '' : action.reason || 'This action is not currently legal.',
-    action.requiresTarget && !action.targets.length ? 'No targets are available for this action.' : '',
-    disabled ? RESOLVING_REASON : '',
-  ].filter(Boolean).join(' ')
-  const endTurnReason = endTurn ? actionBlockedReason(endTurn) : ''
-
-  const submit = (action: CombatLegalAction, target: CombatLegalTarget | null) => {
-    const submission = combatActionSubmission(bundle.actorName, action, target)
-    if (!submission) return
-    submitAction(submission.message, submission.intent)
-    setTargetingActionId('')
+  const finish = (message: string, intent: ActionIntent) => {
+    submitAction(message, intent)
+    setTargeting(null)
     setBlockedNote('')
   }
 
-  const chooseAction = (action: CombatLegalAction, blockedReason: string) => {
-    if (blockedReason) {
-      setBlockedNote(blockedReason)
+  const choose = (choice: RibbonChoice) => {
+    if (choice.kind === 'tray') {
+      onOpenTray(choice.section)
+      return
+    }
+    if (disabled) {
+      setBlockedNote(RESOLVING_REASON)
       return
     }
     setBlockedNote('')
-    if (action.requiresTarget) {
-      setTargetingActionId(action.id)
-      return
+    if (choice.kind === 'object') {
+      const { message, intent } = objectActionSubmission(controls.actorName, choice.object, choice.action)
+      finish(message, intent)
+    } else if (choice.kind === 'spell') {
+      if (aimsInRibbon(choice.spell)) setTargeting({ kind: 'spell', spell: choice.spell })
+      else onOpenTray('magic', choice.spell.id)
+    } else if (choice.action.requiresTarget) {
+      setTargeting({ kind: 'action', action: choice.action })
+    } else {
+      const submission = combatActionSubmission(bundle.actorName, choice.action, null)
+      if (submission) finish(submission.message, submission.intent)
     }
-    submit(action, null)
   }
 
-  const chooseTarget = (action: CombatLegalAction, target: CombatLegalTarget, blockedReason: string) => {
-    if (blockedReason) {
-      setBlockedNote(blockedReason)
+  const chooseEndTurn = () => {
+    if (!endTurn) return
+    if (endTurnReason) {
+      setBlockedNote(endTurnReason)
       return
     }
-    submit(action, target)
+    const submission = combatActionSubmission(bundle.actorName, endTurn, null)
+    if (submission) finish(submission.message, submission.intent)
   }
 
-  // Reasons for blocked chips live outside the buttons so they describe, not rename, them.
+  // Reasons for blocked targets live outside the buttons so they describe, not rename, them.
   const hints: Array<[string, string]> = []
   const blockedChip = (key: string, reason: string) => {
     const hintId = `${hintPrefix}-${key}`
@@ -321,6 +408,31 @@ export function StoryCombatRibbon({
       'data-blocked': reason ? true : undefined,
     }
   }
+
+  const targetChoices = () => {
+    if (!targeting) return []
+    if (targeting.kind === 'action') {
+      return targeting.action.targets.map((target) => ({
+        id: target.id,
+        label: combatTargetLabel(combat, target),
+        reason: target.available ? '' : target.reason || 'This target is not currently legal.',
+        submit: () => {
+          const submission = combatActionSubmission(bundle.actorName, targeting.action, target)
+          if (submission) finish(submission.message, submission.intent)
+        },
+      }))
+    }
+    return targeting.spell.targets.map((target) => ({
+      id: target.id,
+      label: combatTargetLabel(combat, target),
+      reason: target.available ? '' : target.reason || 'This target is not currently legal.',
+      submit: () => {
+        const { message, intent } = spellCastSubmission(controls.actorName, targeting.spell, [target.id])
+        finish(message, intent)
+      },
+    }))
+  }
+  const targetingLabel = targeting ? (targeting.kind === 'action' ? targeting.action.label : targeting.spell.name) : ''
 
   return (
     <section className="story-ribbon" aria-label={`Combat, round ${bundle.round}`}>
@@ -359,25 +471,24 @@ export function StoryCombatRibbon({
             ref={setChoicesElement}
             className="story-ribbon-choices story-scroll-row"
             role="group"
-            aria-label={targetingAction ? `Targets for ${targetingAction.label}` : 'Combat actions'}
+            aria-label={targeting ? `Targets for ${targetingLabel}` : 'Combat actions'}
           >
-            {targetingAction ? (
+            {targeting ? (
               <>
-                {targetingAction.targets.map((target) => {
-                  const reason = [
-                    target.available ? '' : target.reason || 'This target is not currently legal.',
-                    disabled ? RESOLVING_REASON : '',
-                  ].filter(Boolean).join(' ')
-                  const key = `target-${target.id}`
+                {targetChoices().map((target) => {
+                  const reason = [target.reason, disabled ? RESOLVING_REASON : ''].filter(Boolean).join(' ')
                   return (
                     <button
                       key={target.id}
                       type="button"
                       className="story-chip"
-                      {...blockedChip(key, reason)}
-                      onClick={() => chooseTarget(targetingAction, target, reason)}
+                      {...blockedChip(`target-${target.id}`, reason)}
+                      onClick={() => {
+                        if (reason) setBlockedNote(reason)
+                        else target.submit()
+                      }}
                     >
-                      {target.name} · {target.rangeBand}
+                      {target.label}
                     </button>
                   )
                 })}
@@ -385,7 +496,7 @@ export function StoryCombatRibbon({
                   type="button"
                   className="story-link story-ribbon-back"
                   onClick={() => {
-                    setTargetingActionId('')
+                    setTargeting(null)
                     setBlockedNote('')
                   }}
                 >
@@ -394,37 +505,26 @@ export function StoryCombatRibbon({
                 </button>
               </>
             ) : (
-              groupedChoices.map((group, groupIndex) => (
-                <Fragment key={actionGroup(group[0])}>
-                  {groupIndex ? <span className="story-ribbon-gap" aria-hidden="true" /> : null}
-                  {group.map((action) => {
-                    const reason = actionBlockedReason(action)
-                    const key = `action-${action.id}`
-                    const cost = costLetters(action.cost)
-                    return (
-                      <button
-                        key={action.id}
-                        type="button"
-                        className="story-chip"
-                        data-group={actionGroup(action)}
-                        {...blockedChip(key, reason)}
-                        onClick={() => chooseAction(action, reason)}
-                      >
-                        {action.label}
-                        {cost ? <span className="story-chip-cost" aria-hidden="true">{cost}</span> : null}
-                      </button>
-                    )
-                  })}
-                </Fragment>
+              choices.map((choice) => (
+                <button
+                  key={choice.key}
+                  type="button"
+                  className="story-chip"
+                  data-choice={choice.kind}
+                  onClick={() => choose(choice)}
+                >
+                  {choice.label}
+                  {choice.cost ? <span className="story-chip-cost" aria-hidden="true">{choice.cost}</span> : null}
+                </button>
               ))
             )}
           </div>
-          {endTurn && !targetingAction ? (
+          {endTurn && !targeting ? (
             <button
               type="button"
               className={actionSpent ? 'story-primary story-end-turn' : 'story-chip story-end-turn'}
               {...blockedChip('end-turn', endTurnReason)}
-              onClick={() => chooseAction(endTurn, endTurnReason)}
+              onClick={chooseEndTurn}
             >
               {endTurn.label || 'End turn'}
             </button>

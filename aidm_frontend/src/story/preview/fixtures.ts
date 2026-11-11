@@ -710,18 +710,18 @@ function combatStateFor(state: StoryPreviewState): CombatStatePanel {
     debugEnabled: false,
     enemies: active
       ? [
-          combatant('lanternman-1', 'Cracked lanternman', 'enemy', '4 / 22', 'critical', {
+          combatant('lanternman-1', 'Cracked lanternman', 'enemy', 'Critical', 'critical', {
             conditions: ['marked'],
             morale: 'shaken',
             rangeBand: 'melee',
             engagedWith: dying ? [] : [viewer],
           }),
-          combatant('lanternman-2', 'Lanternman', 'enemy', '22 / 22', 'healthy', {
+          combatant('lanternman-2', 'Lanternman', 'enemy', 'Unhurt', 'healthy', {
             intent: 'Press the dwarf against the wagon',
             rangeBand: 'melee',
             engagedWith: ['player-31'],
           }),
-          combatant('lanternman-3', 'Burning-hand lanternman', 'enemy', '22 / 22', 'healthy', {
+          combatant('lanternman-3', 'Burning-hand lanternman', 'enemy', 'Unhurt', 'healthy', {
             position: 'far',
             rangeBand: 'far',
             telegraph: 'Its hand is lifting toward Ysolde',
@@ -736,16 +736,16 @@ function combatStateFor(state: StoryPreviewState): CombatStatePanel {
                 rangeBand: 'melee',
                 deathSaves: { successes: 1, failures: 1 },
               })
-            : combatant(viewer, 'Ysolde Marrow', 'ally', '19 / 24', 'hurt', {
+            : combatant(viewer, 'Ysolde Marrow', 'ally', 'Hurt', 'hurt', {
                 rangeBand: 'melee',
                 engagedWith: ['lanternman-1'],
               }),
-          combatant('player-31', 'Brannoc Deepvale', 'ally', '9 / 27', 'critical', {
+          combatant('player-31', 'Brannoc Deepvale', 'ally', 'Wounded', 'critical', {
             conditions: ['prone'],
             rangeBand: 'melee',
             engagedWith: ['lanternman-2'],
           }),
-          combatant('player-32', 'Wren Tallowmere', 'ally', '18 / 20', 'healthy', { position: 'far', rangeBand: 'far' }),
+          combatant('player-32', 'Wren Tallowmere', 'ally', 'Hurt', 'healthy', { position: 'far', rangeBand: 'far' }),
         ]
       : [],
     telegraphs: active ? ['The burning-hand lanternman is gathering cold light.'] : [],

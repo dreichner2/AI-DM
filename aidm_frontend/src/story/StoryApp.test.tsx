@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { JsonRecord, TimelineEntry } from '../types'
-import { testBoard, testCombat, VIEWER_ID } from './dockTestFixtures'
+import { testBoard, testCombat, testControls, VIEWER_ID } from './dockTestFixtures'
 import { StoryClarification } from './StoryClarification'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
 import { StoryComposer } from './StoryComposer'
@@ -153,7 +153,7 @@ describe('Story fixes for the integrated app', () => {
       }),
     ]
     const { container } = render(
-      <StoryFeed board={testBoard({ turnRows: entries, currentResponseEntry: null, sessionLogHasMore: false })} textSize="default" onExitToTitle={vi.fn()} />,
+      <StoryFeed board={testBoard({ turnRows: entries, currentResponseEntry: null, sessionLogHasMore: false })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
     )
     const outcomes = [...container.querySelectorAll('.story-roll-outcome')].map((element) => element.textContent)
     expect(outcomes).toEqual(['hit vs AC 13', 'success vs DC 12'])
@@ -165,8 +165,11 @@ describe('Story fixes for the integrated app', () => {
         combat={testCombat()}
         playerId={VIEWER_ID}
         activePlayers={[]}
+        controls={testControls()}
+        recentSpellNames={[]}
         disabled={false}
         submitAction={vi.fn(() => true)}
+        onOpenTray={vi.fn()}
       />,
     )
     const combatants = within(screen.getByRole('list', { name: 'Combatants' })).getAllByRole('listitem')

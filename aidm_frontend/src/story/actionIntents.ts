@@ -144,13 +144,21 @@ export function capabilitySubmission(
   }
 }
 
-/** A scene object action carrying the object's current revision. */
+/** A phrase as the line under the hero's name: "Read the caravan ledger." */
+function phraseLine(label: string) {
+  return `${label.trim().replace(/[.!?…\s]+$/, '')}.`
+}
+
+/**
+ * A scene object action carrying the object's current revision. An action
+ * whose label is a whole phrase is sent as that phrase.
+ */
 export function objectActionSubmission(
   actorName: string,
   object: GameplayInteractableControl,
   action: GameplayObjectAction,
 ): ActionSubmission {
-  const message = `${actorName} attempts to ${action.id} ${object.name}.`
+  const message = action.phrase ? phraseLine(action.label) : `${actorName} attempts to ${action.id} ${object.name}.`
   return {
     message,
     intent: {
@@ -163,6 +171,25 @@ export function objectActionSubmission(
         action: action.id,
         ...(object.revision === null ? {} : { revision: object.revision }),
       },
+    },
+  }
+}
+
+/** Picking up a loose item in the scene, sent as its take label ("Take 15 gp."). */
+export function pickupSubmission(
+  item: { id: string; name: string; quantity: number },
+  label: string,
+): ActionSubmission {
+  const message = phraseLine(label)
+  return {
+    message,
+    intent: {
+      kind: 'item',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      inventory_action: 'pick_up',
+      item: { id: item.id, name: item.name, quantity: item.quantity },
     },
   }
 }

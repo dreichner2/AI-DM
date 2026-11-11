@@ -241,6 +241,8 @@ let importRestoreRefusal: string | null
 let fetchCalls: Array<{
   method: string
   path: string
+  /** The query string, '?view=player&player_id=30' or ''. */
+  search: string
   origin: string
   body: unknown
   authorization: string | null
@@ -591,7 +593,7 @@ function installFetchMock() {
       const authorization = new Headers(init?.headers).get('Authorization')
       const workspaceToken = new Headers(init?.headers).get('X-AIDM-Workspace-Token')
       const workspaceIdHeader = new Headers(init?.headers).get('X-AIDM-Workspace-Id')
-      fetchCalls.push({ method, path, origin: url.origin, body, authorization, workspaceToken, workspaceIdHeader })
+      fetchCalls.push({ method, path, search: url.search, origin: url.origin, body, authorization, workspaceToken, workspaceIdHeader })
 
       if (method === 'GET' && path === '/api/health') return jsonResponse(health)
       if (method === 'GET' && path === '/api/capabilities') {

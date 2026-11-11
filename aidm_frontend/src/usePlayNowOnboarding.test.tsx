@@ -560,11 +560,22 @@ describe('usePlayNowOnboarding', () => {
     await waitFor(() => expect(result.current.titleScreenProps.heroesStatus).toBe('ready'))
 
     act(() => result.current.titleScreenProps.onSelectHero('mara-fen'))
-    act(() => result.current.titleScreenProps.onPlayNow())
+    act(() => result.current.titleScreenProps.onPlayNow({ fresh: false }))
     await waitFor(() => expect(options.setSelectedSessionId).toHaveBeenCalledWith(20))
 
     expect(callsTo('/api/onboarding/play-now')).toHaveLength(1)
     expect(requestBody('/api/onboarding/play-now')).toEqual({ character_id: 'mara-fen' })
+  })
+
+  it('asks for a fresh adventure when a returning player plays a ready-made one', async () => {
+    routeApi({ [HEROES_PATH]: heroLibrary, '/api/onboarding/play-now': playNowResponse })
+    const options = createOptions()
+    const { result } = renderHook(() => usePlayNowOnboarding(options))
+    await waitFor(() => expect(result.current.titleScreenProps.heroesStatus).toBe('ready'))
+
+    act(() => result.current.titleScreenProps.onPlayNow({ fresh: true }))
+    await waitFor(() => expect(options.setSelectedSessionId).toHaveBeenCalledWith(20))
+    expect(requestBody('/api/onboarding/play-now')).toEqual({ character_id: 'arden-vale', fresh: true })
   })
 
   it('sends the chosen hero as character_id to hosted guest Play Now', async () => {
@@ -631,6 +642,7 @@ describe('usePlayNowOnboarding', () => {
         chapter_recap: 'The ledger named every traveller but one.',
         latest_activity_at: '2026-11-09T12:00:00Z',
         scene_title: 'The Old North Road',
+        continue_line: 'The Old North Road — Mist lies on the milestones.',
       }),
     ])
     routeApi({ [HEROES_PATH]: heroLibrary, '/api/campaigns/11/workspace': () => workspace })
@@ -645,7 +657,7 @@ describe('usePlayNowOnboarding', () => {
       chapterNumber: null,
       scene: 'The Lantern Post Inn',
       lastPlayedAt: '2026-11-09T10:00:00Z',
-      recap: null,
+      continueLine: null,
     })
     await waitFor(() => expect(result.current.titleScreenProps.resume?.chapterNumber).toBe(2))
     expect(result.current.titleScreenProps.resume).toEqual({
@@ -653,7 +665,7 @@ describe('usePlayNowOnboarding', () => {
       chapterNumber: 2,
       scene: 'The Old North Road',
       lastPlayedAt: '2026-11-09T12:00:00Z',
-      recap: 'The ledger named every traveller but one.',
+      continueLine: 'The Old North Road — Mist lies on the milestones.',
     })
     rerender({ values: { ...options } })
     expect(callsTo('/api/campaigns/11/workspace')).toHaveLength(1)
@@ -668,9 +680,9 @@ describe('usePlayNowOnboarding', () => {
     expect(result.current.showTitleScreen).toBe(false)
   })
 
-  it('recaps a chapter from its summary only once it has been played', async () => {
+  it('never shows the rolling summary, and reads the continue line again each time the title opens', async () => {
     const latest = campaign({ campaign_id: 11 })
-    const sessions = [chapter({ session_id: 202, is_current: true, turn_count: 0, summary_excerpt: 'Campaign pack imported.' })]
+    const sessions = [chapter({ session_id: 202, is_current: true, turn_count: 3, summary_excerpt: 'The caravan was searched.' })]
     routeApi({ '/api/campaigns/11/workspace': () => workspaceFor(latest, sessions) })
     const options = createOptions({ campaignCount: 1, campaigns: [latest] })
     const { result, rerender } = renderHook(
@@ -678,12 +690,14 @@ describe('usePlayNowOnboarding', () => {
       { initialProps: { values: options } },
     )
     await waitFor(() => expect(result.current.titleScreenProps.resume?.chapterNumber).toBe(1))
-    expect(result.current.titleScreenProps.resume?.recap).toBeNull()
+    expect(result.current.titleScreenProps.resume?.continueLine).toBeNull()
 
-    sessions[0] = { ...sessions[0], turn_count: 3, summary_excerpt: 'The caravan was searched.' }
+    sessions[0] = { ...sessions[0], continue_line: 'The Lantern Post — The bell rings three times.' }
     rerender({ values: { ...options, modalOpen: true } })
     rerender({ values: options })
-    await waitFor(() => expect(result.current.titleScreenProps.resume?.recap).toBe('The caravan was searched.'))
+    await waitFor(() =>
+      expect(result.current.titleScreenProps.resume?.continueLine).toBe('The Lantern Post — The bell rings three times.'),
+    )
     expect(callsTo('/api/campaigns/11/workspace')).toHaveLength(2)
   })
 

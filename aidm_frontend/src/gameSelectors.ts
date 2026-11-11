@@ -124,6 +124,8 @@ export type QuestObjectiveStatus = 'open' | 'blocked' | 'completed' | 'failed'
 export type QuestObjectiveSummary = {
   id: string
   description: string
+  /** The objective's short title, when the pack gives one. */
+  title?: string
   status: QuestObjectiveStatus
   optional: boolean
 }
@@ -173,6 +175,8 @@ export type WorldSceneItemSummary = {
   name: string
   quantity: number
   type: string
+  /** The server's pickup label ("Take the Caravan Strongbox Key"); absent from older servers. */
+  takeLabel?: string
 }
 
 export type CombatParticipantSummary = {
@@ -199,6 +203,8 @@ export type CombatParticipantSummary = {
   engagedWith?: string[]
   /** Death saving throws of a downed player character; null for everyone else. */
   deathSaves?: CombatDeathSaves | null
+  /** Exact hit points, only when the server sends them. */
+  hp?: { current: number; max: number } | null
 }
 
 export type CombatDeathSaves = {
@@ -254,6 +260,8 @@ export type CombatLegalAction = {
   allowedRangeBands: string[]
   weaponName: string
   cost?: CombatActionCost
+  /** A class capability's effect type (`restore_slots` for Arcane Recovery). */
+  capabilityEffect?: string
 }
 
 export type CombatLegalActionBundle = {
@@ -462,10 +470,20 @@ function healthTone(current: number | null, max: number | null): CombatParticipa
   return 'healthy'
 }
 
+/** The player view's health word for an enemy whose hit points it hides, and the tone it reads as. */
+const HEALTH_WORD_TONES: Record<string, CombatParticipantSummary['healthTone']> = {
+  Unhurt: 'healthy',
+  Hurt: 'hurt',
+  Wounded: 'hurt',
+  Critical: 'critical',
+  Down: 'down',
+}
+
 function combatParticipantSummary(participant: JsonRecord): CombatParticipantSummary {
   const hp = isRecord(participant.hp) ? participant.hp : {}
   const current = numberValue(hp.current ?? hp.currentHp)
   const max = numberValue(hp.max ?? hp.maxHp)
+  const healthWord = typeof participant.health === 'string' && HEALTH_WORD_TONES[participant.health] ? participant.health : ''
   const intent = isRecord(participant.currentIntent)
     ? participant.currentIntent
     : isRecord(participant.intent)
@@ -488,7 +506,7 @@ function combatParticipantSummary(participant: JsonRecord): CombatParticipantSum
             : current / Math.max(1, max) <= 0.6
               ? 'Wounded'
               : 'Hurt'
-      : 'Unknown'
+      : healthWord || 'Unknown'
   return {
     id: stringValue(participant.id),
     name: stringValue(participant.name, 'Unknown combatant'),
@@ -496,7 +514,7 @@ function combatParticipantSummary(participant: JsonRecord): CombatParticipantSum
     kind: stringValue(participant.kind, 'creature'),
     source: stringValue(participant.source),
     health,
-    healthTone: healthTone(current, max),
+    healthTone: current === null && max === null && healthWord ? HEALTH_WORD_TONES[healthWord] : healthTone(current, max),
     conditions,
     morale: participant.morale === undefined || participant.morale === null ? '—' : stringValue(participant.morale),
     moraleEvents: Array.isArray(participant.moraleEvents)
@@ -514,6 +532,7 @@ function combatParticipantSummary(participant: JsonRecord): CombatParticipantSum
       ? position.engagedWith.map((value) => stringValue(value)).filter(Boolean)
       : [],
     deathSaves: deathSavesValue(participant.deathSaves),
+    hp: current !== null && max !== null ? { current, max } : null,
   }
 }
 
@@ -639,6 +658,7 @@ function combatLegalAction(action: JsonRecord): CombatLegalAction | null {
       : [],
     weaponName: stringValue(weapon.name),
     cost: combatActionCost(action, economy),
+    capabilityEffect: isRecord(action.capability) ? stringValue(action.capability.effectType) : '',
   }
 }
 
@@ -1483,6 +1503,11 @@ function recordTurnValue(record: JsonRecord, keys: string[]) {
   return 0
 }
 
+/** `sceneName` when the snapshot records no scene; never shown in the Story view. */
+export const UNRECORDED_SCENE_NAME = 'No scene recorded'
+/** An NPC `role` the snapshot does not record. */
+export const UNKNOWN_NPC_ROLE = 'Role unknown'
+
 export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
   const root = isRecord(snapshot) ? snapshot : {}
   const scene = isRecord(root.currentScene) ? root.currentScene : {}
@@ -1586,7 +1611,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
       id: stringValue(npc.id),
       name: stringValue(npc.name, 'Unknown NPC'),
       race: stringValue(npc.race) || stringValue(npc.species) || stringValue(npc.ancestry),
-      role: stringValue(npc.role, 'Role unknown'),
+      role: stringValue(npc.role, UNKNOWN_NPC_ROLE),
       disposition: stringValue(npc.disposition, 'unknown'),
       status: stringValue(npc.status, 'unknown'),
     }))
@@ -1603,7 +1628,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
   )
 
   return {
-    sceneName: stringValue(scene.name, 'No scene recorded'),
+    sceneName: stringValue(scene.name, UNRECORDED_SCENE_NAME),
     sceneDescription: stringValue(scene.description),
     sceneType: stringValue(scene.sceneType, 'unknown'),
     mood: stringValue(scene.mood, 'unknown'),
@@ -1613,12 +1638,16 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
         : stringValue(scene.dangerLevel, '0'),
     activeQuests,
     presentNpcs: knownNpcs.filter((npc) => activeNpcIdSet.has(npc.id)),
-    sceneItems: recordArray(scene.items).map((item) => ({
-      id: stringValue(item.id),
-      name: stringValue(item.name, 'Unknown object'),
-      quantity: Math.max(1, Math.floor(numberValue(item.quantity) ?? 1)),
-      type: stringValue(item.type, 'object'),
-    })),
+    sceneItems: recordArray(scene.items).map((item) => {
+      const takeLabel = stringValue(item.takeLabel)
+      return {
+        id: stringValue(item.id),
+        name: stringValue(item.name, 'Unknown object'),
+        quantity: Math.max(1, Math.floor(numberValue(item.quantity) ?? 1)),
+        type: stringValue(item.type, 'object'),
+        ...(takeLabel ? { takeLabel } : {}),
+      }
+    }),
     availableExits: knownLocations.filter((location) => connectedLocationIds.has(location.id)),
     knownLocations,
     knownNpcs,
@@ -1649,18 +1678,22 @@ function objectiveStatus(objective: JsonRecord): QuestObjectiveStatus {
 
 function questSummary(quest: JsonRecord): WorldQuestSummary {
   const objectives = recordArray(quest.objectives)
-    .map((objective, index): QuestObjectiveSummary => ({
-      id: stringValue(objective.id, `objective-${index + 1}`),
-      description: stringValue(objective.description) || stringValue(objective.title) || stringValue(objective.name),
-      status: objectiveStatus(objective),
-      optional: objective.optional === true,
-    }))
+    .map((objective, index): QuestObjectiveSummary => {
+      const title = stringValue(objective.title) || stringValue(objective.name)
+      return {
+        id: stringValue(objective.id, `objective-${index + 1}`),
+        description: stringValue(objective.description) || title,
+        ...(title ? { title } : {}),
+        status: objectiveStatus(objective),
+        optional: objective.optional === true,
+      }
+    })
     .filter((objective) => Boolean(objective.description))
   return {
     id: stringValue(quest.id),
     title: stringValue(quest.title, 'Untitled quest'),
     status: stringValue(quest.status, 'unknown'),
-    stage: stringValue(quest.stage, 'No stage recorded'),
+    stage: stringValue(quest.stage),
     objective: objectives.find((objective) => objective.status === 'open')?.description ?? '',
     objectives,
   }

@@ -91,7 +91,15 @@ export function StoryView({
           onTextSizeChange={setStoryTextSize}
         />
         <main className="story-main" aria-label="Story">
-          <StoryFeed board={board} textSize={textSize} onExitToTitle={chrome.onExitToTitle} />
+          <StoryFeed
+            board={board}
+            textSize={textSize}
+            onExitToTitle={chrome.onExitToTitle}
+            onOpenBeatTarget={(target) => {
+              if (target === 'settings') chrome.onOpenSettings()
+              else onDrawerOpenChange(true, target)
+            }}
+          />
           <div className="story-composer-slot">{composer}</div>
         </main>
         <aside

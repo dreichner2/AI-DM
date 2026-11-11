@@ -171,6 +171,32 @@ describe('Story mode in the app', () => {
     expect(socketMock.io).toHaveBeenCalledTimes(1)
   })
 
+  it('reads the table through the selected hero’s eyes in Story view, and in full in Table tools', async () => {
+    await loadConsoleChunks()
+    await renderStoryApp()
+    const reads = () =>
+      appTestState.fetchCalls
+        .filter((call) => call.method === 'GET' && /^\/api\/(sessions\/20\/(state|log)|campaigns\/10\/workspace)$/.test(call.path))
+        .map((call) => `${call.path}${call.search}`)
+
+    await waitFor(() => expect(reads()).toEqual(expect.arrayContaining([
+      '/api/sessions/20/state?view=player&player_id=30',
+      '/api/sessions/20/log?limit=200&view=player&player_id=30',
+      '/api/campaigns/10/workspace?view=player&player_id=30',
+    ])))
+    expect(reads().every((read) => read.includes('view=player&player_id=30'))).toBe(true)
+
+    appTestState.fetchCalls.length = 0
+    fireEvent.click(screen.getAllByRole('button', { name: 'Adventure menu' })[0]!)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Table tools' }))
+    await waitFor(() => expect(reads()).toEqual(expect.arrayContaining([
+      '/api/sessions/20/state',
+      '/api/sessions/20/log?limit=200',
+      '/api/campaigns/10/workspace',
+    ])))
+    expect(reads().some((read) => read.includes('view='))).toBe(false)
+  })
+
   it('returns to Story view from the console View settings', async () => {
     await renderLoadedApp()
 

@@ -2270,6 +2270,7 @@ describe('App user workflow regressions', () => {
           appTestState.fetchCalls.push({
             method,
             path: url.pathname,
+            search: url.search,
             origin: url.origin,
             body: init?.body ? JSON.parse(String(init.body)) : null,
             authorization: headers.get('Authorization'),

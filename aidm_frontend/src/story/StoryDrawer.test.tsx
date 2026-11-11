@@ -234,7 +234,7 @@ describe('StoryDrawer', () => {
     })
 
     expect(screen.getAllByRole('img', { name: 'Dying: 2 successes, 1 failure' })).toHaveLength(2)
-    expect(screen.getByRole('img', { name: 'Stable' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Down — stable' })).toBeInTheDocument()
     expect(within(screen.getByLabelText('Conditions')).getAllByText(/./).map((chip) => chip.textContent)).toEqual(['poisoned'])
   })
 

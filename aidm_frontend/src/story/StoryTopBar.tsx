@@ -27,6 +27,7 @@ import {
   VolumeX,
   type LucideIcon,
 } from 'lucide-react'
+import { UNRECORDED_SCENE_NAME } from '../gameSelectors'
 import type { SessionBoardProps } from '../SessionBoard'
 import { EmberMark } from './glyphs'
 import type { StoryTextSize } from './sheets/storyPreferences'
@@ -134,8 +135,11 @@ export function StoryTopBar({
   const menuRef = useRef<HTMLDivElement | null>(null)
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const musicRef = useRef<HTMLDivElement | null>(null)
+  const worldSceneName = board.worldState.sceneName?.trim()
   const sceneName =
-    board.sceneState?.locationName?.trim() || board.worldState.sceneName?.trim() || board.activeSessionTitle
+    board.sceneState?.locationName?.trim() ||
+    (worldSceneName === UNRECORDED_SCENE_NAME ? '' : worldSceneName) ||
+    board.activeSessionTitle
   const characterOpen = drawerOpen && drawerTab === 'character'
   const clockLabel = board.worldState.clock?.label ?? ''
 

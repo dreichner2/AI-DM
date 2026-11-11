@@ -2,6 +2,7 @@ import type { CharacterVitality } from '../gameSelectors'
 import type { ActivePlayer } from '../types'
 import { StoryVitality } from './StoryVitality'
 import type { StoryDrawerTab } from './types'
+import { vitalityLabel } from './vitalityLabels'
 
 type StoryPartyHudProps = {
   activePlayers: ActivePlayer[]
@@ -34,7 +35,9 @@ function Portrait({
   const ratio = health && health.maxHp > 0 ? Math.max(0, Math.min(1, health.currentHp / health.maxHp)) : 1
   const radius = size / 2 - RING_STROKE
   const circumference = 2 * Math.PI * radius
-  const label = health ? `${name}: ${health.label}` : name
+  // A downed hero reads by their state (a stable hero is not dead), never by hit points alone.
+  const state = vitality ? vitalityLabel(vitality.state) : health && health.currentHp <= 0 ? 'Down' : health?.label
+  const label = state ? `${name}: ${state}` : name
   return (
     <button
       type="button"

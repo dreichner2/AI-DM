@@ -153,7 +153,7 @@ import { useSessionSocket } from './useSessionSocket'
 import { useRuntimeSettings, useShareBackendTrust, type RuntimeAccount } from './useRuntimeSettings'
 import { useTtsNarration } from './useTtsNarration'
 import { useWorldMapSegmentActions } from './useWorldMapSegmentActions'
-import { useWorkspaceQueries, type CampaignSessionMeta } from './useWorkspaceQueries'
+import { playerViewQuery, useWorkspaceQueries, type CampaignSessionMeta } from './useWorkspaceQueries'
 import { useWorkspaceStore } from './useWorkspaceStore'
 import {
   SavedWorkspaceDeleteDialog,
@@ -1596,6 +1596,8 @@ function AIDMApp() {
     openAuthTokenPrompt()
   }, [accountSessionAvailable, openAuthTokenPrompt, runtimeAccount?.workspaceId])
 
+  // The Story view reads everything through the selected hero's eyes; Table tools reads the full projection.
+  const playerView = playerViewQuery(playView === 'story', selectedPlayerId)
   const {
     clearSessionData,
     loadOlderSessionLog,
@@ -1609,6 +1611,7 @@ function AIDMApp() {
   } = useWorkspaceQueries({
     auth,
     baseUrl,
+    playerView,
     operatorDataEnabled,
     runtimeConfigHeaders,
     sessions,
@@ -3065,6 +3068,19 @@ function AIDMApp() {
       refreshCampaignWorkspace(selectedCampaignId)
     }
   }, [refreshCampaignWorkspace, selectedCampaignId])
+
+  // Switching between Story and Table tools (or to another hero) changes what
+  // the server may show, so the workspace and the open session are read again.
+  const loadedPlayerViewRef = useRef(playerView)
+  useEffect(() => {
+    if (loadedPlayerViewRef.current === playerView) return
+    loadedPlayerViewRef.current = playerView
+    if (selectedCampaignId) void refreshCampaignWorkspace(selectedCampaignId)
+    if (!activeSessionId) return
+    loadSessionData(activeSessionId).catch((error: unknown) => {
+      pushError('workspace', `Session refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }, [activeSessionId, loadSessionData, playerView, pushError, refreshCampaignWorkspace, selectedCampaignId])
 
   // Runs only when the active session changes: every other input is stable
   // or read through a latest-value ref.

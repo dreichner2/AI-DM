@@ -1,11 +1,7 @@
 import type { CharacterVitality } from '../gameSelectors'
+import { vitalityLabel } from './vitalityLabels'
 
 const DEATH_SAVE_LIMIT = 3
-const STATE_LABELS: Record<CharacterVitality['state'], string> = {
-  dying: 'Dying',
-  stable: 'Stable',
-  dead: 'Dead',
-}
 
 function counted(count: number, one: string, many: string) {
   return `${count} ${count === 1 ? one : many}`
@@ -23,10 +19,10 @@ function Pips({ filled, outcome }: { filled: number; outcome: 'success' | 'failu
 
 /**
  * A downed character's state: `Dying` with three success and three failure
- * pips filled as death saves land; `Stable` and `Dead` as words alone.
+ * pips filled as death saves land; `Down — stable` and `Dead` as words alone.
  */
 export function StoryVitality({ vitality, className = '' }: { vitality: CharacterVitality; className?: string }) {
-  const label = STATE_LABELS[vitality.state]
+  const label = vitalityLabel(vitality.state)
   const description = vitality.state === 'dying'
     ? `${label}: ${counted(vitality.successes, 'success', 'successes')}, ${counted(vitality.failures, 'failure', 'failures')}`
     : label

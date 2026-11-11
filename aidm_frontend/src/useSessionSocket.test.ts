@@ -3,7 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import type { Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { trustBackendOrigin, writeOriginScopedStorage } from './api'
-import type { StreamingTurn } from './types'
+import type { StreamingTurn, TimelineEntry } from './types'
 import {
   buildSessionSocketConnection,
   isTerminalSessionSocketError,
@@ -409,6 +409,30 @@ describe('useSessionSocket connection lifetime', () => {
       requiresRoll: true,
       rulesHint: { roll_type: 'stealth' },
     })
+  })
+
+  it('carries the turn’s story beats from the completion event onto the finished narration', () => {
+    let streamingTurn: StreamingTurn | null = null
+    let optimistic: TimelineEntry[] = []
+    const setStreamingTurn = vi.fn((update: unknown) => {
+      streamingTurn = typeof update === 'function'
+        ? (update as (current: StreamingTurn | null) => StreamingTurn | null)(streamingTurn)
+        : update as StreamingTurn | null
+    })
+    const setOptimisticEntries = vi.fn((update: unknown) => {
+      optimistic = typeof update === 'function'
+        ? (update as (current: TimelineEntry[]) => TimelineEntry[])(optimistic)
+        : update as TimelineEntry[]
+    })
+    renderHook(() => useSessionSocket(hookOptions({ setStreamingTurn, setOptimisticEntries })))
+    const storyBeats = [{ kind: 'clue', text: 'Clue — The erased caravan ledger', refId: 'clue_erased_caravan_ledger' }]
+
+    act(() => {
+      latestSocket().fire('dm_chunk', { turn_id: 8, chunk: 'The ledger is blank.' })
+      latestSocket().fire('dm_response_end', { turn_id: 8, text: 'The ledger is blank.', storyBeats })
+    })
+
+    expect(optimistic).toEqual([expect.objectContaining({ role: 'dm', metadata: expect.objectContaining({ turn_id: 8, storyBeats }) })])
   })
 
   it('tells the composer when a new_message echoes a client message id', () => {
