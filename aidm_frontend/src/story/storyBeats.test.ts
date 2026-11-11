@@ -499,3 +499,78 @@ describe('server story beats', () => {
     expect(roll({})?.dc).toBeNull()
   })
 })
+
+describe('buildStoryBeats with roll cards', () => {
+  const check = {
+    id: 't5-1',
+    kind: 'check',
+    actor: { id: 'player_1', name: 'Ysolde', side: 'hero' },
+    label: 'Athletics check',
+    d20: { faces: [15], kept: 15, mode: 'normal' },
+    parts: [{ label: 'Strength', value: 4 }],
+    total: 19,
+    against: { kind: 'DC', value: 12 },
+    outcome: 'success',
+    natural: null,
+  }
+  const bite = {
+    id: 't5-2',
+    kind: 'attack',
+    actor: { id: 'enemy_wolf_1', name: 'Grey Wolf', side: 'enemy' },
+    target: { id: 'player_1', name: 'Ysolde' },
+    label: 'Bite',
+    d20: { faces: [9], kept: 9, mode: 'normal' },
+    parts: [{ label: 'attack bonus', value: 4 }],
+    total: 13,
+    against: { kind: 'AC', value: 15 },
+    outcome: 'miss',
+    natural: null,
+  }
+
+  it('puts each of a turn’s rolls between the action line and the narration, and never reads a roll line from the text', () => {
+    const beats = buildStoryBeats(
+      [
+        entry('log-1', 'player', 'Ysolde', 'I climb the wall.\nI roll a d20+4 for athletics: 15 = 19', { turn_id: 5 }),
+        entry('log-2', 'system', 'System', '**Check resolved**: turn 5 with roll 19', {
+          turn_id: 5,
+          authoritative_roll: { rule_type: 'athletics', total: 19, rolls: [15], kept: 15, modifier: 4 },
+        }),
+        entry('log-3', 'dm', 'DM', 'You haul yourself over the wall as the wolf snaps at your heel.', { turn_id: 5, storyRolls: [check, bite] }),
+      ],
+      { selectedPlayerName: 'Ysolde' },
+    )
+
+    expect(kinds(beats)).toEqual(['action', 'rollCard', 'rollCard', 'narration'])
+    expect(beats[0]).toMatchObject({ kind: 'action', text: 'I climb the wall.' })
+    expect(beats.slice(1, 3).map((beat) => beat.kind === 'rollCard' && beat.card.id)).toEqual(['t5-1', 't5-2'])
+    expect(beats[1].gap).toBe('tight')
+  })
+
+  it('shows cards that arrived live after the action line before the narrator has written anything', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'The wall looms.', { turn_id: 4 }),
+      entry('socket-player-client-5', 'player', 'Ysolde', 'I roll a d20+4 for athletics: 15 = 19', { turn_id: 5, storyRolls: [check] }),
+    ])
+
+    expect(kinds(beats)).toEqual(['narration', 'rollCard'])
+  })
+
+  it('never shows the text of a live roll as a roll line while its cards are on their way', () => {
+    const beats = buildStoryBeats([
+      entry('socket-player-client-5', 'player', 'Ysolde', 'I roll a d20+4 for athletics: 15 = 19', { turn_id: 5 }),
+    ])
+
+    expect(kinds(beats)).toEqual([])
+  })
+
+  it('a turn with no rolls has no cards, and a turn saved before roll cards keeps its roll line', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'player', 'Ysolde', 'I roll a d20+3 for insight: 11 = 14', { turn_id: 3 }),
+      entry('log-2', 'dm', 'DM', '"They came at noon," Marta says.', { turn_id: 3 }),
+      entry('log-3', 'player', 'Ysolde', 'I wait.', { turn_id: 4 }),
+      entry('log-4', 'dm', 'DM', 'Nothing stirs.', { turn_id: 4, storyRolls: [] }),
+    ])
+
+    expect(kinds(beats)).toEqual(['roll', 'narration', 'action', 'narration'])
+  })
+})

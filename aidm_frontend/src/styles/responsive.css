@@ -761,17 +761,6 @@
   .custom-race-library-card {
     grid-template-columns: 1fr;
   }
-
-  .dice-stage,
-  .dice-canvas {
-    min-height: 276px;
-  }
-
-  .dice-readout {
-    right: 10px;
-    bottom: 10px;
-    min-width: 118px;
-  }
 }
 
 .mobile-panel-scrim {

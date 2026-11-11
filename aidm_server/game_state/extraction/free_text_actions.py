@@ -32,8 +32,10 @@ says whose turn it is): speech is free on any turn; off turn, anything else is
 refused (``It is {Name}'s turn.``); on the hero's turn the first clause that
 names a fight action by its verb (:data:`FIGHT_VERBS`, any tense) or its label
 takes it ("close in and tackle him" is the grapple that closes in first), an
-action that is not legal is refused with its reason, and words that name
-nothing are an improvised action. The target is the enemy named; with "him",
+action that is not legal is refused with its reason. Words that name no fight
+action are speech when their first verb talks (:data:`FIGHT_SPEECH_VERBS`:
+"question the cutthroat"), a look when it looks (:data:`FIGHT_LOOK_VERBS`, or
+"search for"), both free, and otherwise an improvised action. The target is the enemy named; with "him",
 "her", "it", "them" or "the last one", the only one there is; else the hero's
 last target, else the only enemy standing. A blow aimed at a thing ("I cut the
 rope") names no fight action.
@@ -174,6 +176,37 @@ SPEECH_VERBS = frozenset(
 ) | {'said', 'told'}
 SPEECH_LEADS = frozenset({'i', 'we', 'then', 'and', 'so', 'now'})
 TARGET_PRONOUNS = frozenset({'him', 'her', 'it', 'them'})
+# Irregular forms of the first verbs below ("spoke", "swore", "eyeing").
+IRREGULAR_FORMS = {
+    'speak': {'spoke', 'spoken'},
+    'swear': {'swore', 'sworn'},
+    'beg': {'begged', 'begging'},
+    'eye': {'eyed', 'eyeing'},
+    'read': set(),
+}
+
+
+def _forms(*verbs: str) -> frozenset[str]:
+    """Each verb in any tense: ``question``, ``questions``, ``questioned``, ``questioning``."""
+
+    forms: set[str] = set()
+    for verb in verbs:
+        stem = verb[:-1] if verb.endswith('e') else verb
+        forms |= {verb, f'{verb}s', f'{stem}ed', f'{stem}ing', *IRREGULAR_FORMS.get(verb, ())}
+        if verb.endswith(('sh', 'ch', 'x')):
+            forms.add(f'{verb}es')
+        if verb.endswith('y') and verb[-2:-1] not in set('aeiou'):
+            forms |= {f'{verb[:-1]}ies', f'{verb[:-1]}ied'}
+    return frozenset(forms)
+
+
+# In a fight, words naming no fight action whose first verb is one of these are speech (free).
+FIGHT_SPEECH_VERBS = _forms(
+    'question', 'interrogate', 'demand', 'threaten', 'warn', 'beg', 'plead', 'answer', 'reply', 'talk', 'speak',
+    'greet', 'curse', 'swear', 'laugh', 'thank', 'insult', 'mock', 'taunt',
+)
+# ... and these only look (free): the narrator answers with where everyone stands.
+FIGHT_LOOK_VERBS = _forms('look', 'watch', 'study', 'examine', 'read', 'listen', 'check', 'eye', 'glance')
 
 
 @dataclass(frozen=True)
@@ -755,9 +788,10 @@ def free_text_action(
 class FightWords:
     """How typed words are taken on a fight turn.
 
-    ``kind`` is ``speech`` (free: nothing is spent and the turn goes on), ``action`` (``action_id`` and
-    ``target_id`` of a listed fight action), ``improvised`` (``action_id`` is the improvised action,
-    ``target_id`` the enemy named or the only one) or ``refused`` (with ``refusal``).
+    ``kind`` is ``speech`` (free: nothing is spent and the turn goes on), ``look`` (free like speech; the
+    narrator tells where everyone stands), ``action`` (``action_id`` and ``target_id`` of a listed fight
+    action), ``improvised`` (``action_id`` is the improvised action, ``target_id`` the enemy named or the
+    only one) or ``refused`` (with ``refusal``).
     """
 
     kind: str
@@ -770,6 +804,16 @@ def _unquoted_words(message: str) -> list[str]:
     return WORD.findall(QUOTED.sub(' ', _text(message).lower().replace('’', "'")))
 
 
+def _first_words(message: str, *, hero_name: str = '') -> list[str]:
+    """The unquoted words from the first verb on: leads ("I", "then", the hero's name) and adverbs dropped."""
+
+    leads = SPEECH_LEADS | set(name_words(hero_name))
+    words = _unquoted_words(message)
+    while words and (words[0] in leads or words[0].endswith('ly')):
+        words = words[1:]
+    return words
+
+
 def is_speech(message: str, *, hero_name: str = '') -> bool:
     """Words the hero says: they begin with a quotation mark, end with "?", or their first verb is a
     speech verb (say, ask, tell, shout, yell, call, whisper, taunt)."""
@@ -779,11 +823,34 @@ def is_speech(message: str, *, hero_name: str = '') -> bool:
         return False
     if text[0] in '"“\'‘' or text.rstrip('"”\'’ ').endswith('?'):
         return True
-    leads = SPEECH_LEADS | set(name_words(hero_name))
-    words = [word for word in _unquoted_words(text)]
-    while words and (words[0] in leads or words[0].endswith('ly')):
-        words = words[1:]
+    words = _first_words(text, hero_name=hero_name)
     return bool(words) and words[0] in SPEECH_VERBS
+
+
+def _free_fight_words(message: str, *, hero_name: str) -> str | None:
+    """``speech`` or ``look`` for words naming no fight action whose first verb talks or looks; None."""
+
+    words = _first_words(message, hero_name=hero_name)
+    if not words:
+        return None
+    if words[0] in FIGHT_SPEECH_VERBS:
+        return 'speech'
+    if words[0] in FIGHT_LOOK_VERBS or words[:2] in (['search', 'for'], ['searches', 'for'], ['searching', 'for']):
+        return 'look'
+    return None
+
+
+def attacked_person(state: Mapping[str, Any], message: str, *, hero_name: str = '') -> dict[str, Any] | None:
+    """The one person present in the scene (``activeNpcIds``) the words attack: their first verb is an
+    attack verb (:data:`FIGHT_VERBS`) aimed at that person ("I attack Osric"); None otherwise."""
+
+    text = ' '.join(_first_words(message, hero_name=hero_name))
+    attack = next(pattern for action_type, pattern in FIGHT_VERBS if action_type == 'attack')
+    match = attack.match(text)
+    if not match:
+        return None
+    person, _matched = _match(text[match.end():], _present_npcs(state), lambda npc: npc.get('name'))
+    return person
 
 
 def _fight_clauses(message: str) -> list[tuple[str, list[str], str]]:
@@ -911,6 +978,9 @@ def fight_words(
         if not action.get('available'):
             return FightWords('refused', refusal=_text(action.get('reason')) or 'That is not available now.')
         return FightWords('action', action_id=_text(action.get('id')), target_id=_text((target or {}).get('id')) or None)
+    free = _free_fight_words(message, hero_name=hero_name)
+    if free:
+        return FightWords(free)
     enemies = [{'id': _text(enemy.get('id')), 'name': _text(enemy.get('name'))} for enemy in standing]
     named = mentions(message, enemies, lambda enemy: enemy['name'])
     target = named[0] if len(named) == 1 else enemies[0] if len(enemies) == 1 else None

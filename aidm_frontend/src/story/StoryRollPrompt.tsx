@@ -127,8 +127,6 @@ export function StoryRollPrompt({ notice, composer, onPrepare }: StoryRollPrompt
         type="button"
         className="story-primary story-roll-prompt-button"
         onClick={roll}
-        onMouseEnter={composer.preloadDiceRollDialog}
-        onFocus={composer.preloadDiceRollDialog}
         disabled={composer.sendPending}
       >
         <D20Glyph size={26} className="story-roll-prompt-glyph" />

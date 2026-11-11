@@ -3,6 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import type { Socket } from 'socket.io-client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { trustBackendOrigin, writeOriginScopedStorage } from './api'
+import { resetRollPlayback, rollPlayback } from './story/rollPlayback'
 import type { StreamingTurn, TimelineEntry } from './types'
 import {
   buildSessionSocketConnection,
@@ -188,6 +189,25 @@ describe('authoritative socket payload validation', () => {
     expect(normalizeRollResolvedPayload(resolvedRoll)).not.toHaveProperty('inspiration')
   })
 
+  it('keeps the bonus dice counted in the total and the target number and outcome the roll card shows', () => {
+    const blessed = {
+      ...resolvedRoll,
+      total: 26,
+      bonus_dice: [{ dice: '+1d4', rolls: [3], total: 3 }],
+      dc: 15,
+      outcome: 'success',
+    }
+
+    expect(normalizeRollResolvedPayload(blessed)).toMatchObject({
+      total: 26,
+      bonus_dice: [{ dice: '+1d4', rolls: [3], total: 3 }],
+      dc: 15,
+      outcome: 'success',
+    })
+    expect(normalizeRollResolvedPayload({ ...blessed, total: 23 })).toBeNull()
+    expect(normalizeRollResolvedPayload({ ...resolvedRoll, dc: null, outcome: null })).not.toHaveProperty('dc')
+  })
+
   it('rejects client-like, unauthoritative, or internally inconsistent results', () => {
     expect(normalizeRollResolvedPayload({ ...resolvedRoll, authoritative: false })).toBeNull()
     expect(normalizeRollResolvedPayload({ ...resolvedRoll, total: 999 })).toBeNull()
@@ -258,6 +278,7 @@ function hookOptions(overrides: Partial<SocketHookOptions> = {}): SocketHookOpti
     setStreamingTurn: vi.fn(),
     setTurnStatuses: vi.fn(),
     setTurnStoryBeats: vi.fn(),
+    setTurnStoryRolls: vi.fn(),
     setClarificationRequest: vi.fn(),
     setSceneMusicSyncState: vi.fn(),
     setSceneState: vi.fn(),
@@ -481,6 +502,33 @@ describe('useSessionSocket connection lifetime', () => {
       latestSocket().fire('turn_status', { session_id: 20, turn_id: 10, status: 'saved', details: { stage: 'post_turn', storyBeats: [] } })
     })
     expect(beatsByTurn).toEqual({ 9: storyBeats, 10: [] })
+  })
+
+  it('takes a turn’s roll cards from turn_rolls before narration and from its final status, and plays them', () => {
+    resetRollPlayback()
+    let rollsByTurn: Record<number, unknown[]> = {}
+    const setTurnStoryRolls = vi.fn((update: unknown) => {
+      rollsByTurn = typeof update === 'function'
+        ? (update as (current: Record<number, unknown[]>) => Record<number, unknown[]>)(rollsByTurn)
+        : update as Record<number, unknown[]>
+    })
+    renderHook(() => useSessionSocket(hookOptions({ setTurnStoryRolls })))
+    const before = [{ id: 't9-1', kind: 'save', label: 'Wisdom save', d20: { faces: [12], kept: 12, mode: 'normal' }, total: 12 }]
+    const after = [...before, { id: 't9-2', kind: 'death_save', label: 'Death save', d20: { faces: [8], kept: 8, mode: 'normal' }, total: 8 }]
+
+    act(() => {
+      latestSocket().fire('turn_rolls', { session_id: 21, turn_id: 9, rolls: before })
+      latestSocket().fire('turn_rolls', { session_id: 20, turn_id: 9, rolls: 'none' })
+    })
+    expect(setTurnStoryRolls).not.toHaveBeenCalled()
+
+    act(() => latestSocket().fire('turn_rolls', { session_id: 20, turn_id: 9, rolls: before }))
+    expect(rollsByTurn).toEqual({ 9: before })
+    expect(rollPlayback('t9-1')).toMatchObject({ instant: false })
+
+    act(() => latestSocket().fire('turn_status', { session_id: 20, turn_id: 9, status: 'saved', details: { stage: 'post_turn', storyBeats: [], storyRolls: after } }))
+    expect(rollsByTurn).toEqual({ 9: after })
+    expect(rollPlayback('t9-2')).not.toBeNull()
   })
 
   it('tells the composer when a new_message echoes a client message id', () => {

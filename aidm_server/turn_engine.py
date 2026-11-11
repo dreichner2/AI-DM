@@ -44,7 +44,9 @@ from aidm_server.game_state.extraction.free_text_actions import fight_words
 from aidm_server.game_state.models import display_actor_id
 from aidm_server.interactables import NOT_WHILE_FIGHTING
 from aidm_server.game_state.orchestration.combat_resolution import player_attack_target
+from aidm_server.game_state.orchestration.finishing_blow import DESCRIBE_ACTION_ID, STORY_ACTION_ID, lets_the_story_tell_it, pending_finisher
 from aidm_server.game_state.orchestration.story_beats import record_turn_story_beats
+from aidm_server.game_state.orchestration.story_rolls import record_turn_story_rolls, turn_story_rolls
 from aidm_server.game_state.orchestration.turn_pipeline import (
     augment_rules_hint_with_state_packet,
     post_dm_pipeline,
@@ -97,6 +99,7 @@ from aidm_server.socket_contracts import (
     session_log_update_payload,
     socket_error_payload as socket_error,
     turn_duplicate_payload,
+    turn_rolls_payload,
     turn_status_payload,
 )
 from aidm_server.socket_runtime import bound_presence
@@ -126,8 +129,14 @@ from aidm_server.turn_narration import (
     TurnNarrationService,
 )
 from aidm_server.turn_rules import (
+    FIGHT_LOOK,
     FIGHT_WORDS_SOURCE,
+    FINISHER_DESCRIBE,
+    FINISHER_SOURCE,
+    FINISHER_STORY,
     fight_words_rule_hint,
+    finisher_rule_hint,
+    finishing,
     typed_in_fight,
     apply_pending_resolution_hint as default_apply_pending_resolution_hint,
     build_roll_prompt as default_build_roll_prompt,
@@ -846,14 +855,48 @@ class TurnEngine:
                 return str(combat['target_id']).strip()
         return ''
 
+    @staticmethod
+    def _route_finisher_words(command: TurnCommand, player: Player, session_obj: Session) -> None:
+        """While a hero's finishing blow is pending, every message they type is it (or, typed or sent as the
+        offered action, "Let the story tell it"): never another action, never rolled. The offered actions
+        sent from the fight's action list (``finisher.describe`` with the hero's words, ``finisher.story``)
+        are taken the same way."""
+
+        action_intent = command.action_intent if isinstance(command.action_intent, dict) else {}
+        message = str(command.user_input or '').strip()
+        snapshot = safe_json_loads(session_obj.state_snapshot, {})
+        pending = pending_finisher(snapshot if isinstance(snapshot, dict) else {})
+        kind = str(action_intent.get('kind') or '').strip().lower()
+        offered = str((action_intent.get('combat') or {}).get('action_id') or '') if isinstance(action_intent.get('combat'), dict) else ''
+        if (
+            pending is None
+            or str(pending.get('heroId') or '') != display_actor_id(player.player_id)
+            or not (kind in {'', 'message'} or (kind == 'combat' and offered in {DESCRIBE_ACTION_ID, STORY_ACTION_ID}))
+            or not message
+            or command.is_opening
+            or player_message_reports_roll_result(message)
+            or find_legacy_roll_claim(message) is not None
+        ):
+            return
+        story = offered == STORY_ACTION_ID or (offered != DESCRIBE_ACTION_ID and lets_the_story_tell_it(message))
+        command.action_intent = {
+            **({'client_message_id': action_intent['client_message_id']} if action_intent.get('client_message_id') else {}),
+            'kind': 'message',
+            'source': FINISHER_SOURCE,
+            'text': message,
+            'finisher': FINISHER_STORY if story else FINISHER_DESCRIBE,
+        }
+
     def _route_fight_words(self, command: TurnCommand, player: Player, session_obj: Session) -> bool:
-        """Typed words of a hero who can act in a fight: free speech, a listed fight action or an improvised
-        one (each then takes the path of the button that would send it), or refused before narration."""
+        """Typed words of a hero who can act in a fight: free speech or a look, a listed fight action or an
+        improvised one (each then takes the path of the button that would send it), or refused before
+        narration. A hero's finishing blow is never read as fight words."""
 
         action_intent = command.action_intent if isinstance(command.action_intent, dict) else {}
         message = str(command.user_input or '').strip()
         if (
-            str(action_intent.get('kind') or '').strip().lower() not in {'', 'message'}
+            finishing(action_intent)
+            or str(action_intent.get('kind') or '').strip().lower() not in {'', 'message'}
             or not message
             or command.is_opening
             or player_message_reports_roll_result(message)
@@ -900,8 +943,8 @@ class TurnEngine:
             'text': message,
             **({'client_message_id': action_intent['client_message_id']} if action_intent.get('client_message_id') else {}),
         }
-        if words.kind == 'speech':
-            command.action_intent = {**routed, 'kind': 'message'}
+        if words.kind in {'speech', 'look'}:
+            command.action_intent = {**routed, 'kind': 'message', **({'fight_words': FIGHT_LOOK} if words.kind == 'look' else {})}
             return True
         combat_request = {'action_id': words.action_id, **({'target_id': words.target_id} if words.target_id else {})}
         if words.kind == 'improvised':
@@ -1811,6 +1854,7 @@ class TurnEngine:
             ),
         )
         persistence_token = self._persistence_token(turn=turn)
+        self._emit_turn_rolls(turn)
         narration_result = self._narrate_turn(narration_request)
 
         self._emit_turn_status(command.session_id, turn_id, 'saving')
@@ -2049,6 +2093,7 @@ class TurnEngine:
                 self._emit_recovery_required(command, recovery_gate)
                 return
 
+        self._route_finisher_words(command, player, session_obj)
         if not self._route_fight_words(command, player, session_obj):
             return
         if not self._prepare_combat_action(command, player, session_obj):
@@ -2110,6 +2155,8 @@ class TurnEngine:
         rule_hint: RuleHint = (
             fight_words_rule_hint()
             if typed_in_fight(command.action_intent)
+            else finisher_rule_hint()
+            if finishing(command.action_intent)
             else classify_player_action(command.user_input)
             if rules_engine_enabled
             else RuleHint(
@@ -2632,6 +2679,13 @@ class TurnEngine:
             turn_status_payload(session_id, turn_id, status, details),
             room=str(session_id),
         )
+
+    def _emit_turn_rolls(self, turn: DmTurn) -> None:
+        """The rolls the engine resolved before narration, sent before the narrator starts."""
+
+        rolls = turn_story_rolls(turn)
+        if rolls:
+            self.socketio.emit('turn_rolls', turn_rolls_payload(int(turn.session_id), int(turn.turn_id), rolls), room=str(turn.session_id))
 
     def _emit_scene_state(self, session_id: int, *, acting_player_id: int | None = None) -> None:
         try:
@@ -3384,6 +3438,7 @@ class TurnEngine:
                 )
                 campaign_pack_progress_changed = bool(progress_result.changed)
                 story_beats = record_turn_story_beats(turn, _session_obj)
+                record_turn_story_rolls(turn, _session_obj)
                 # Effects, snapshot, pack progress and the marker commit together,
                 # so a resumed turn never applies the effects twice.
                 set_turn_lifecycle(turn, LIFECYCLE_EFFECTS_APPLIED)
@@ -3579,7 +3634,11 @@ class TurnEngine:
                 outcome.session_id,
                 outcome.turn_id,
                 'saved',
-                {'stage': 'post_turn', 'storyBeats': story_beats},
+                {
+                    'stage': 'post_turn',
+                    'storyBeats': story_beats,
+                    'storyRolls': turn_story_rolls(final_turn) if final_turn is not None else [],
+                },
             )
 
         if turn_completed_safely:

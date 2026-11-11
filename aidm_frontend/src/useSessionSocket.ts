@@ -24,6 +24,8 @@ import type { SceneMusicSyncState } from './SceneMusicPlayer'
 import { normalizeSceneState, type SceneDisplayState, type SceneStatePayload } from './sceneState'
 import { normalizeTurnControl } from './turnControl'
 import { turnRecoveryGateFromSocketDetails } from './turnRecovery'
+import { playRolls } from './story/rollPlayback'
+import { rollCardRecords } from './story/storyRolls'
 import { useLatest } from './useLatest'
 import type {
   ActivePlayer,
@@ -146,6 +148,8 @@ type UseSessionSocketOptions = {
   setTurnStatuses: Dispatch<SetStateAction<Record<number, string>>>
   /** Each turn's story beats as its final `turn_status` delivers them, by turn id. */
   setTurnStoryBeats: Dispatch<SetStateAction<Record<number, unknown[]>>>
+  /** Each turn's roll cards as `turn_rolls`, then its final `turn_status`, deliver them, by turn id. */
+  setTurnStoryRolls: Dispatch<SetStateAction<Record<number, unknown[]>>>
   setClarificationRequest: Dispatch<SetStateAction<ClarificationRequest | null>>
   setSceneMusicSyncState: Dispatch<SetStateAction<SceneMusicSyncState | null>>
   setSceneState: Dispatch<SetStateAction<SceneDisplayState | null>>
@@ -177,6 +181,23 @@ function postTurnStoryBeats(status: string, details: JsonRecord | undefined): un
   return status === 'saved' && details?.stage === 'post_turn' && Array.isArray(details.storyBeats)
     ? details.storyBeats
     : null
+}
+
+/** A turn's roll cards from its final `turn_status`; null for any other status. */
+function postTurnStoryRolls(status: string, details: JsonRecord | undefined): unknown[] | null {
+  return status === 'saved' && details?.stage === 'post_turn' && Array.isArray(details.storyRolls)
+    ? details.storyRolls
+    : null
+}
+
+/** Keep a turn's roll cards and schedule the ones that arrived live to play. */
+function receiveTurnRolls(
+  setTurnStoryRolls: Dispatch<SetStateAction<Record<number, unknown[]>>>,
+  turnId: number,
+  rolls: unknown[],
+) {
+  playRolls(turnId, rollCardRecords(rolls) ?? [])
+  setTurnStoryRolls((current) => ({ ...current, [turnId]: rolls }))
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
@@ -229,7 +250,19 @@ export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayl
     ) return null
     inspiration = { die: inspirationDie, roll: inspirationRoll }
   }
-  if (total !== kept + modifier + (inspiration?.roll ?? 0)) return null
+  const bonusDice = Array.isArray(value.bonus_dice)
+    ? value.bonus_dice.map((item) => {
+        const rolled = recordValue(item)
+        const rolledTotal = finiteNumber(rolled?.total)
+        return rolled && rolledTotal !== null
+          ? { dice: stringValue(rolled.dice), rolls: Array.isArray(rolled.rolls) ? rolled.rolls.map(Number) : [], total: rolledTotal }
+          : null
+      })
+    : []
+  if (bonusDice.some((item) => item === null)) return null
+  const rolledBonusDice = bonusDice as NonNullable<RollResolvedPayload['bonus_dice']>
+  const bonusTotal = rolledBonusDice.reduce((sum, item) => sum + item.total, 0)
+  if (total !== kept + modifier + bonusTotal + (inspiration?.roll ?? 0)) return null
   if (!['hidden_until_landed', 'visible'].includes(resultVisibility)) return null
   if (value.client_message_id !== null && !clientMessageId) return null
   if (value.pending_turn_id !== null && value.pending_turn_id !== undefined && !pendingTurnId) return null
@@ -305,6 +338,10 @@ export function normalizeRollResolvedPayload(payload: unknown): RollResolvedPayl
     ...(proficiency ? { proficiency } : {}),
     ...(modifierBreakdown ? { modifier_breakdown: modifierBreakdown } : {}),
     ...(inspiration ? { inspiration } : {}),
+    ...(rolledBonusDice.length ? { bonus_dice: rolledBonusDice } : {}),
+    ...(finiteNumber(value.dc) !== null && value.dc !== null ? { dc: finiteNumber(value.dc) } : {}),
+    ...(finiteNumber(value.target_ac) !== null && value.target_ac !== null ? { target_ac: finiteNumber(value.target_ac) } : {}),
+    ...(value.outcome === 'success' || value.outcome === 'failure' ? { outcome: value.outcome } : {}),
     authoritative: true,
   }
 }
@@ -857,6 +894,11 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
         })
     })
 
+    socket.on('turn_rolls', (payload: { session_id?: number; turn_id?: number; rolls?: unknown }) => {
+      if (payload.session_id !== selectedSessionId || typeof payload.turn_id !== 'number' || !Array.isArray(payload.rolls)) return
+      receiveTurnRolls(latest.current.setTurnStoryRolls, payload.turn_id, payload.rolls)
+    })
+
     socket.on('turn_status', (payload: TurnStatusPayload) => {
       if (payload.session_id !== selectedSessionId || typeof payload.turn_id !== 'number') return
       const status = stringValue(payload.status)
@@ -880,6 +922,8 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
       if (storyBeats) {
         setTurnStoryBeats((current) => ({ ...current, [payload.turn_id as number]: storyBeats }))
       }
+      const storyRolls = postTurnStoryRolls(status, payload.details)
+      if (storyRolls) receiveTurnRolls(latest.current.setTurnStoryRolls, payload.turn_id, storyRolls)
       if (status === 'canon_applied' || status === 'state_applied') {
         const playerId = Number(payload.details?.player_id)
         const affectedPlayerIds = numericArray(payload.details?.affected_player_ids)

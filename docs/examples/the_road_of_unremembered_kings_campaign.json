@@ -109,6 +109,7 @@
         "y": 82
       },
       "mapIcon": "inn",
+      "weather": "rain",
       "restPolicy": "safe",
       "interactables": [
         {
@@ -307,6 +308,7 @@
         "y": 62
       },
       "mapIcon": "road",
+      "weather": "rain",
       "restPolicy": "risky",
       "onEnter": [
         {
@@ -557,6 +559,7 @@
         "y": 32
       },
       "mapIcon": "cairn",
+      "weather": "fog",
       "restPolicy": "none",
       "onEnter": [
         {
@@ -704,6 +707,7 @@
         "y": 68
       },
       "mapIcon": "forest",
+      "weather": "fog",
       "restPolicy": "risky",
       "onEnter": [
         {
@@ -1494,6 +1498,12 @@
         }
       },
       "xpReward": 90,
+      "barks": {
+        "start": ["\"Names, ledgers and stone. Hand them over and walk away.\""],
+        "hurt": ["\"Not paid enough for this.\""],
+        "turning": ["\"Not worth my neck!\""],
+        "taunt": ["\"The road's already forgotten you.\""]
+      },
       "captiveKnows": [
         "The road. Lately it don't take you where you're going. It takes you where it wants.",
         "We were paid in ash-marked coin to bring names, ledgers and stone. I never saw who paid.",
@@ -1716,6 +1726,12 @@
         }
       },
       "xpReward": 100,
+      "barks": {
+        "start": ["The pale lantern sings one thin, high note, like a wet finger on glass."],
+        "hurt": ["Its light stutters, and the note cracks."],
+        "turning": ["The light gutters and slides away between the stones."],
+        "taunt": ["It brightens, warm as a doorway, and waits."]
+      },
       "aiNarrationHints": [
         "Frame them as moving geography and memory, with light reflected in puddles, windows, and eyes.",
         "Offer nonviolent exits through calm questions, names, songs, and anchored travel."
@@ -1938,6 +1954,12 @@
         }
       },
       "xpReward": 260,
+      "barks": {
+        "start": ["\"Name yourself. I had a name. Name yourself.\""],
+        "hurt": ["\"Stand… stand your post.\""],
+        "turning": ["\"Relieved? Are we relieved?\""],
+        "taunt": ["\"None pass. None… what was the rest of it?\""]
+      },
       "aiNarrationHints": [
         "Make the Roadwardens feel like law, grief, and armor, not ordinary skeletons.",
         "Prompt parley, proof, ritual respect, and alternate passage before defaulting to a kill fight."
@@ -2154,6 +2176,12 @@
         }
       },
       "xpReward": 110,
+      "barks": {
+        "start": ["The wardbound beast lowers its head, and the chalk-marks along its flanks begin to glow."],
+        "hurt": ["It screams, and for a breath the sound is almost a word."],
+        "turning": ["It backs away, dragging its broken ward-mark like a chain."],
+        "taunt": ["It paces the edge of the road as if the stones there burn it."]
+      },
       "aiNarrationHints": [
         "Use animal movement as information: circling a danger, blocking a corrupted path, or leading toward memorial stones.",
         "Reward nonlethal choices with clues, safer travel, or a future beast warning."
@@ -2390,6 +2418,12 @@
         }
       },
       "xpReward": 720,
+      "barks": {
+        "start": ["\"By whose leave do you walk my road?\""],
+        "hurt": ["\"I held this road when your grandfathers were dust.\""],
+        "turning": ["\"Then keep it. Keep it better than we did.\""],
+        "taunt": ["\"Kneel, and be entered in the roll.\""]
+      },
       "aiNarrationHints": [
         "Use command pressure: sealed roads, horn calls, verdicts, and collapsing exits.",
         "Restored names and a broken horn should visibly weaken him."
@@ -2651,6 +2685,12 @@
         }
       },
       "xpReward": 1400,
+      "barks": {
+        "start": ["\"Every road needs a hand to hold the pen.\""],
+        "hurt": ["\"You are smudging the page.\""],
+        "turning": ["\"Strike it out, then. See what the road does without a name on it.\""],
+        "taunt": ["\"Tell me yours. I will write it somewhere safe.\""]
+      },
       "aiNarrationHints": [
         "Every attack should argue for safety through obedience; restored names weaken control."
       ],

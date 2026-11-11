@@ -1889,6 +1889,7 @@ export function buildTimeline({
   streamingTurn,
   turnStatuses,
   turnStoryBeats = {},
+  turnStoryRolls = {},
 }: {
   logEntries: SessionLogEntry[]
   optimisticEntries: TimelineEntry[]
@@ -1896,6 +1897,8 @@ export function buildTimeline({
   turnStatuses: Record<number, string>
   /** Story beats from each turn's final status event, shown on its narration until the log carries them. */
   turnStoryBeats?: Record<number, unknown[]>
+  /** Each turn's roll cards as `turn_rolls` and its final status deliver them, on every entry of the turn until the log carries them. */
+  turnStoryRolls?: Record<number, unknown[]>
 }): TimelineEntry[] {
   const withStatus = (entry: TimelineEntry): TimelineEntry => {
     const turnId = metadataTurnId(entry.metadata)
@@ -1903,13 +1906,15 @@ export function buildTimeline({
     const storyBeats = turnId !== null && entry.role === 'dm' && !Array.isArray(entry.metadata.storyBeats)
       ? turnStoryBeats[turnId]
       : undefined
-    return persistenceStatus || storyBeats
+    const storyRolls = turnId !== null && !Array.isArray(entry.metadata.storyRolls) ? turnStoryRolls[turnId] : undefined
+    return persistenceStatus || storyBeats || storyRolls
       ? {
           ...entry,
           metadata: {
             ...entry.metadata,
             ...(persistenceStatus ? { persistence_status: persistenceStatus } : {}),
             ...(storyBeats ? { storyBeats } : {}),
+            ...(storyRolls ? { storyRolls } : {}),
           },
         }
       : entry
@@ -1953,6 +1958,7 @@ export function buildTimeline({
         requires_roll: streamingTurn.requiresRoll,
         persistence_status: turnStatuses[streamingTurn.turnId] ?? 'streaming',
         ...streamingTurn.rulesHint,
+        ...(turnStoryRolls[streamingTurn.turnId] ? { storyRolls: turnStoryRolls[streamingTurn.turnId] } : {}),
       },
       streaming: true,
     }

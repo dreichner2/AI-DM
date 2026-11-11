@@ -54,7 +54,11 @@ def test_the_brief_for_the_leads_three_sentences(table):
         "ways onward The Old North Road; shops Mara's Counter\n"
         'The party is at The Lantern Post Inn.'
     )
-    assert road.startswith('Did: Arrived at The Old North Road. A fight begins against Pale Lantern. Pale Lantern uses Lantern-Lure')
+    assert road.startswith(
+        'Did: Arrived at The Old North Road. A fight begins against Pale Lantern. '
+        'Bark: The pale lantern sings one thin, high note, like a wet finger on glass. (Pale Lantern; use this line, word for word if it is speech) '
+        'Pale Lantern uses Lantern-Lure'
+    )
     assert road.endswith(
         'New place on the map — Waystation of Scratched Names. New place on the map — Ridge and Culvert Paths. '
         'Met — Radan Greycloak. Met — Veyra Ashcap.\n'

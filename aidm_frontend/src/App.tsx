@@ -79,6 +79,7 @@ import {
   worldStateFromSnapshot,
 } from './gameSelectors'
 import { diceRollMessage } from './gameActions'
+import { PRESSED_HOLD_MS } from './story/rollPlayback'
 import { gameplayControlsFromSnapshot } from './gameplayControlState'
 import { whenIdle } from './lazyModule'
 import { subscribeToMediaQueryChange } from './mediaQuery'
@@ -195,8 +196,6 @@ const InspectorPanel = lazy(() =>
   import('./InspectorPanel').then((module) => ({ default: module.InspectorPanel })),
 )
 
-const loadDiceRollDialog = () => import('./DiceRollDialog')
-const DiceRollDialog = lazy(loadDiceRollDialog)
 const PlayerEditDialog = lazy(() =>
   import('./PlayerEditDialog').then((module) => ({ default: module.PlayerEditDialog })),
 )
@@ -237,11 +236,6 @@ const CampaignActionDialog = sessionDialogsChunk.component((module) => module.Ca
 const SessionActionDialog = sessionDialogsChunk.component((module) => module.SessionActionDialog)
 const StartChapterDialog = sessionDialogsChunk.component((module) => module.StartChapterDialog)
 const StoryDrawer = drawerChunk.component((module) => module.StoryDrawer)
-function preloadDiceRollDialog() {
-  if (import.meta.env.MODE === 'test') return
-  void loadDiceRollDialog()
-}
-
 function ModalLoading({
   dialogRef,
   label,
@@ -740,6 +734,7 @@ function AIDMApp() {
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null)
   const [turnStatuses, setTurnStatuses] = useState<Record<number, string>>({})
   const [turnStoryBeats, setTurnStoryBeats] = useState<Record<number, unknown[]>>({})
+  const [turnStoryRolls, setTurnStoryRolls] = useState<Record<number, unknown[]>>({})
   const [reportedBadTurnIds, setReportedBadTurnIds] = useState<Set<number>>(() => new Set())
   const [reportingBadTurnIds, setReportingBadTurnIds] = useState<Set<number>>(() => new Set())
   const [ratedTurnQualityIds, setRatedTurnQualityIds] = useState<Set<number>>(() => new Set())
@@ -1238,8 +1233,8 @@ function AIDMApp() {
   }, [campaignWorldId, worlds])
 
   const timeline = useMemo(
-    () => buildTimeline({ logEntries, optimisticEntries, streamingTurn, turnStatuses, turnStoryBeats }),
-    [logEntries, optimisticEntries, streamingTurn, turnStatuses, turnStoryBeats],
+    () => buildTimeline({ logEntries, optimisticEntries, streamingTurn, turnStatuses, turnStoryBeats, turnStoryRolls }),
+    [logEntries, optimisticEntries, streamingTurn, turnStatuses, turnStoryBeats, turnStoryRolls],
   )
   const streamingTurnStatus = streamingTurn ? turnStatuses[streamingTurn.turnId] : ''
   const dmResponseBlocking = Boolean(streamingTurn && !turnStatusAllowsNextSend(streamingTurnStatus))
@@ -1428,7 +1423,6 @@ function AIDMApp() {
     adminToolsUnlocked,
     applyComposerMode,
     closeDiceRoll,
-    completeDiceRoll,
     composerMode,
     diceRoll,
     handleConnectionInterrupted,
@@ -1439,6 +1433,7 @@ function AIDMApp() {
     handleTurnDuplicate,
     handleTurnRejected,
     interactionTargets,
+    markDiceRollPlayed,
     openingDelayed,
     pendingSubmissionCampaignId,
     rollMode,
@@ -1514,6 +1509,15 @@ function AIDMApp() {
   // A send waiting for the socket to rejoin is still in flight for every
   // control that must not start another turn.
   const turnInFlight = sendPending || submissionReconnecting
+  const pressedRollTurnId = diceRoll?.result?.turn_id ?? null
+  const pressedRollPlayed = diceRoll?.status === 'played'
+  // Landed, the pressed roll's card hands over to the story once the turn's cards are there, or the turn is over.
+  const pressedRollHandedOver = pressedRollPlayed && ((pressedRollTurnId !== null && Boolean(turnStoryRolls[pressedRollTurnId])) || !turnInFlight)
+  useEffect(() => {
+    if (!pressedRollHandedOver) return undefined
+    const timer = window.setTimeout(closeDiceRoll, PRESSED_HOLD_MS)
+    return () => window.clearTimeout(timer)
+  }, [closeDiceRoll, pressedRollHandedOver])
   const startAdventure = useCallback(() => {
     startOpening(
       buildStartAdventurePrompt({
@@ -2658,10 +2662,6 @@ function AIDMApp() {
   }, [campaignActionDialog])
 
   const closeCurrentDialog = useCallback(() => {
-    if (diceRoll) {
-      closeDiceRoll()
-      return
-    }
     const activeCampaignDialog = campaignActionDialogRef.current
     if (activeCampaignDialog) {
       if (!activeCampaignDialog.pending) {
@@ -2751,7 +2751,6 @@ function AIDMApp() {
     accountSheetOpen,
     closeAccountSheet,
     closeCreateCampaignDialog,
-    closeDiceRoll,
     closePlayerDeleteDialog,
     closeShareSessionDialog,
     closePlayerEditDialog,
@@ -2772,7 +2771,6 @@ function AIDMApp() {
     campaignChooserOpen,
     characterJoinDialogOpen,
     createCampaignOpen,
-    diceRoll,
     playerDeleteDialog,
     playerEditDialog,
     profileSettingsOpen,
@@ -2788,49 +2786,47 @@ function AIDMApp() {
     worldManagerOpen,
   ])
 
-  const activeModalKey = diceRoll
-    ? `dice-roll-${diceRoll.rollKey}`
-    : campaignActionDialog
-      ? 'campaign-action'
-      : sessionActionDialog
-        ? 'session-action'
-        : startChapterDialog
-          ? 'start-chapter'
-          : saveImportDialog
-            ? 'save-import'
-            : worldDeleteDialog
-              ? 'world-delete'
-              : worldManagerOpen
-                ? 'world-manager'
-                : campaignArchiveDialog
-                  ? 'campaign-archive'
-                  : sessionArchiveDialog
-                    ? 'session-archive'
-                    : campaignPackImportOpen
-                      ? 'campaign-pack-import'
-                      : campaignChooserOpen
-                        ? 'campaign-chooser'
-                        : characterJoinDialogOpen
-                          ? 'character-join'
-                          : playerDeleteDialog
-                            ? 'player-delete'
-                            : playerEditDialog
-                              ? 'player-edit'
-                              : savedWorkspaceDeleteDialog
-                                ? 'saved-workspace-delete'
-                                : runtimeSettingsOpen
-                                  ? 'runtime-settings'
-                                  : shareSessionUrl
-                                    ? 'share-session'
-                                    : profileSettingsOpen
-                                      ? 'profile-settings'
-                                      : accountSheetOpen
-                                        ? 'account'
-                                        : createCampaignOpen
-                                          ? 'create-campaign'
-                                          : createHeroCampaignId
-                                            ? 'create-hero'
-                                            : null
+  const activeModalKey = campaignActionDialog
+    ? 'campaign-action'
+    : sessionActionDialog
+      ? 'session-action'
+      : startChapterDialog
+        ? 'start-chapter'
+        : saveImportDialog
+          ? 'save-import'
+          : worldDeleteDialog
+            ? 'world-delete'
+            : worldManagerOpen
+              ? 'world-manager'
+              : campaignArchiveDialog
+                ? 'campaign-archive'
+                : sessionArchiveDialog
+                  ? 'session-archive'
+                  : campaignPackImportOpen
+                    ? 'campaign-pack-import'
+                    : campaignChooserOpen
+                      ? 'campaign-chooser'
+                      : characterJoinDialogOpen
+                        ? 'character-join'
+                        : playerDeleteDialog
+                          ? 'player-delete'
+                          : playerEditDialog
+                            ? 'player-edit'
+                            : savedWorkspaceDeleteDialog
+                              ? 'saved-workspace-delete'
+                              : runtimeSettingsOpen
+                                ? 'runtime-settings'
+                                : shareSessionUrl
+                                  ? 'share-session'
+                                  : profileSettingsOpen
+                                    ? 'profile-settings'
+                                    : accountSheetOpen
+                                      ? 'account'
+                                      : createCampaignOpen
+                                        ? 'create-campaign'
+                                        : createHeroCampaignId
+                                          ? 'create-hero'
+                                          : null
   const modalOpen = Boolean(activeModalKey)
   const runtime = llmConfig?.current ?? health?.llm ?? null
   const configuredProvider = stringValue(runtime?.provider, 'Unknown')
@@ -2969,7 +2965,7 @@ function AIDMApp() {
   ])
 
   useEffect(() => {
-    if (showTitleScreen || modalOpen || diceRoll) return undefined
+    if (showTitleScreen || modalOpen) return undefined
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase()
       const modifier = event.metaKey || event.ctrlKey
@@ -3016,7 +3012,6 @@ function AIDMApp() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [
     canStopTts,
-    diceRoll,
     modalOpen,
     refreshCurrentWorkspace,
     scrollTurnFeedToLatest,
@@ -3152,11 +3147,13 @@ function AIDMApp() {
       setDirectorCommentary(null)
       setTurnStatuses({})
       setTurnStoryBeats({})
+      setTurnStoryRolls({})
       setClarificationRequest(null)
       return
     }
     setTurnStatuses({})
     setTurnStoryBeats({})
+    setTurnStoryRolls({})
     setClarificationRequest(null)
     loadSessionData(activeSessionId).then(clearAuthTokenErrors).catch((error: unknown) => {
       if (isUnauthorizedError(error)) {
@@ -3364,6 +3361,7 @@ function AIDMApp() {
     setStreamingTurn,
     setTurnStatuses,
     setTurnStoryBeats,
+    setTurnStoryRolls,
     setClarificationRequest,
     setSceneMusicSyncState,
     setSceneState,
@@ -3995,7 +3993,10 @@ function AIDMApp() {
       submitAction,
       toggleAdminTools,
       startDiceRoll,
-      preloadDiceRollDialog,
+      diceRoll,
+      markDiceRollPlayed,
+      closeDiceRoll,
+      retryDiceRoll,
       applyComposerMode,
       updateSelectedDie,
       rollMode,
@@ -4642,31 +4643,6 @@ function AIDMApp() {
         </div>
       )}
 
-      {diceRoll ? (
-        <Suspense
-          fallback={
-            <ModalLoading dialogRef={modalDialogRef} label={`Preparing the ${diceRoll.die.toUpperCase()}…`} />
-          }
-        >
-          <DiceRollDialog
-            die={diceRoll.die}
-            result={diceRoll.roll?.kept ?? null}
-            rolls={diceRoll.roll?.rolls ?? null}
-            mode={diceRoll.roll?.mode ?? 'normal'}
-            modifier={diceRoll.roll?.modifier ?? null}
-            total={diceRoll.roll?.total ?? null}
-            provenance={diceRoll.provenance}
-            targetLabel={diceRoll.targetLabel}
-            rollKey={diceRoll.rollKey}
-            status={diceRoll.status}
-            dialogRef={modalDialogRef}
-            error={diceRoll.error}
-            onCancel={closeDiceRoll}
-            onComplete={completeDiceRoll}
-            onRetry={retryDiceRoll}
-          />
-        </Suspense>
-      ) : null}
 
       <RuntimeSettingsDialog
         defaultBaseUrl={DEFAULT_BASE_URL}

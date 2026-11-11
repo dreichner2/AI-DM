@@ -19,6 +19,7 @@ from tests.ai_narrator import AiTable, ai_narration
 
 PACK = Path(__file__).resolve().parents[1] / 'docs' / 'examples' / 'the_road_of_unremembered_kings_campaign.json'
 YOU = re.compile(r'\byou(?:r|rself)?\b', re.IGNORECASE)
+FINISHER_QUESTION = re.compile(r'^(?:Arden Vale|Seren Ashgrove), how do you end it\?$')
 HEROES = ('Arden Vale', 'Seren Ashgrove')
 OUT = {'unconscious', 'stable', 'out_of_fight'}
 
@@ -229,7 +230,10 @@ def test_the_road_fight_in_party_play_names_each_hero_and_never_says_you(party):
     narrations = [turn['narration'] for turn in turns]
     beats = [beat['text'] for turn in turns for beat in turn['beats']]
 
-    assert [sentence for turn in turns for sentence in _engine_sentences(turn['narration']) if YOU.search(sentence)] == []
+    # The one sentence that speaks to a hero is the finishing blow's question, which names them.
+    assert [
+        sentence for turn in turns for sentence in _engine_sentences(turn['narration']) if YOU.search(sentence) and not FINISHER_QUESTION.match(sentence)
+    ] == []
     assert [beat for beat in beats if YOU.search(beat)] == []
     for turn in turns:
         for sentence in _engine_sentences(turn['narration']):
@@ -237,15 +241,15 @@ def test_the_road_fight_in_party_play_names_each_hero_and_never_says_you(party):
             own = re.match(r"^(?P<hero>[A-Z][a-z]+ [A-Z][a-z]+)(?:'s \w+ | closes in )", sentence)
             if own and own['hero'] in HEROES:
                 assert own['hero'] == names[turn['player']], sentence
-    assert 'Arden Vale closes in on the pale lantern. Their longsword lands with 19 against AC 14, a hit for 9 slashing damage.' in narrations[1]
-    assert 'The wardbound beast strikes at Seren Ashgrove with Dust-Marked Pounce: 16 against AC 16, a hit for 7 piercing damage.' in narrations[0]
-    assert 'The pale lantern turns Lantern-Lure on Arden Vale: a Wisdom save of 12 against DC 12, a success.' in narrations[0]
-    assert narrations[0].endswith("It is still Arden Vale's turn.")
+    # The rolls are shown as cards, so the sentences tell what came of them without their numbers.
+    assert 'Arden Vale closes in on the pale lantern. Their longsword finds the pale lantern and draws blood.' in narrations[1]
+    assert "The wardbound beast's pounce lands on Seren Ashgrove." in narrations[0]
+    assert "Arden Vale shakes off the pale lantern's lure." in narrations[0]
+    # The enemies opened the fight after Arden's travel, so the round has come back to Arden.
+    assert narrations[0].endswith("It is Arden Vale's turn again.")
     # Arden ends the turn and nobody acts before Seren: only who is up next.
     assert narrations[2] == 'Seren Ashgrove is up next.'
-    assert narrations[3].startswith(
-        "Seren Ashgrove's mace lands on the pale lantern with 17 against AC 14, a hit for 8 bludgeoning damage — their wounds cost them 2."
-    )
+    assert narrations[3].startswith("Seren Ashgrove's mace finds the pale lantern and draws blood — their wounds drag at them.")
     assert 'Arden Vale gains 10 gold. Seren Ashgrove gains 10 gold.' in narrations[-1]
     assert [beat['text'] for beat in turns[4]['beats']] == ['Seren Ashgrove took 3 damage', 'Seren Ashgrove is dying', 'Seren Ashgrove is unconscious']
     assert 'Seren Ashgrove: death save: 12 — success' in beats
@@ -259,8 +263,9 @@ def test_the_same_road_fight_alone_still_speaks_to_the_hero(app, client, socketi
     finally:
         table.close()
 
-    assert 'The pale lantern turns Lantern-Lure on you: a Wisdom save of 12 against DC 10, a success.' in narration
-    assert 'Your Longsword lands on the pale lantern with 19 against AC 14, a hit for 9 slashing damage.' in narration
+    # The rolls are shown as cards, so the sentences tell what came of them without their numbers.
+    assert "You shake off the pale lantern's lure." in narration
+    assert 'Your longsword finds the pale lantern and draws blood.' in narration
     assert 'It is your turn.' in narration
 
 

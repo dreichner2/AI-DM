@@ -8,8 +8,10 @@ to and the next thing that person knows, how the free-text message mapped,
 the enemies' names in prose (with the pronoun each takes), the authored setup
 and adjustments of a fight that starts, the enemy abilities whose conditions the
 hero shakes off as their turn ends, who acts next in a fight, how a fight ends
-when the engine-resolved enemy turns end it (a party defeat among them), and the
-captives the party leaves behind when it travels on.
+when the engine-resolved enemy turns end it (a party defeat among them), the
+captives the party leaves behind when it travels on, where everyone stands for
+a hero who looks in a fight, the lines the enemies speak or show (their
+records' ``barks``) and the finishing blow (``finishing_blow``).
 
 In party play (more than one hero in the session) the packet's ``party`` names
 the acting hero and the heroes, and every line written here names the hero
@@ -18,10 +20,13 @@ instead of saying "you".
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Iterable
 
 from aidm_server.combat.maneuvers import enemy_record, pronoun_key
-from aidm_server.combat.state import combat_turn_context, normalize_combat_state
+from aidm_server.combat.modifiers import range_band
+from aidm_server.combat.positioning import in_melee_reach
+from aidm_server.combat.state import combat_turn_context, normalize_combat_state, participant_is_targetable
 from aidm_server.game_state.campaign_pack_encounters import catalog_record
 from aidm_server.price_list import normalize_price
 
@@ -282,6 +287,200 @@ def enemy_names(state: dict[str, Any]) -> list[dict[str, Any]]:
     return names
 
 
+def enemy_prose(state: dict[str, Any], participant: dict[str, Any]) -> str:
+    """An enemy's name in prose: ``the ashmarked cutthroat``; a proper name keeps its capitals (``the Hollow Marshal``)."""
+
+    name = _text(participant.get('name')) or 'the enemy'
+    proper = participant.get('proper') is True or enemy_record(state, participant).get('proper') is True
+    if proper:
+        return f'the {name[4:]}' if name.lower().startswith('the ') else name
+    return name.lower() if name.lower().startswith('the ') else f'the {name.lower()}'
+
+
+def _health(participant: dict[str, Any]) -> str:
+    hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
+    current, maximum = int(hp.get('current') or 0), int(hp.get('max') or 0)
+    if not maximum or current >= maximum:
+        return 'unhurt'
+    if current * 4 <= maximum:
+        return 'barely standing'
+    return 'wounded' if current * 5 <= maximum * 3 else 'hurt'
+
+
+def fight_positions(state: dict[str, Any], *, actor_id: str) -> list[dict[str, Any]]:
+    """Where everyone else in the fight stands from the acting hero, enemies first:
+    ``[{"name", "enemy", "where", "health"}]``. ``where`` is ``on`` (in melee reach of the hero), else
+    the participant's band (``near``, ``far``, ``distant``; ``close`` for melee elsewhere)."""
+
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    participants = [participant for participant in combat.get('participants') or [] if isinstance(participant, dict)]
+    hero = next((participant for participant in participants if _text(participant.get('id')) == actor_id), None)
+    if hero is None:
+        return []
+    placed = []
+    for participant in participants:
+        if participant is hero or not participant_is_targetable(participant):
+            continue
+        band = range_band(participant)
+        where = 'on' if in_melee_reach(hero, participant) else 'close' if band == 'melee' else band
+        enemy = _text(participant.get('team')) == 'enemy'
+        placed.append(
+            {
+                'name': enemy_prose(state, participant) if enemy else _text(participant.get('name')),
+                'enemy': enemy,
+                'where': where,
+                **({'health': _health(participant)} if enemy else {}),
+            }
+        )
+    return sorted(placed, key=lambda entry: not entry['enemy'])
+
+
+# Barks ------------------------------------------------------------------------------------------------------------
+
+BARK_KINDS = ('start', 'hurt', 'turning', 'taunt')
+# Enemy turns that do something in the world (never replaced by a taunt); any other turn without a roll that
+# deals no damage and applies no condition only fills time ("turns back to its work", "hangs back, watching").
+PURPOSEFUL_INTENTS = frozenset(
+    {
+        'protect_ally', 'use_environment', 'negotiate', 'surrender', 'yield', 'reposition', 'defend', 'hide',
+        'call_reinforcements', 'retreat', 'flee', 'break_free',
+    }
+)
+GIVING_UP_INTENTS = frozenset({'negotiate', 'surrender', 'yield'})
+FLEEING_INTENTS = frozenset({'retreat', 'flee'})
+TURNING_CONDITIONS = frozenset({'captured', 'surrendered', 'yielded'})
+
+
+def _barks_of(state: dict[str, Any], participant: dict[str, Any]) -> dict[str, list[str]]:
+    record = enemy_record(state, participant)
+    barks = record.get('barks') if isinstance(record.get('barks'), dict) else {}
+    return {kind: [_text(line) for line in barks.get(kind) or [] if _text(line)] for kind in BARK_KINDS}
+
+
+def _conditions(participant: dict[str, Any]) -> set[str]:
+    return {_text(condition).lower() for condition in participant.get('conditions') or [] if _text(condition)}
+
+
+def _hp_now(participant: dict[str, Any]) -> tuple[int, int]:
+    hp = participant.get('hp') if isinstance(participant.get('hp'), dict) else {}
+    return int(hp.get('current') or 0), int(hp.get('max') or 0)
+
+
+def _turns(action: dict[str, Any]) -> bool:
+    """An enemy turn that yields or flees."""
+
+    intent = _text(action.get('intentType')).lower()
+    if action.get('held') is True and intent == 'surrender':
+        return True
+    if action.get('resolvedWithoutRoll') is not True or action.get('droppedByReaction') is True:
+        return False
+    return intent in GIVING_UP_INTENTS or (intent in FLEEING_INTENTS and action.get('moveOnly') is not True)
+
+
+def filler_enemy_turn(action: dict[str, Any]) -> bool:
+    """An enemy turn that rolled nothing, dealt no damage, applied no condition and did nothing in the world."""
+
+    return (
+        action.get('resolvedWithoutRoll') is True
+        and not action.get('breakFree')
+        and not any(action.get(key) is True for key in ('turnLost', 'held', 'droppedByReaction', 'moveOnly'))
+        and _text(action.get('intentType')).lower() not in PURPOSEFUL_INTENTS
+        and not action.get('damageTotal')
+        and not action.get('conditionsApplied')
+    )
+
+
+def _chosen(lines: list[str], used: set[str], key: str) -> str:
+    """One of the lines, chosen from the turn; a line already used in the fight only once all have been."""
+
+    pool = [line for line in lines if line not in used] or lines
+    return pool[int(hashlib.sha1(key.encode('utf-8')).hexdigest(), 16) % len(pool)]
+
+
+def enemy_barks(
+    *,
+    state_before: dict[str, Any],
+    state_after: dict[str, Any],
+    enemy_actions: Iterable[dict[str, Any]],
+    applied_changes: Iterable[dict[str, Any]],
+    told: Iterable[dict[str, Any]],
+    turn_id: Any,
+) -> list[dict[str, Any]]:
+    """The lines the fight's enemies speak or show this turn, from their records' ``barks``.
+
+    Each is ``{"kind", "enemyId", "recordId", "name", "line", "speech", "round", "after"}``: ``after`` is
+    ``start`` (the fight's first narration, after its setup), ``hero`` (after the hero's own action) or the
+    ``enemyId`` of the enemy turn it follows (a ``taunt`` replaces that turn's line). ``told`` holds the
+    barks of this fight's earlier turns: ``start`` and ``hurt`` come once per record, a taunt at most once
+    per enemy every two rounds, and no line repeats while another is unused.
+    """
+
+    combat = state_after.get('combat') if isinstance(state_after.get('combat'), dict) else {}
+    round_number = int(combat.get('round') or 1)
+    enemies = [participant for participant in combat.get('participants') or [] if isinstance(participant, dict) and participant.get('team') == 'enemy']
+    by_id = {_text(enemy.get('id')): enemy for enemy in enemies}
+    before = {
+        _text(participant.get('id')): participant
+        for participant in ((state_before.get('combat') or {}).get('participants') or [])
+        if isinstance(participant, dict)
+    }
+    told = [bark for bark in told if isinstance(bark, dict)]
+    used = {_text(bark.get('line')) for bark in told}
+    once = {(_text(bark.get('kind')), _text(bark.get('recordId'))) for bark in told if bark.get('kind') in {'start', 'hurt'}}
+    taunted = {}
+    for bark in told:
+        if bark.get('kind') == 'taunt':
+            taunted[_text(bark.get('enemyId'))] = max(int(bark.get('round') or 0), taunted.get(_text(bark.get('enemyId')), 0))
+    barks: list[dict[str, Any]] = []
+
+    def bark(kind: str, enemy: dict[str, Any], after: str) -> None:
+        record_id = _text(enemy.get('campaignPackEnemyId'))
+        lines = _barks_of(state_after, enemy)[kind]
+        if not lines or (kind, record_id) in once or any(entry['kind'] == kind and entry['recordId'] == record_id for entry in barks):
+            return
+        line = _chosen(lines, used, f'{turn_id}:{kind}:{record_id}')
+        used.add(line)
+        barks.append(
+            {
+                'kind': kind,
+                'enemyId': _text(enemy.get('id')),
+                'recordId': record_id,
+                'name': _text(enemy.get('name')),
+                'line': line,
+                'speech': line[:1] in '"“',
+                'round': round_number,
+                'after': after,
+            }
+        )
+
+    # A record's start line is told in the first narration of the fight it is in (``once`` holds those told).
+    if _text(combat.get('status')).lower() in {'starting', 'active'} or any(
+        isinstance(change, dict) and change.get('type') == 'combat.start' for change in applied_changes
+    ):
+        for enemy in enemies:
+            bark('start', enemy, 'start')
+    for enemy in enemies:
+        gained = _conditions(enemy) - _conditions(before.get(_text(enemy.get('id')), {}))
+        if gained & TURNING_CONDITIONS and _text(enemy.get('id')) in before:
+            bark('turning', enemy, 'hero')
+    for enemy in enemies:
+        current, maximum = _hp_now(enemy)
+        if participant_is_targetable(enemy) and maximum and current * 2 <= maximum:
+            bark('hurt', enemy, 'hero')
+    for action in enemy_actions:
+        enemy = by_id.get(_text(action.get('enemyId')))
+        if enemy is None:
+            continue
+        if _turns(action):
+            bark('turning', enemy, _text(enemy.get('id')))
+        elif filler_enemy_turn(action) and round_number - taunted.get(_text(enemy.get('id')), -1) >= 2:
+            before_count = len(barks)
+            bark('taunt', enemy, _text(enemy.get('id')))
+            if len(barks) > before_count:
+                taunted[_text(enemy.get('id'))] = round_number
+    return barks
+
+
 def captive_phrase(state: dict[str, Any], captive: dict[str, Any]) -> str:
     """``the cutthroat`` for an "Ashmarked Cutthroat"; a proper name as it is (``the Cinder Scribe``)."""
 
@@ -307,8 +506,9 @@ def captives_left_behind(state_before: dict[str, Any], applied_changes: Iterable
 
 
 def next_actor_line(state: dict[str, Any], *, actor_id: str, turn_ends: bool) -> str | None:
-    """``It is your turn.`` (``It is still {Name}'s turn.`` in party play) or ``{Name} is up next.`` for a
-    fight still going after this turn."""
+    """``It is your turn.`` or ``{Name} is up next.`` for a fight still going after this turn. In party
+    play the hero acting again reads ``It is still {Name}'s turn.`` while nobody else has acted since,
+    and ``It is {Name}'s turn again.`` once the round has come back to them (their turn ended)."""
 
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if _text(combat.get('status')).lower() not in {'starting', 'active'}:
@@ -320,5 +520,8 @@ def next_actor_line(state: dict[str, Any], *, actor_id: str, turn_ends: bool) ->
     if not next_actor:
         return None
     if _text(next_actor.get('id')) == actor_id:
-        return f"It is still {_hero_name(state, actor_id)}'s turn." if party(state, actor_id=actor_id) else 'It is your turn.'
+        if not party(state, actor_id=actor_id):
+            return 'It is your turn.'
+        name = _hero_name(state, actor_id)
+        return f"It is {name}'s turn again." if turn_ends else f"It is still {name}'s turn."
     return f"{_text(next_actor.get('name')) or 'Someone else'} is up next."

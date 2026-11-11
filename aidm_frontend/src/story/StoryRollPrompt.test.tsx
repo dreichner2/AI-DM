@@ -129,16 +129,6 @@ describe('StoryRollPrompt', () => {
     expect(composer.startDiceRoll).not.toHaveBeenCalled()
   })
 
-  it('preloads the dice roller on hover and focus', () => {
-    const composer = testComposer()
-    render(<StoryRollPrompt notice={testRollNotice()} composer={composer} onPrepare={vi.fn()} />)
-    const button = screen.getByRole('button', { name: 'Roll Stealth check' })
-
-    fireEvent.mouseEnter(button)
-    fireEvent.focus(button)
-    expect(composer.preloadDiceRollDialog).toHaveBeenCalledTimes(2)
-  })
-
   it('lets the player choose advantage and a reason before rolling', () => {
     const onPrepare = vi.fn()
     const composer = testComposer()

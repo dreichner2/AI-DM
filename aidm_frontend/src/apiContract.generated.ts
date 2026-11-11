@@ -333,11 +333,84 @@ export type AccountSession = {
   workspace_token?: string | null
 }
 
+export type StoryRollKind = 'attack' | 'save' | 'check' | 'death_save' | 'damage' | 'healing' | 'initiative'
+
+export type StoryRollSide = 'hero' | 'enemy' | 'ally'
+
+export type StoryRollActor = {
+  id: string
+  name: string
+  side: StoryRollSide
+}
+
+export type StoryRollTarget = {
+  id: string
+  name: string
+}
+
+export type StoryRollD20 = {
+  faces: number[]
+  kept: number
+  mode: 'normal' | 'advantage' | 'disadvantage'
+}
+
+export type StoryRollPart = {
+  label: string
+  value: number
+  dice?: string
+  faces?: number[]
+}
+
+export type StoryRollDice = {
+  dice: string
+  faces: number[]
+  bonus: number
+  total: number
+  parts?: StoryRollPart[]
+}
+
+export type StoryRollDamage = StoryRollDice & { type: string | null; critical: boolean; note: string | null }
+
+export type StoryRollInitiativeEntry = {
+  name: string
+  side: StoryRollSide
+  faces: number[]
+  bonus: number
+  total: number
+}
+
+export type StoryRoll = {
+  id: string
+  kind: StoryRollKind
+  actor?: StoryRollActor
+  target?: StoryRollTarget
+  label: string
+  source?: string
+  d20?: StoryRollD20 | null
+  die?: string
+  parts?: StoryRollPart[]
+  total?: number | null
+  against?: { kind: 'AC' | 'DC'; value: number } | null
+  outcome?: 'hit' | 'miss' | 'success' | 'failure' | null
+  natural?: 'twenty' | 'one' | null
+  damage?: StoryRollDamage
+  healing?: StoryRollDice
+  entries?: StoryRollInitiativeEntry[]
+}
+
+export type TurnRollsPayload = {
+  session_id: number
+  turn_id: number
+  rolls: StoryRoll[]
+}
+
+export type SessionLogEntryMetadata = JsonRecord & { storyRolls?: StoryRoll[] }
+
 export type SessionLogEntry = {
   id: number
   message: string
   entry_type: string
-  metadata: JsonRecord
+  metadata: SessionLogEntryMetadata
   timestamp: string | null
 }
 

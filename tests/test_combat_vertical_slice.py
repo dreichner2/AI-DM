@@ -528,10 +528,13 @@ def test_pre_dm_lethal_player_attack_persists_damage_and_combat_end_before_narra
         assert wolf['hp']['current'] == 0
         assert result['stateBeforeDm']['combat']['status'] == 'ended'
         assert result['stateBeforeDm']['combat']['flags']['endReason'] == 'all_enemies_defeated'
-        assert [change['type'] for change in result['combatAppliedChanges']][-2:] == [
+        # The last enemy felled by the hero's own blow is left for them to finish (``pendingFinisher``).
+        assert [change['type'] for change in result['combatAppliedChanges']][-3:] == [
             'combat.participant.update',
             'combat.end',
+            'combat.update',
         ]
+        assert result['stateBeforeDm']['combat']['flags']['pendingFinisher']['enemyId'] == 'enemy_wolf'
         assert [change['type'] for change in result['dmContextPacket']['trustedStateChanges']] == [
             'combat.participant.update',
             'combat.end',

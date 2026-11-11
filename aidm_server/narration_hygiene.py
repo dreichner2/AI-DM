@@ -28,6 +28,16 @@ Deterministic, from the turn's rules hint and its engine brief
 6. In and out of a fight, a final sentence that is only the label of an action
    offered this turn ("Search the strongbox.") is dropped, compared without case
    or final punctuation.
+7. On a turn that sets a finishing blow, the engine ends the narration with the
+   one sanctioned closing question (``The hollow marshal is finished. How do
+   you end it?``, see :func:`aidm_server.scripted_narrator.engine_turn_line`), so
+   that question always reaches the players and is never cut; the model's own
+   copies of its sentences are dropped so it is asked once.
+8. Brisk: outside an opening, an arrival and the adventure's ending, a
+   narration longer than twice its limit (60 words in a fight, 90 outside one)
+   is cut at the last sentence end at or before twice the limit, never
+   mid-sentence and never inside a quotation (telemetry
+   ``narration.hygiene.trimmed_total``).
 
 A line nothing is taken from is kept exactly as the model wrote it.
 """
@@ -40,6 +50,7 @@ from typing import Any
 
 from aidm_server.game_state.extraction.free_text_actions import mentions, name_words, phrase_names
 from aidm_server.prompt_templates import ENGINE_BRIEF_KEY, is_opening_rules_hint
+from aidm_server.telemetry import telemetry_metric
 from aidm_server.turn_roll_policy import TurnRollPolicy
 from aidm_server.turn_rules import response_mentions_roll_request
 
@@ -99,6 +110,10 @@ TURN_CALL = re.compile(
     re.IGNORECASE,
 )
 QUOTE_MARKS = frozenset('"“”')
+# Word limits (rule 8): a narration over twice its limit is trimmed.
+FIGHT_WORD_LIMIT = 60
+WORD_LIMIT = 90
+TRIMMED_METRIC = 'narration.hygiene.trimmed_total'
 
 
 @dataclass(frozen=True)
@@ -191,6 +206,62 @@ def _engine_owns_roll(sentence: str, previous: str, brief: dict[str, Any]) -> bo
     return bool(mentions(nearby, owned, lambda name: name, guarded=False))
 
 
+def _word_limit(rules_hint: dict[str, Any], state_pipeline: dict[str, Any], brief: dict[str, Any], *, in_fight: bool) -> int | None:
+    """The turn's word limit, or None for an opening, an arrival or the ending, which may run long."""
+
+    narration = state_pipeline.get('narration') if isinstance(state_pipeline.get('narration'), dict) else {}
+    arrived = bool(narration.get('arrival')) or any(
+        isinstance(change, dict) and change.get('type') == 'scene.move_location'
+        for change in state_pipeline.get('stateChangesAlreadyApplied') or []
+    )
+    if is_opening_rules_hint(rules_hint) or arrived or brief.get('ending') is True:
+        return None
+    return FIGHT_WORD_LIMIT if in_fight else WORD_LIMIT
+
+
+def _trim(lines: list[dict[str, Any]], words_allowed: int) -> bool:
+    """Cut the narration at the last sentence end within ``words_allowed`` words that is outside any
+    quotation; False when it already fits or no sentence end qualifies."""
+
+    sentences = [(line, index, sentence) for line in lines for index, sentence in enumerate(line['sentences'])]
+    if sum(len(sentence.split()) for _line, _index, sentence in sentences) <= words_allowed:
+        return False
+    words = straight = curly = 0
+    cut = None
+    for line, index, sentence in sentences:
+        words += len(sentence.split())
+        if words > words_allowed:
+            break
+        straight += sentence.count('"')
+        curly += sentence.count('“') - sentence.count('”')
+        if straight % 2 == 0 and curly <= 0:
+            cut = (line, index)
+    if cut is None:
+        return False
+    cut_line, cut_index = cut
+    after = False
+    for line in lines:
+        if after:
+            if line['sentences']:
+                line['sentences'] = []
+                line['changed'] = True
+            continue
+        if line is cut_line:
+            if len(line['sentences']) > cut_index + 1:
+                line['sentences'] = line['sentences'][: cut_index + 1]
+                line['changed'] = True
+            after = True
+    return True
+
+
+def _closing_sentences(state_pipeline: dict[str, Any]) -> set[str]:
+    """The sentences of the finishing blow's closing the engine adds this turn, compared without case."""
+
+    narration = state_pipeline.get('narration') if isinstance(state_pipeline.get('narration'), dict) else {}
+    blow = narration.get('finishingBlow') if isinstance(narration.get('finishingBlow'), dict) else {}
+    return {_label_key(match.group(0)) for match in SENTENCE.finditer(_text(blow.get('closing')))}
+
+
 def engine_roll_pending(rules_hint: dict[str, Any]) -> bool:
     """The engine itself waits on a player roll this turn: an attack, a spell, initiative, a roll its rules
     require, or a contest. A roll the turn's wording only suggested (``source: turn_rules``) is not one."""
@@ -224,11 +295,15 @@ def clean_ai_narration(text: str, rules_hint: dict[str, Any]) -> CleanNarration:
         lines.append({'raw': raw_line, 'changed': line != raw_line, 'sentences': [match.group(0) for match in SENTENCE.finditer(line)]})
 
     in_fight = isinstance(state_pipeline.get('combatState'), dict) and bool(state_pipeline['combatState'])
+    closing = _closing_sentences(state_pipeline)
     removed_rolls = False
     previous = ''
     for line in lines:
         kept = []
         for sentence in line['sentences']:
+            if closing and _label_key(sentence) in closing:
+                line['changed'] = True
+                continue
             if brief and _drops_gain(sentence, brief):
                 line['changed'] = True
                 continue
@@ -241,6 +316,10 @@ def clean_ai_narration(text: str, rules_hint: dict[str, Any]) -> CleanNarration:
             kept.append(sentence)
             previous = sentence
         line['sentences'] = kept
+
+    limit = _word_limit(rules_hint, state_pipeline, brief, in_fight=in_fight)
+    if limit is not None and _trim(lines, 2 * limit):
+        telemetry_metric(TRIMMED_METRIC, 1)
 
     if not is_opening_rules_hint(rules_hint):
         last = next((line for line in reversed(lines) if line['sentences']), None)

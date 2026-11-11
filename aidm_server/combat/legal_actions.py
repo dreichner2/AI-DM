@@ -9,7 +9,10 @@ back, dash, disengage, dodge, help, hide, stabilize — come from the built-in
 action provider, and the maneuvers — grapple, shove down, bind, demand
 surrender (:mod:`aidm_server.combat.maneuvers`) — from the next; class features
 add more providers.  End turn is always last.  The improvised action typed
-words become (``combat.improvise``) is resolved here but never offered.
+words become (``combat.improvise``) is resolved here but never offered.  While a
+finishing blow is the hero's to tell (``finishing_blow.pendingFinisher``), its two
+actions (``finisher`` kind, free, never ending the turn) come first; the turn
+engine takes them as the hero's words, never as a combat action.
 
 A melee attack or maneuver on a target out of reach is still offered
 (``requiresMove``; a maneuver's label then reads ``Close in and …``) while the
@@ -877,6 +880,17 @@ def legal_combat_actions_for_player(snapshot: Any, player: Player) -> dict[str, 
             economy=end_turn_cost,
         )
     )
+    # A finishing blow the hero has yet to tell comes first, on or off their turn: it costs nothing and
+    # does not end the turn. Deferred import: the finishing blow reads pack records, whose module imports this one.
+    from aidm_server.game_state.orchestration.finishing_blow import finisher_actions
+
+    actions = [
+        *(
+            {**_base_action(entry['id'], 'finisher', entry['label'], entry['label'], entry['label'], available=True, reason='', economy=_economy()), **entry}
+            for entry in finisher_actions(snapshot, _text(actor.get('id')))
+        ),
+        *actions,
+    ]
     return {
         'schemaVersion': LEGAL_ACTIONS_SCHEMA_VERSION,
         'playerId': int(player.player_id),

@@ -132,6 +132,12 @@ export type RollResolvedPayload = {
   }
   /** Bardic Inspiration that turned a failed roll; its roll is part of `total`. */
   inspiration?: { die: string; roll: number }
+  /** Bonus and penalty dice (Bless, Bane); their totals are part of `total`. */
+  bonus_dice?: Array<{ dice: string; rolls: number[]; total: number }>
+  /** The target number the result is judged against: a DC, or for an attack the AC (`target_ac`). */
+  dc?: number | null
+  target_ac?: number | null
+  outcome?: 'success' | 'failure' | null
   authoritative: true
 }
 

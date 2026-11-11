@@ -171,7 +171,8 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
     )
     resolved_text = _payload(resolved, 'dm_response_end')['text']
 
-    assert re.match(rf'Dexterity \(Stealth\): -?\d+ against DC {stated_dc} — (success|failure)\.', resolved_text), resolved_text
+    # The roll is shown as its card; the narration tells what came of it, with no numbers.
+    assert resolved_text and not re.search(r'\d|DC', resolved_text), resolved_text
     assert 'Make a' not in resolved_text
     narrated_turns = 5
     assert generate_calls.count('deterministic-v1') == narrated_turns
@@ -246,7 +247,8 @@ def test_a_roll_with_no_check_pending_is_just_a_roll(app, table):
     roll = strength_turn['rules_hint']['authoritative_roll']
     modifier = roll['modifier']
 
-    assert _payload(bare, 'dm_response_end')['text'] == 'You roll a 10.'
+    # The roll's card shows the number.
+    assert _payload(bare, 'dm_response_end')['text'] == 'You roll the die.'
     assert _story_beats(bare) == [{'kind': 'check', 'text': 'd20: 10'}]
     assert (bare_turn['rules_hint']['authoritative_roll']['dc'], bare_turn['rules_hint']['authoritative_roll']['outcome']) == (None, None)
     assert bare_turn['rules_hint']['dc_hint'] is None
@@ -254,8 +256,7 @@ def test_a_roll_with_no_check_pending_is_just_a_roll(app, table):
     assert _payloads(bare, 'roll_required') == []
     assert (roll['total'], roll['dc'], roll['outcome'], roll['free']) == (10 + modifier, None, None, True)
     sign = f'+ {modifier}' if modifier >= 0 else f'− {-modifier}'
-    article = 'an' if str(10 + modifier).startswith('8') or 10 + modifier in (11, 18) else 'a'
-    assert _payload(strength, 'dm_response_end')['text'] == f'You roll {article} {10 + modifier} for Strength.'
+    assert _payload(strength, 'dm_response_end')['text'] == 'You roll for Strength.'
     assert _story_beats(strength) == [{'kind': 'check', 'text': f'Strength: {10 + modifier} (d20 10 {sign})'}]
 
 
@@ -277,6 +278,6 @@ def test_a_roll_that_answers_a_pending_check_is_that_check(app, table):
 
     assert (roll['dc'], roll['outcome'], roll.get('free')) == (stated_dc, outcome, None)
     assert _story_beats(resolved) == [{'kind': 'check', 'text': f"Stealth check: {roll['total']} — {outcome} (DC {stated_dc})"}]
-    assert _payload(resolved, 'dm_response_end')['text'].startswith(
-        f"Dexterity (Stealth): {roll['total']} against DC {stated_dc} — {outcome}."
-    )
+    # The beat keeps the numbers; the narration, beside the roll's card, tells only what came of it.
+    told = _payload(resolved, 'dm_response_end')['text']
+    assert told and not re.search(r'\d|DC', told)

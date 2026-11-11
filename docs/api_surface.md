@@ -294,7 +294,7 @@ implements them in the split `aidm_server/socket_*.py` modules.
 
 Common server events include `error`, `player_joined`, `player_left`,
 `active_players`, `new_message`, `dm_response_start`, `dm_chunk`,
-`dm_response_end`, `roll_required`, `roll_resolved`, `turn_duplicate`,
+`dm_response_end`, `roll_required`, `roll_resolved`, `turn_rolls`, `turn_duplicate`,
 `turn_status`, `session_log_update`, `session_recovery_resolved`,
 `scene_state`, `segment_triggered`, `clarification_required`, `music_state`, and
 `turn_control_updated`. A consumer should tolerate additive fields and unrelated
@@ -302,8 +302,13 @@ events but validate the payload for the events it handles.
 
 `dm_chunk` carries only `session_id`, `turn_id`, `chunk` and a 0-based `index`;
 `rules_hint` and `requires_roll` arrive once, in `dm_response_start` (and
-`dm_response_end`). The final `turn_status` of a turn (`status: "saved"`,
-`details.stage: "post_turn"`) carries its `storyBeats`. `send_message` accepts
+`dm_response_end`). `turn_rolls` (`session_id`, `turn_id`, `rolls`) carries the
+turn's roll cards once the engine has resolved them, before narration starts:
+every roll of the turn in order (`StoryRoll` in the API type contract), nothing
+withheld from any player. The final `turn_status` of a turn (`status: "saved"`,
+`details.stage: "post_turn"`) carries its `storyBeats` and its complete
+`storyRolls`, which are also on the turn's Dungeon Master log entry and turn
+event. `send_message` accepts
 an optional `message_kind`; the only allowed value is `"opening"`, which marks
 the adventure's opening turn (no roll, no helper-model calls).
 

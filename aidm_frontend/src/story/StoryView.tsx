@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { whenIdle } from '../lazyModule'
+import { useStorySound } from './audio/useStorySound'
 import { heroHasSpells } from './heroSpells'
 import { setStoryTextSize, useStoryPreferences } from './sheets/storyPreferences'
 import { StoryAtmosphere } from './StoryAtmosphere'
@@ -57,6 +58,8 @@ export function StoryView({
   const viewerDown =
     viewerPlayerId !== null && (Boolean(vitality[viewerPlayerId]) || (viewer?.health ? viewer.health.currentHp <= 0 : false))
   const hasSpells = heroHasSpells(board, inspector)
+  const viewerDying = viewerPlayerId !== null && vitality[viewerPlayerId]?.state === 'dying'
+  const place = useStorySound(board, { inFight: mood === 'combat', viewerDying })
 
   // The drawer's code arrives once the first story has painted, before anyone reaches for it.
   useEffect(() => whenIdle(preloadStoryDrawer), [])
@@ -92,7 +95,12 @@ export function StoryView({
       data-typeface={typeface}
       data-reduce-motion={reduceMotion ? '' : undefined}
     >
-      <StoryAtmosphere mood={mood} viewerHp={viewer?.health?.currentHp ?? null} />
+      <StoryAtmosphere
+        mood={mood}
+        viewerHp={viewer?.health?.currentHp ?? null}
+        phase={board.worldState.clock?.phase}
+        weather={place.weather}
+      />
       <h1 className="story-sr-only">{board.activeSession ? board.activeSessionTitle : board.campaign?.title}</h1>
       <div className="story-stage">
         <StoryTopBar

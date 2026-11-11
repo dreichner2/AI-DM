@@ -194,12 +194,25 @@ list that reads a message for a roll is not consulted:
   standing. An action that is not legal is refused with its reason and no
   narration (`Bind` on an unhurt enemy: `It is still on its feet and
   fighting.`).
+- On the hero's turn, words that name no fight action are also **speech**
+  (free, as above) when their first verb is question, interrogate, demand,
+  threaten, warn, beg, plead, answer, reply, talk, speak, greet, curse, swear,
+  laugh, thank, insult, mock or taunt (`Question the Ashmarked Cutthroat`), and
+  a **look** when it is look, watch, study, examine, read, listen, check, eye,
+  glance or "search for": free like speech, it rolls nothing and changes
+  nothing; the scripted narrator answers with where everyone stands
+  (`The ashmarked cutthroat is on you, unhurt; Corin Ashby is a few strides
+  off.`, from each participant's band and health), an AI narrator describes
+  what the hero sees in at most two sentences.
 - **Anything else** typed on the hero's turn is an **improvised action**: it
   costs the action and rolls the better of Strength (Athletics) or Dexterity
   (Acrobatics) against DC 12; on a success against a named (or the only) enemy
   that enemy is `off_balance` until the end of its next turn (its next attack
   has disadvantage). Its result is in the turn's "Did" and a check beat, and the
-  narration tells what the hero tried from that result.
+  narration tells what the hero tried from that result; a failed attempt says
+  the hero tries (`Thalion tries to kick the lantern at it, but it does not come
+  off.`), as every failed attempt does (`You try to break the strongbox open. It
+  will not give.`).
 
 ### A roll with no check pending
 
@@ -237,7 +250,19 @@ question, no markdown; people speak from what they know; resolve what the hero
 attempted from "Did", never leaving it "still to be done", handing the decision
 back or ending on an available action; never say whose turn it is (the engine
 adds that); enemies do only what "Did" says, otherwise they hold, watch or
-brace.
+brace. Five more set the pace: be brisk (in a fight at most 60 words, outside
+one 90, arriving somewhere new or opening a chapter 140, an ending may run
+long); open on what the hero does or perceives, not on the weather twice
+running; end on what matters now, usually one concrete thing that presses for a
+response, but after a win, a discovery, a kindness or a joke let that moment
+land and end there, never on a question to the players, a list of options or
+the name of a button; when someone present would plainly react, give them one
+short spoken line in their own voice; and never start a fight or bring in a
+creature, enemy or new danger unless "Did" says a fight began. On a turn whose
+rolls are shown as roll cards (`state_pipeline.storyRolls`) a last rule says
+the dice are shown and the narration restates no totals, ACs, DCs or damage
+numbers. Each enemy's `Bark:` line (see "Enemy barks") sits under its result,
+to be used word for word when it is speech.
 
 Scene objects reach the model's context with their player description, state
 and available labels only; an object's authored description, contents and
@@ -259,7 +284,27 @@ spent.`, `the next move`) is dropped unless it is spoken, and the reply ends
 with the engine's own turn line, the one the scripted narrator prints (`It is
 still Thalion's turn.` / `Corin Ashby is up next.`). In and out of a fight, a
 final sentence that is only the label of an action offered this turn (`Search
-the strongbox.`) is dropped. The scripted narrator is not touched by either.
+the strongbox.`) is dropped. On a turn that sets a finishing blow the reply
+ends with the engine's own closing question after the turn line (see "The
+finishing blow"); the model's copies of it are dropped so it is asked once.
+Last, a reply outside an opening, an arrival and the adventure's ending that is
+longer than twice its limit (120 words in a fight, 180 outside) is cut at the
+last sentence end within that, never mid-sentence or inside a quotation
+(telemetry `narration.hygiene.trimmed_total`). The scripted narrator is not
+touched by either.
+
+### Numbers live on the roll cards
+
+On a turn whose pipeline carries roll cards (`storyRolls`), the scripted
+narrator tells each rolled result without its totals, ACs, DCs or damage:
+`Your longsword bites deep into the wardbound beast.`, `The wardbound beast's
+pounce bears Seren Ashgrove down hard.`, `The pale lantern's lure slides off
+Arden Vale.` Each rolled result has three sentences per outcome (hit, miss,
+critical hit, save made, save failed), chosen from the turn, alone and in
+party play; a manoeuvre, breaking free, an opportunity attack, a spell, healing,
+a rest and a checked roll keep their sentences without the numbers, and a kill,
+a yield or a break-free keep theirs. Without roll cards the sentences keep
+their numbers. Story beats keep their numbers either way.
 
 ### Offered actions and refusal sentences
 
@@ -327,9 +372,11 @@ reached level 2`; a coin or XP gain every hero received alike is one beat,
 `+10 gp each` / `+75 XP each`. Beats about the party or the world read the same.
 The narration does the same: the scripted narrator names the acting hero
 (`Seren Ashgrove closes in on the wardbound beast. Their mace lands …`,
-`It is still Seren Ashgrove's turn.`), and the AI narrator's rule 6 tells it to
-name every hero and never write "you" for one. When a hero's turn ends with
-nothing else to tell, the narration is only the line saying who acts next.
+`It is still Seren Ashgrove's turn.` while nobody else has acted since, `It is
+Seren Ashgrove's turn again.` once the round has come back to them; alone it is
+always `It is your turn.`), and the AI narrator's rule 6 tells it to name every
+hero and never write "you" for one. When a hero's turn ends with nothing else to
+tell, the narration is only the line saying who acts next.
 
 ## Character Foundations
 
@@ -492,6 +539,16 @@ spell's duration and repeat saves (see the spell table).
   `once: false`), narration and the operator API all start combat with stable
   participants and seeded, modifier-aware initiative. An encounter an object
   action settled never fires again.
+- In an adventure with a campaign pack, narration alone never starts a fight:
+  a reply that reads like one starting does so only when a pack encounter's
+  trigger is due that turn, or when the acting hero's own message attacked a
+  person present (a validated attack, or words that open with an attack verb
+  aimed at someone in the scene). A hero who attacks someone present fights
+  that person only, through the creature resolver, never a pack encounter's
+  enemy groups. Nor does narration alone make the scene a fight: the
+  post-narration reading never sets its `combatState` to `active`, its scene
+  type to `combat` or its danger to a fight's (8); that follows only a fight
+  the engine started. Adventures without a pack are unchanged.
 - Initiative never rests on a participant the engine plays: enemies who win
   initiative take their opening turns in the same turn that starts the fight,
   before or right after narration. The action that started the fight is not
@@ -668,6 +725,52 @@ nothing more you can use.`; an AI narrator has the record and its lines in the
 engine brief as a person present. Travelling on leaves captives behind: they
 are removed, with `You leave the cutthroat bound for the reeve.` (`The party
 leaves …` in party play).
+
+### Enemy barks
+
+An enemy record's `barks` (see `docs/campaign_packs.md`) give a fight's enemies
+a voice: a `start` line in the fight's first narration (after the setup and
+adjustment lines), a `hurt` line the first time one of the record's enemies is
+at half its hit points or less, a `turning` line when one yields, flees or is
+captured, and a `taunt` in place of an enemy turn that rolled nothing, dealt no
+damage and applied no condition (`turns back to its work`, `hangs back,
+watching`), at most once per enemy every two rounds. The line is chosen from
+the turn, and no line repeats in a fight while another is unused (the turns
+record theirs as `narration.barks`). Speech is printed with its speaker
+(`"Not paid enough for this," the ashmarked cutthroat spits.`, the verb
+rotating among says, spits, hisses and calls), a tell as written; an AI
+narrator gets `Bark: …` under that enemy's result.
+
+### The finishing blow
+
+When the acting hero's own attack, spell or manoeuvre brings to 0 hit points an
+enemy that is the last one standing, or whose record is `proper` or of a
+`hard`, `deadly` or `boss` `challengeTier`, the fight resolves exactly as ever
+(defeat, victory, rewards, beats) but the death is not told: the turn's
+narration ends `The ashmarked cutthroat is finished. How do you end it?`
+(party: `… finished. Corin Ashby, how do you end it?`), the one closing question
+the narration asks, and the combat's flags record `pendingFinisher` (`heroId`,
+`heroName`, `enemyId`, `enemyName`, `turnId`, `othersActed` and the
+`waitingLine`, `Corin Ashby is deciding how it ends…`, for the other players).
+There is only ever one; a second qualifying defeat is told as any other.
+
+While it is pending that hero is offered `Describe how you end it` (kind
+`finisher`, `prompt: "How do you end it?"`) and `Let the story tell it` first,
+and every message they send is the finisher: never another action, never
+rolled, costing nothing. The player view carries it as `combat.pendingFinisher`
+(`heroId`, `heroName`, `enemyName`, `waitingLine`; the finishing hero's own view
+adds the two actions as `offeredActions`), and while the fight goes on the
+finishing hero's combat actions start with them (`finisher.describe`,
+`finisher.story`: free, never ending the turn), taken as the hero's words. The scripted narrator follows their own line with
+`The ashmarked cutthroat falls, and does not rise.`; an AI narrator is told to
+tell their words faithfully in at most three sentences, adding no new facts or
+dangers. Words that spare it (whole words: spare, mercy, alive, let him/her/it
+live, knock out, knock him/her out, stay my hand) leave it alive and captured,
+a captive like those a fight leaves (beat `Captured — …`): `You turn the blow.
+The ashmarked cutthroat lives, and is yours.` It lapses, and that turn's
+narration begins `The ashmarked cutthroat falls.`, when the hero lets the story
+tell it, takes any other action, the party travels, or another hero has acted
+twice since.
 
 ## Spells
 

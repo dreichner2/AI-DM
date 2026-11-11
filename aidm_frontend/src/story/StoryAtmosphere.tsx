@@ -1,12 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { lazyModule } from '../lazyModule'
+import type { StoryWeather } from './audio/storyPlace'
 import { useStoryPreferences } from './sheets/storyPreferences'
 import type { StoryMood } from './storyMood'
+
+// Most places have no weather, so its drawing code arrives only when one does.
+const StoryAtmosphereWeather = lazyModule(() => import('./StoryAtmosphereWeather')).component(
+  (module) => module.StoryAtmosphereWeather,
+)
 
 type StoryAtmosphereProps = {
   mood: StoryMood
   /** The viewer's current HP; a drop flashes the screen edge red. */
   viewerHp: number | null
+  /** The day clock's phase; it tints the light (see `--story-daylight`). */
+  phase?: string
+  /** The place's weather, drawn behind the story. */
+  weather?: StoryWeather | null
 }
+
+const DAY_PHASES = new Set(['morning', 'afternoon', 'evening', 'night'])
 
 type Mote = {
   x: number
@@ -68,11 +81,12 @@ function hueOf(color: string) {
 }
 
 /**
- * The living background: mood light rising from below, a vignette, film grain
- * and a slow drift of embers. Purely decorative. With reduce motion on (the
- * player's setting, else the system's) it holds still: no embers, no flash.
+ * The living background: mood light rising from below, tinted by the time of
+ * day, the place's weather, a vignette, film grain and a slow drift of
+ * embers. Purely decorative. With reduce motion on (the player's setting,
+ * else the system's) it holds still: no embers, weather or flash; the tint stays.
  */
-export function StoryAtmosphere({ mood, viewerHp }: StoryAtmosphereProps) {
+export function StoryAtmosphere({ mood, viewerHp, phase, weather = null }: StoryAtmosphereProps) {
   const { reduceMotion } = useStoryPreferences()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -177,9 +191,23 @@ export function StoryAtmosphere({ mood, viewerHp }: StoryAtmosphereProps) {
     }
   }, [reduceMotion])
 
+  const daylight =
+    phase && DAY_PHASES.has(phase) ? ({ '--story-daylight': `var(--story-daylight-${phase})` } as CSSProperties) : undefined
+
   return (
-    <div ref={rootRef} className="story-atmosphere" data-still={reduceMotion ? '' : undefined} aria-hidden="true">
+    <div
+      ref={rootRef}
+      className="story-atmosphere"
+      data-still={reduceMotion ? '' : undefined}
+      style={daylight}
+      aria-hidden="true"
+    >
       <div className="story-atmosphere-glow" />
+      {weather && weather !== 'clear' && !reduceMotion ? (
+        <Suspense fallback={null}>
+          <StoryAtmosphereWeather weather={weather} />
+        </Suspense>
+      ) : null}
       <div className="story-atmosphere-vignette" />
       <div className="story-atmosphere-grain" />
       <canvas ref={canvasRef} className="story-atmosphere-motes" />

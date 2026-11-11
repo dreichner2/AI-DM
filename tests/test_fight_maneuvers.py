@@ -221,9 +221,10 @@ def test_the_owners_fight_replayed_tackle_yield_captive_questions_and_leaving_it
     assert ('grappled' in enemy['conditions'], enemy['grappledBy']) == (True, table.hero_id('Corin Ashby'))
     tackle = table.last()
     assert tackle['input'] == 'Close in and tackle him to the floor'
+    # The roll is shown as its card; the sentence tells what came of it.
     assert tackle['narration'] == (
-        'Corin Ashby closes in on the ashmarked cutthroat. They get an arm around the ashmarked cutthroat and bear it down: '
-        "Athletics 19 against DC 12. It is going nowhere.\n\nIt is still Corin Ashby's turn."
+        'Corin Ashby closes in on the ashmarked cutthroat. They get an arm around the ashmarked cutthroat and bear it down. '
+        "It is going nowhere.\n\nIt is still Corin Ashby's turn."
     )
     assert tackle['beats'] == ['Corin Ashby — Athletics check: 19 — success (DC 12)', 'Grappled — Ashmarked Cutthroat']
     # The typed words took the grapple's own path: the move and the action are spent, nothing else.
@@ -232,7 +233,7 @@ def test_the_owners_fight_replayed_tackle_yield_captive_questions_and_leaving_it
 
     table.end_turn('Corin Ashby')
     yielded = table.last()
-    assert yielded['narration'] == 'The ashmarked cutthroat goes slack. "Enough," it says.'
+    assert yielded['narration'] == 'The ashmarked cutthroat goes slack. "Enough," it says. "Not worth my neck!" the ashmarked cutthroat hisses.'
     assert [action['intentType'] for action in yielded['pipeline']['dmContextPacket']['combatState']['enemyResolvedActions']] == ['surrender']
     assert yielded['beats'][:2] == ['Ashmarked Cutthroat yields', 'The fight ends — they yield']
     assert '+50 XP each' in yielded['beats'] and 'Clue — Ash Marks on the Road' in yielded['beats']
@@ -300,7 +301,8 @@ def test_a_failed_tackle_lets_it_break_away_and_the_engaged_paladins_opportunity
     monkeypatch.setattr('aidm_server.combat.actions.deterministic_roller', lambda _seed: lambda _sides: 1)
     table.type('Corin Ashby', 'Close in and tackle him')
     assert table.last()['narration'].startswith(
-        'Corin Ashby closes in on the ashmarked cutthroat. They grab for the ashmarked cutthroat, but it twists free: Athletics 5 against DC 12.'
+        'Corin Ashby closes in on the ashmarked cutthroat. They grab for the ashmarked cutthroat, but it twists free. '
+        '"Not paid enough for this," the ashmarked cutthroat hisses.'
     )
     assert 'grappled' not in table.enemy()['conditions']
     # Heroes already make opportunity attacks on an enemy leaving melee (combat/reactions.py); the paladin's is rolled here.
@@ -311,10 +313,7 @@ def test_a_failed_tackle_lets_it_break_away_and_the_engaged_paladins_opportunity
     assert turn['intentType'] == 'retreat' and turn['droppedByReaction'] is True
     attack = turn['reactions'][0]['attack']
     assert (turn['reactions'][0]['reactorId'], attack['hit'], attack['weaponName']) == (table.hero_id('Corin Ashby'), True, 'Longsword')
-    assert table.last()['narration'] == (
-        f"As the ashmarked cutthroat breaks away, Corin Ashby's longsword catches it: {attack['attackTotal']} against AC 13, "
-        f"{attack['damageTotal']} damage. The ashmarked cutthroat falls where it stands."
-    )
+    assert table.last()['narration'] == "As the ashmarked cutthroat breaks away, Corin Ashby's longsword catches it. The ashmarked cutthroat falls where it stands."
     enemy = table.enemy()
     assert enemy['hp']['current'] == 0 and 'fled' not in enemy['conditions']
     assert table.combat()['flags']['endReason'] == 'all_enemies_defeated'
@@ -332,10 +331,7 @@ def test_an_unhurt_cutthroat_breaks_free_and_may_then_move(table):
 
     turn = _enemy_turn(table)
     assert (turn['intentType'], turn['breakFree']['success']) == ('break_free', True)
-    escape = turn['breakFree']
-    assert table.last()['narration'].startswith(
-        f"The ashmarked cutthroat tears loose of Corin Ashby: {escape['total']} against DC {escape['dc']}."
-    )
+    assert table.last()['narration'].startswith('The ashmarked cutthroat tears loose of Corin Ashby.')
     enemy = table.enemy()
     assert 'grappled' not in enemy['conditions'] and 'grappledBy' not in enemy
     # Free again, it is planned and moves like any other enemy on its next turn.
@@ -358,8 +354,7 @@ def test_a_shove_puts_it_down_until_the_end_of_its_turn_with_advantage_against_i
     table.steady_enemy()
     table.type('Corin Ashby', 'Close in and knock him down')
     assert table.last()['narration'].startswith(
-        'Corin Ashby closes in on the ashmarked cutthroat. They put their shoulder into the ashmarked cutthroat and it goes down hard: '
-        'Athletics 19 against DC 12.'
+        'Corin Ashby closes in on the ashmarked cutthroat. They put their shoulder into the ashmarked cutthroat and it goes down hard.'
     )
     assert 'prone' in table.enemy()['conditions']
     target = next(target for target in table.actions('Corin Ashby')['combat.attack.starter_paladin_longsword']['targets'])
@@ -385,14 +380,14 @@ def test_demanding_its_surrender(table, monkeypatch, roll, yields):
     check = table.last()['pipeline']['dmContextPacket']['combatState']['playerResolvedCombatAction']['check']
     assert check['dc'] == 12
     if yields:
-        assert narration.startswith(f'Corin Ashby closes in on the ashmarked cutthroat. "Enough," they tell it. Intimidation {check["total"]} against DC 12. The knife drops.')
+        assert narration.startswith('Corin Ashby closes in on the ashmarked cutthroat. "Enough," they tell it. The knife drops. "Not worth my neck!"')
         assert 'surrendered' in table.enemy()['conditions']
         assert table.combat()['flags']['endReason'] == 'enemies_surrendered'
         assert 'Ashmarked Cutthroat yields' in table.last()['beats']
     else:
         assert narration == (
-            f'Corin Ashby closes in on the ashmarked cutthroat. "Enough," they tell it. Intimidation {check["total"]} against DC 12. '
-            "It fights on.\n\nIt is still Corin Ashby's turn."
+            'Corin Ashby closes in on the ashmarked cutthroat. "Enough," they tell it. It fights on. '
+            '"Not paid enough for this," the ashmarked cutthroat hisses.\n\nIt is still Corin Ashby\'s turn.'
         )
         assert table.combat()['status'] == 'active'
 
@@ -408,18 +403,18 @@ def test_an_improvised_action_rolls_and_can_leave_it_off_balance(table, monkeypa
     assert (action['actionType'], check['dc'], check['success']) == ('improvise', 12, works)
     assert table.combat()['flags']['turnEconomy']['actionRemaining'] == 0
     did = turn['pipeline']['dmContextPacket']['engineBrief']['did']
-    assert did[0].startswith('Thalion tries something of their own ("I kick the lantern at it"): ')
+    assert did[1].startswith('Thalion tries something of their own ("I kick the lantern at it"): ')
     assert turn['beats'][0] == f"Thalion — {check['skill'].title()} check: {check['total']} — {'success' if works else 'failure'} (DC 12)"
-    skill = check['skill'].title()
     if works:
-        assert turn['narration'].startswith(f'Thalion kicks the lantern at it: {skill} {check["total"]} against DC 12. The ashmarked cutthroat is off balance.')
+        assert '\n\nThalion kicks the lantern at it. The ashmarked cutthroat is off balance.\n\n' in turn['narration']
         assert 'off_balance' in table.enemy()['conditions']
         assert _enemy_attack_mode(table, 'Thalion') == ('disadvantage', ['Attacker has Off balance'])
         table.end_turn('Thalion')
         table.end_turn('Corin Ashby')
         assert 'off_balance' not in table.enemy()['conditions']
     else:
-        assert turn['narration'].startswith(f'Thalion kicks the lantern at it, but it does not come off: {skill} {check["total"]} against DC 12.')
+        # A failed attempt never says it was done.
+        assert '\n\nThalion tries to kick the lantern at it, but it does not come off.\n\n' in turn['narration']
         assert 'off_balance' not in table.enemy()['conditions']
 
 
@@ -436,7 +431,8 @@ def test_speech_in_a_fight_is_free(table, words):
     ]
     turn = table.last()
     assert turn['input'] == words
-    assert turn['narration'] == "It is still Thalion's turn."
+    # The fight's first narration also carries the cutthroat's opening bark.
+    assert turn['narration'].split('\n\n')[1:] == ["It is still Thalion's turn."]
     assert turn['pipeline']['postDmExtraction']['debug']['reason'] == 'fight_speech'
     assert turn['beats'] == []
 
@@ -492,7 +488,10 @@ def test_the_engine_says_whose_turn_it_is_and_the_model_cannot(ai_table):
     ):
         assert rule in prompt
     did = next(line for line in ENGINE_BRIEF_RE.search(prompt).group('brief').splitlines() if line.startswith('Did: '))
-    assert did == 'Did: Thalion is dodging until the start of their next turn. No enemy has acted since the last narration. Thalion is dodging.'
+    assert did == (
+        'Did: Bark: "Names, ledgers and stone. Hand them over and walk away." (Ashmarked Cutthroat; use this line, word for word if it is speech) '
+        'Thalion is dodging until the start of their next turn. No enemy has acted since the last narration. Thalion is dodging.'
+    )
 
 
 def test_the_brief_lists_the_typed_tackle_under_did(ai_table):
@@ -801,8 +800,7 @@ def test_alone_the_hero_is_spoken_to(app, client, socketio, safe_mode, monkeypat
         socket_client.disconnect()
 
     told = next(event['args'][0]['text'] for event in received if event['name'] == 'dm_response_end')
-    assert told.startswith('You close in on the ashmarked cutthroat. You get an arm around the ashmarked cutthroat and bear it down: Athletics ')
-    assert told.endswith('against DC 12. It is going nowhere.\n\nIt is your turn.')
+    assert told.endswith('You close in on the ashmarked cutthroat. You get an arm around the ashmarked cutthroat and bear it down. It is going nowhere.\n\nIt is your turn.')
 
 
 def test_binding_a_yielded_enemy_needs_no_roll_and_captures_it():

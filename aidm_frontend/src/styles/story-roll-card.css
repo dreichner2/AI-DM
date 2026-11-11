@@ -1,0 +1,187 @@
+/*
+ * Roll cards: every roll of a turn on the table, in the Story view and in
+ * Table tools. No box: who rolled in a quiet label line, the total large in
+ * gold with its dice beside it, the outcome, then the damage or healing.
+ * Hero cards' labels are in the ember accent, enemy cards' in the danger tone
+ * of damage taken.
+ */
+
+.roll-card {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-width: 0;
+  font-family: var(--story-ui);
+  font-style: normal;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--story-ink-soft);
+}
+/* Held back until the cards before it in the turn have played. */
+.roll-card[data-phase='waiting'] { visibility: hidden; }
+
+.roll-card .roll-card-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 8px;
+  max-width: 100%;
+  font-size: var(--story-label-size);
+  font-weight: 560;
+  letter-spacing: var(--story-label-tracking);
+  text-transform: uppercase;
+  color: var(--story-muted);
+  overflow-wrap: anywhere;
+}
+.roll-card[data-side='hero'] .roll-card-label { color: var(--story-ember-soft); }
+.roll-card[data-side='enemy'] .roll-card-label { color: var(--story-fail); }
+.roll-card .roll-card-glyph { flex: none; color: var(--story-gold); }
+.roll-card .roll-card-source {
+  font-weight: 450;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.roll-card .roll-card-roll {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px 12px;
+}
+.roll-card .roll-card-total {
+  min-width: 2ch;
+  font-size: 1.9rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: -0.01em;
+  color: var(--story-gold);
+}
+.roll-card[data-phase='cycle'] .roll-card-total { color: var(--story-ink-soft); opacity: 0.75; }
+.roll-card .roll-card-breakdown {
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums lining-nums;
+  word-spacing: 0.08em;
+  color: var(--story-muted);
+}
+.roll-card .roll-card-dropped { color: var(--story-faint); }
+
+.roll-card .roll-card-outcome {
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.roll-card .roll-card-outcome[data-outcome='success'],
+.roll-card .roll-card-outcome[data-outcome='hit'] { color: var(--story-success); }
+.roll-card .roll-card-outcome[data-outcome='failure'],
+.roll-card .roll-card-outcome[data-outcome='miss'] { color: var(--story-fail); }
+.roll-card .roll-card-natural { font-weight: 450; color: var(--story-muted); }
+
+.roll-card .roll-card-dice {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px 10px;
+}
+.roll-card .roll-card-dice-total {
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--story-ink);
+}
+.roll-card .roll-card-dice[data-healing] .roll-card-dice-total { color: var(--story-success); }
+.roll-card .roll-card-note { font-size: 0.78rem; font-style: italic; color: var(--story-muted); }
+
+.roll-card .roll-card-details { display: grid; justify-items: center; gap: 2px; }
+.roll-card .roll-card-more {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.74rem;
+  color: var(--story-faint);
+  cursor: pointer;
+}
+.roll-card .roll-card-more:hover,
+.roll-card .roll-card-more:focus-visible { color: var(--story-ink-soft); }
+.roll-card .roll-card-parts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--story-muted);
+}
+
+.roll-card .roll-card-initiative {
+  display: grid;
+  gap: 2px;
+  width: min(320px, 100%);
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.roll-card .roll-card-initiative li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 12px;
+  text-align: left;
+}
+.roll-card .roll-card-initiative-name { overflow-wrap: anywhere; color: var(--story-ink-soft); }
+.roll-card .roll-card-initiative li[data-side='hero'] .roll-card-initiative-name { color: var(--story-ember-soft); }
+.roll-card .roll-card-initiative li[data-side='enemy'] .roll-card-initiative-name { color: var(--story-fail); }
+.roll-card .roll-card-initiative-total {
+  min-width: 2ch;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  text-align: right;
+  color: var(--story-gold);
+}
+
+/* A natural 20 pulses once in the accent as it lands; a natural 1 stays muted. */
+.roll-card[data-live][data-natural='twenty'] .roll-card-total { animation: roll-card-pulse 700ms var(--story-ease) 1; }
+.roll-card[data-natural='one'] .roll-card-total { color: var(--story-muted); }
+@keyframes roll-card-pulse {
+  40% {
+    color: var(--story-ember-soft);
+    text-shadow: 0 0 22px color-mix(in srgb, var(--story-ember) 70%, transparent);
+    transform: scale(1.16);
+  }
+}
+.story-shell[data-reduce-motion] .roll-card-total { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .roll-card-total { animation: none; }
+}
+
+.roll-card-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* The roll the player pressed, where they pressed it. */
+.roll-card-pressed {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: var(--story-gap-3) 0 var(--story-gap-2);
+}
+.roll-card-failed { font-family: var(--story-ui); font-size: 0.86rem; color: var(--story-fail); }
+.roll-card-failed-actions { display: flex; gap: 18px; }
+
+/* Table tools: the turn's cards above its narration. */
+.turn-roll-cards {
+  display: grid;
+  gap: 12px;
+  margin: 4px 0 12px;
+}

@@ -9,7 +9,7 @@ from aidm_server.rules import RuleHint
 
 
 # The source of the intent typed words in a fight become (``free_text_actions.fight_words``): a fight action
-# (kind ``combat``) or free speech (kind ``message``). Such words are never read for a roll by the
+# (kind ``combat``) or free speech or a look (kind ``message``). Such words are never read for a roll by the
 # phrase list of ``rules.classify_player_action``.
 FIGHT_WORDS_SOURCE = 'fight_words'
 
@@ -19,13 +19,44 @@ def typed_in_fight(action_intent: dict | None) -> bool:
 
 
 def fight_speech(action_intent: dict | None) -> bool:
-    """Words said in a fight: free, they spend nothing and change nothing."""
+    """Words said in a fight, or a look around it: free, they spend nothing and change nothing."""
 
     return typed_in_fight(action_intent) and action_intent.get('kind') == 'message'
 
 
+# ``fight_words`` of free typed words in a fight that only look (``free_text_actions.FIGHT_LOOK``).
+FIGHT_LOOK = 'look'
+
+
+def fight_look(action_intent: dict | None) -> bool:
+    """Typed words in a fight that only look: free like speech, answered with where everyone stands."""
+
+    return fight_speech(action_intent) and action_intent.get('fight_words') == FIGHT_LOOK
+
+
 def fight_words_rule_hint() -> RuleHint:
     return RuleHint(False, None, None, 'Typed words in a fight: the engine decides', confidence=1.0)
+
+
+# The source of the intent a hero's words become while the finishing blow is theirs to tell
+# (``finishing_blow``): kind ``message``, with ``finisher`` ``describe`` (their words are the blow) or
+# ``story`` (they let the story tell it). Such words are never mapped to another action and never rolled.
+FINISHER_SOURCE = 'finisher'
+FINISHER_DESCRIBE = 'describe'
+FINISHER_STORY = 'story'
+
+
+def finishing(action_intent: dict | None) -> str:
+    """``describe`` or ``story`` for the words of a hero telling (or passing on) their finishing blow; ''."""
+
+    if not isinstance(action_intent, dict) or action_intent.get('source') != FINISHER_SOURCE:
+        return ''
+    choice = action_intent.get('finisher')
+    return choice if choice in {FINISHER_DESCRIBE, FINISHER_STORY} else ''
+
+
+def finisher_rule_hint() -> RuleHint:
+    return RuleHint(False, None, None, 'The finishing blow: the hero tells it, no roll', confidence=1.0)
 
 
 ROLL_TYPE_LABELS = {

@@ -20,6 +20,7 @@ import { objectActionSubmission, pickupSubmission, travelSubmission, type Action
 import { StoryActionTray, type TraySection } from './StoryActionTray'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
 import { recentSpellNames } from './recentSpells'
+import { PressedRollCard } from './PressedRollCard'
 import { StoryRollPrompt } from './StoryRollPrompt'
 import { useEndingDismissed } from './storyEnding'
 import { MORE_SUGGESTION, storySuggestions, type StorySuggestion } from './storySuggestions'
@@ -417,7 +418,15 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
     <div className="story-dock" data-tray-open={trayOpen || undefined}>
       {renderStatus()}
 
-      {rollPromptActive && notice ? (
+      {composer.diceRoll ? (
+        <PressedRollCard
+          roll={composer.diceRoll}
+          heroName={composer.selectedCharacterName}
+          onPlayed={composer.markDiceRollPlayed}
+          onRetry={() => void composer.retryDiceRoll()}
+          onDismiss={composer.closeDiceRoll}
+        />
+      ) : rollPromptActive && notice ? (
         <StoryRollPrompt notice={notice} composer={composer} onPrepare={board.onPreparePendingRoll} />
       ) : (
         <>

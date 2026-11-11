@@ -3,6 +3,13 @@ import { ChevronRight } from 'lucide-react'
 import { ModalShell } from '../../ModalShell'
 import type { LlmProviderOption, TtsChoice } from '../../types'
 import {
+  setAmbienceEnabled,
+  setAmbienceVolume,
+  setEffectsEnabled,
+  setEffectsVolume,
+  useStorySoundPreferences,
+} from '../audio/soundPreferences'
+import {
   setMusicEnabled,
   setMusicVolume,
   setStoryReduceMotion,
@@ -132,6 +139,41 @@ function SettingRow<T extends string | boolean>({
   )
 }
 
+/** A 0–100 % volume slider, idle while its sound is off. */
+function VolumeSetting({
+  name,
+  volume,
+  disabled,
+  onChange,
+}: {
+  name: string
+  /** 0–1. */
+  volume: number
+  disabled: boolean
+  onChange: (volume: number) => void
+}) {
+  const percent = Math.round(volume * 100)
+  return (
+    <label className="story-dialog-setting">
+      <span className="story-dialog-setting-name">{name}</span>
+      <span className="story-dialog-range">
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          value={percent}
+          disabled={disabled}
+          aria-valuetext={`${percent}%`}
+          style={{ '--range-fill': `${percent}%` } as CSSProperties}
+          onChange={(event) => onChange(Number(event.target.value) / 100)}
+        />
+        <output aria-hidden="true">{percent}%</output>
+      </span>
+    </label>
+  )
+}
+
 /**
  * Who narrates: the current narrator, then the scripted narrator and every AI
  * provider the server has a key for. Keys are never typed in here.
@@ -250,7 +292,7 @@ export function StorySettingsSheet({
   view,
 }: StorySettingsSheetProps) {
   const preferences = useStoryPreferences()
-  const volumePercent = Math.round(preferences.musicVolume * 100)
+  const sound = useStorySoundPreferences()
 
   return (
     <ModalShell
@@ -295,23 +337,26 @@ export function StorySettingsSheet({
             </>
           ) : null}
           <SettingRow name="Music" choices={ON_OFF} value={preferences.musicEnabled} onChange={setMusicEnabled} />
-          <label className="story-dialog-setting">
-            <span className="story-dialog-setting-name">Music volume</span>
-            <span className="story-dialog-range">
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={volumePercent}
-                disabled={!preferences.musicEnabled}
-                aria-valuetext={`${volumePercent}%`}
-                style={{ '--range-fill': `${volumePercent}%` } as CSSProperties}
-                onChange={(event) => setMusicVolume(Number(event.target.value) / 100)}
-              />
-              <output aria-hidden="true">{volumePercent}%</output>
-            </span>
-          </label>
+          <VolumeSetting
+            name="Music volume"
+            volume={preferences.musicVolume}
+            disabled={!preferences.musicEnabled}
+            onChange={setMusicVolume}
+          />
+          <SettingRow name="Ambience" choices={ON_OFF} value={sound.ambienceEnabled} onChange={setAmbienceEnabled} />
+          <VolumeSetting
+            name="Ambience volume"
+            volume={sound.ambienceVolume}
+            disabled={!sound.ambienceEnabled}
+            onChange={setAmbienceVolume}
+          />
+          <SettingRow name="Effects" choices={ON_OFF} value={sound.effectsEnabled} onChange={setEffectsEnabled} />
+          <VolumeSetting
+            name="Effects volume"
+            volume={sound.effectsVolume}
+            disabled={!sound.effectsEnabled}
+            onChange={setEffectsVolume}
+          />
         </section>
 
         <hr className="story-rule" />

@@ -90,6 +90,12 @@ def turn_status_payload(
     }
 
 
+def turn_rolls_payload(session_id: int, turn_id: int, rolls: list[dict[str, Any]]) -> dict[str, Any]:
+    """The turn's story rolls, for every player in the session: a roll is never hidden."""
+
+    return {'session_id': session_id, 'turn_id': turn_id, 'rolls': rolls}
+
+
 def new_message_payload(
     *,
     message: str,

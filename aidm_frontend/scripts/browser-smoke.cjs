@@ -446,11 +446,13 @@ async function runBrowserFlow(frontendUrl, backendUrl) {
   await page.locator('.composer-tools').getByRole('button', { name: /Roll/i }).click()
   await expect(page.getByLabel('Roll options')).toBeVisible()
   await page.getByLabel('Roll options').getByRole('button', { name: 'Roll dice' }).click()
-  const diceDialog = page.getByRole('dialog', { name: /Requesting roll|Rolling dice|Landed/i })
-  await expect(diceDialog).toBeVisible({ timeout: 15_000 })
-  await expect(diceDialog).toContainText('D20')
-  await diceDialog.getByRole('button', { name: 'Close dice roller' }).click()
-  await expect(diceDialog).toBeHidden()
+  // The roll is its roll card where it was pressed: no dialog, no 3D die. It lands on the server's
+  // result, then hands over to the turn's cards above the narration.
+  const pressedRoll = page.getByRole('region', { name: 'Your roll' })
+  await expect(pressedRoll).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.locator('.turn-roll-cards .roll-card').first()).toHaveAttribute('data-phase', 'done', { timeout: 30_000 })
+  await expect(pressedRoll).toBeHidden({ timeout: 30_000 })
   await page.locator('.composer-tools').getByRole('button', { name: /Roll/i }).click()
   await expect(page.getByLabel(/Your Action/i)).toBeVisible()
 
@@ -637,7 +639,7 @@ function withTimeout(promise, timeoutMs, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
-const PASSED_MESSAGE = 'passed: Story Play Now -> opening narration -> one action -> Settings -> Your adventures -> New adventure (blank page closed to the scripted narrator) -> blank adventure via API -> Choose your character -> guided hero creation -> start chapter -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session'
+const PASSED_MESSAGE = 'passed: Story Play Now -> opening narration -> one action -> Settings -> Your adventures -> New adventure (blank page closed to the scripted narrator) -> blank adventure via API -> Choose your character -> guided hero creation -> start chapter -> roll a d20 as an inline roll card -> manage map/segments -> verify control-local TTS unavailable state -> observe incremental DM streaming -> receive final DM response -> delete session -> import session -> delete imported session'
 
 async function checkSingleOriginServer(baseUrl) {
   const healthResponse = await waitForHttp(`${baseUrl}/api/health`, 'backend health')

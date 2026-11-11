@@ -5,7 +5,6 @@ import '../../App.css'
 import { SaveImportDialog } from '../../ArchiveDialogs'
 import { CampaignActionDialog, StartChapterDialog } from '../../CampaignSessionActionDialogs'
 import { CampaignPackImportDialog } from '../../CampaignPackImportDialog'
-import DiceRollDialog from '../../DiceRollDialog'
 import { PlayerEditDialog } from '../../PlayerEditDialog'
 import { ModalShell } from '../../ModalShell'
 import { CharacterJoinDialog } from '../../ProfileCharacterDialogs'
@@ -54,7 +53,6 @@ const SHEETS = [
   'edit-character-story',
   'choose-character',
   'import-save',
-  'dice',
   'pack-import',
 ] as const
 type PreviewSheet = (typeof SHEETS)[number]
@@ -539,24 +537,6 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
         >
           <CampaignPackImportDialog auth="" baseUrl="" onClose={noop} onImported={async () => {}} pushError={noop} />
         </ModalShell>
-      )
-    case 'dice':
-      return (
-        <DiceRollDialog
-          die="d20"
-          result={16}
-          rolls={[16]}
-          mode="normal"
-          modifier={3}
-          total={19}
-          targetLabel="Tovin Bell"
-          rollKey={1}
-          status="resolved"
-          dialogRef={dialogRef}
-          onCancel={noop}
-          onComplete={noop}
-          onRetry={noop}
-        />
       )
   }
 }

@@ -216,6 +216,7 @@ consumer.
 | location | `description`, `type` | prompt, player |
 | location | `onEnter`, `restPolicy` | mechanical |
 | location | `mapPosition`, `mapIcon` | player (`worldMap`) |
+| location | `ambience`, `weather` (see Sound and Weather) | player |
 | location | `region`, `playerSummary`, `playerDescription`, `tags` | player |
 | location | `gmNotes` | stored |
 | scene object | `kind`, state fields, `requirements`, `contents`, `discoversClueIds`, `setsFlags`, `discoversLocationIds`, `reveals`, `mechanicalEffects`, `triggerable`, `repeatable` | mechanical |
@@ -239,6 +240,7 @@ consumer.
 | enemy | `challengeTier: "boss"` (never yields or retreats above a quarter of its HP) | mechanical |
 | enemy | `singularName`, `proper`, `pronoun` (how one of them is named and referred to in narration) | mechanical |
 | enemy | `captiveKnows` (a line told each time a captive one is questioned) | mechanical, prompt |
+| enemy | `barks` (`start`, `hurt`, `turning`, `taunt`: short lines it speaks or shows in a fight) | mechanical, prompt |
 | enemy ability | `durationRounds` (1–10 of the target's turns its `conditionsApplied` last; default 1, the end of its next turn; a save is repeated at the end of each; the linter errors outside 1–10) | mechanical |
 | enemy | `descriptionShort`, `challengeTier`, `creatureType`, `tags` | prompt |
 | checkpoint | `id`, graph fields, `completeWhen`, `failWhen`, `branchWhen`, `prerequisite*`, `optional`, `terminal`, `canCompleteOutOfOrder`, `rejoinTargetCheckpointId`, `directorRules` | mechanical |
@@ -737,6 +739,36 @@ person present. From the Play Now pack:
    "There's a man they call the Scribe. He don't want the road dead. He wants it to answer to him."]}
 ```
 
+### Barks
+
+`barks` (optional) gives an enemy a voice in a fight: `{"start": [...], "hurt":
+[...], "turning": [...], "taunt": [...]}`, each a list of short lines (up to 8,
+240 characters each). A line in quotation marks is speech, printed with its
+speaker (`"Not paid enough for this," the ashmarked cutthroat spits.`; a
+`proper` enemy by its name); a line without is a described tell, printed as
+written. When they are used:
+
+- `start`: once, in the fight's first narration, after the encounter's `setup`
+  and adjustment lines;
+- `hurt`: the first time one of the record's enemies is at half its hit points
+  or less;
+- `turning`: when one yields, flees or is captured;
+- `taunt`: on an enemy turn that rolls nothing, deals no damage and applies no
+  condition (one that reads `turns back to its work` or `hangs back,
+  watching`), in place of that line, at most once per enemy every two rounds.
+
+The line is chosen from the turn, and no line repeats in a fight while another
+is unused. An AI narrator is given it as `Bark: …` under that enemy's result,
+to use word for word when it is speech. From the Play Now pack:
+
+```json
+{"id": "enemy_ashmarked_cutthroats", "name": "Ashmarked Cutthroats",
+ "barks": {"start": ["\"Names, ledgers and stone. Hand them over and walk away.\""],
+           "hurt": ["\"Not paid enough for this.\""],
+           "turning": ["\"Not worth my neck!\""],
+           "taunt": ["\"The road's already forgotten you.\""]}}
+```
+
 ## Meeting People
 
 Arriving at a place (any applied `scene.move_location`) meets every person its
@@ -1059,6 +1091,26 @@ visited), or `rumoured` (an undiscovered neighbour of a visited place, shown as
 `?`); nothing else appears. `hidden` routes appear only when both ends are
 discovered. Campaigns without a pack map their known locations with a computed
 layout.
+
+## Sound and Weather
+
+The Story view plays a quiet generated sound bed for the party's place and
+draws its weather behind the story. A location may set both:
+
+- `ambience` (`rain`, `wind`, `hearth`, `night`, `marsh`, `cave`, `hush`)
+  chooses the bed. Without it the bed follows the map icon and the clock: `inn`
+  plays `hearth`, `cave` plays `cave`, `marsh` plays `marsh`, `forest`, `camp`
+  and `valley` play `night` in the evening and at night and `wind` by day, and
+  every other place plays `wind`. Every place plays `hush` during a fight.
+- `weather` (`rain`, `fog`, `snow`, `clear`) is drawn behind the story; `rain`
+  also plays the rain bed over the place's own.
+
+The Play Now pack rains at the Lantern Post Inn and on the Old North Road and
+is foggy at the cairns and on the ridge paths:
+
+```json
+{"id": "loc_lantern_post_inn", "mapIcon": "inn", "weather": "rain"}
+```
 
 ## Story Flags
 

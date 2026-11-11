@@ -1295,7 +1295,11 @@ def _should_start_combat(state: dict[str, Any], player_message: str) -> bool:
     return hostile_action_targets_creature(player_message)
 
 
-def _should_start_combat_from_dm_response(state: dict[str, Any], dm_response: str) -> bool:
+def _should_start_combat_from_dm_response(state: dict[str, Any], dm_response: str, *, turn: DmTurn | None = None) -> bool:
+    """The narration tells a fight starting. In an adventure with a campaign pack narration alone never
+    starts one: only when a pack encounter's trigger is due this turn or the hero's own message this turn
+    attacked a person present (:func:`_person_attacked`)."""
+
     combat = normalize_combat_state(state.get('combat'), state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {})
     if _combat_is_active(combat):
         return False
@@ -1304,7 +1308,45 @@ def _should_start_combat_from_dm_response(state: dict[str, Any], dm_response: st
         return False
     if DM_COMBAT_NEGATION_PATTERN.search(text):
         return False
+    if has_campaign_pack(state):
+        return due_encounter(state, []) is not None or (turn is not None and _person_attacked(state, turn) is not None)
     return True
+
+
+def has_campaign_pack(state: dict[str, Any]) -> bool:
+    """The adventure is played from a campaign pack."""
+
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    return bool(str(pack.get('packId') or '').strip())
+
+
+def _person_attacked(state: dict[str, Any], turn: DmTurn) -> dict[str, Any] | None:
+    """The person present in the scene the hero's own message this turn attacked: a validated attack
+    declared before narration, or typed words that open with an attack verb aimed at them."""
+
+    # Deferred import: the free-text module reads this one's object words.
+    from aidm_server.game_state.extraction.free_text_actions import attacked_person
+
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    present = {str(npc_id) for npc_id in scene.get('activeNpcIds') or []}
+    people = [
+        npc
+        for key in ('knownNpcs', 'partyNpcs')
+        for npc in state.get(key) or []
+        if isinstance(npc, dict) and str(npc.get('id') or '') in present
+    ]
+    metadata = safe_json_loads(turn.metadata_json, {})
+    pipeline = metadata.get('state_pipeline') if isinstance(metadata, dict) and isinstance(metadata.get('state_pipeline'), dict) else {}
+    validation = pipeline.get('preDmValidation') if isinstance(pipeline.get('preDmValidation'), dict) else {}
+    for result in validation.get('validatedActions') or []:
+        action = result.get('originalAction') if isinstance(result, dict) and isinstance(result.get('originalAction'), dict) else {}
+        if result.get('status') not in {'valid', 'pending'} or action.get('type') != 'combat.attack':
+            continue
+        target = {str(action.get(key) or '').strip().lower() for key in ('targetId', 'targetName', 'target')} - {''}
+        person = next((npc for npc in people if {str(npc.get('id') or '').lower(), str(npc.get('name') or '').lower()} & target), None)
+        if person is not None:
+            return person
+    return attacked_person(state, turn.player_input or '')
 
 
 def _participant_position_by_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1477,6 +1519,28 @@ def _prepare_campaign_pack_combat_start(
     trigger: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     scene = working_state.get('currentScene') if isinstance(working_state.get('currentScene'), dict) else {}
+    person = _person_attacked(working_state, turn) if trigger is None and has_campaign_pack(working_state) else None
+    if person is not None:
+        # A hero who attacks someone present fights that person, never a pack encounter's enemy groups.
+        return _creature_combat_start(
+            working_state=working_state,
+            session_obj=session_obj,
+            campaign=campaign,
+            turn=turn,
+            submitted_actor_id=submitted_actor_id,
+            actor_record=actor_record,
+            description=str(person.get('name') or ''),
+            combat_started_by=combat_started_by,
+            initiative_required=initiative_required,
+            change_label=f'combat.start.person.{combat_started_by}',
+            reason=f"Combat started against {person.get('name')}, whom the hero attacked,",
+            workspace_id=campaign.workspace_id,
+            debug={'triggered': True, 'resolver': None, 'intentPlan': None, 'combatSummary': None, 'combatEncounterId': None, 'turnContext': None},
+            before_intent_provider_call=before_intent_provider_call,
+            reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
+            before_creature_provider_call=before_intent_provider_call,
+            reload_orm_after_creature_provider_call=reload_orm_after_intent_provider_call,
+        )
     enemy_position = _scene_position_for_actor(working_state, actor_record) if actor_record else {'rangeBand': 'near'}
     base_change = {
         'id': stable_change_id(turn.turn_id, 'combat.start.campaign_pack', combat_started_by),
@@ -1959,7 +2023,7 @@ def prepare_combat_from_dm_response(
         'adjudicationSource': 'post_dm_response',
         'turnContext': None,
     }
-    if not _should_start_combat_from_dm_response(working_state, dm_response):
+    if not _should_start_combat_from_dm_response(working_state, dm_response, turn=turn):
         return {'changes': [], 'debug': debug, 'combatContext': None}
 
     debug['triggered'] = True
@@ -1988,11 +2052,55 @@ def prepare_combat_from_dm_response(
         pack_start['debug']['adjudicationSource'] = 'post_dm_response'
         return pack_start
 
+    return _creature_combat_start(
+        working_state=working_state,
+        session_obj=session_obj,
+        campaign=campaign,
+        turn=turn,
+        submitted_actor_id=submitted_actor_id,
+        actor_record=actor_record,
+        description=f"{player_message}\n\nDM response: {dm_response}",
+        combat_started_by='post_dm_adjudicator',
+        initiative_required=bool(re.search(r'\binitiative\b', dm_response or '', re.IGNORECASE)),
+        change_label='combat.start.post_dm',
+        reason='Combat started from DM response',
+        workspace_id=workspace_id,
+        debug=debug,
+        before_intent_provider_call=before_intent_provider_call,
+        reload_orm_after_intent_provider_call=reload_orm_after_intent_provider_call,
+        before_creature_provider_call=before_creature_provider_call,
+        reload_orm_after_creature_provider_call=reload_orm_after_creature_provider_call,
+    )
+
+
+def _creature_combat_start(
+    *,
+    working_state: dict[str, Any],
+    session_obj: Session,
+    campaign: Campaign,
+    turn: DmTurn,
+    submitted_actor_id: str,
+    actor_record: dict[str, Any],
+    description: str,
+    combat_started_by: str,
+    initiative_required: bool,
+    change_label: str,
+    reason: str,
+    workspace_id: str,
+    debug: dict[str, Any],
+    before_intent_provider_call: Callable[[], None] | None,
+    reload_orm_after_intent_provider_call: CombatOrmReloader | None,
+    before_creature_provider_call: Callable[[], None] | None,
+    reload_orm_after_creature_provider_call: CombatOrmReloader | None,
+) -> dict[str, Any]:
+    """A fight against the creatures the resolver finds for ``description`` (a person present when it is
+    their name)."""
+
     request = default_request_from_session(
         session_obj=session_obj,
         campaign=campaign,
         state=working_state,
-        player_message=f"{player_message}\n\nDM response: {dm_response}",
+        player_message=description,
     )
     creature_boundary = _plan_creatures_at_provider_boundary(
         request,
@@ -2026,9 +2134,9 @@ def prepare_combat_from_dm_response(
         'initiative': [],
         'flags': {
             **encounter_flags,
-            'combatStartedBy': 'post_dm_adjudicator',
-            'initiativeRequired': bool(re.search(r'\binitiative\b', dm_response or '', re.IGNORECASE)),
-            'initiativeSeed': f'combat:{session_obj.session_id}:{turn.turn_id}:post_dm_adjudicator',
+            'combatStartedBy': combat_started_by,
+            'initiativeRequired': initiative_required,
+            'initiativeSeed': f'combat:{session_obj.session_id}:{turn.turn_id}:{combat_started_by}',
             'combatDifficultyAI': _combat_difficulty_ai(working_state),
         },
     }
@@ -2059,11 +2167,11 @@ def prepare_combat_from_dm_response(
     )
     changes = [
         {
-            'id': stable_change_id(turn.turn_id, 'combat.start.post_dm', encounter_flags.get('enemyCount'), encounter_flags.get('resolverMethod')),
+            'id': stable_change_id(turn.turn_id, change_label, encounter_flags.get('enemyCount'), encounter_flags.get('resolverMethod')),
             'turnId': turn.turn_id,
             'type': 'combat.start',
             'combat': combat_payload,
-            'reason': f"Combat started from DM response with {encounter_flags.get('enemyCount') or len(enemies)} enemy participant(s).",
+            'reason': f"{reason} with {encounter_flags.get('enemyCount') or len(enemies)} enemy participant(s).",
             'visible': False,
         }
     ]

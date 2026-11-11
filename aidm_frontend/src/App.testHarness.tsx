@@ -6,7 +6,6 @@ import { cleanup, configure, fireEvent, render, screen, waitFor } from '@testing
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { expect, vi } from 'vitest'
-import type { RefObject } from 'react'
 import App from './App'
 import type {
   BetaSummary,
@@ -100,47 +99,6 @@ const socketMock = vi.hoisted(() => {
 
 vi.mock('socket.io-client', () => ({
   io: socketMock.io,
-}))
-
-vi.mock('./DiceRollDialog', () => ({
-  default: ({
-    die,
-    result,
-    rolls,
-    status,
-    targetLabel,
-    dialogRef,
-    onCancel,
-    onComplete,
-    onRetry,
-  }: {
-    die: string
-    result: number | null
-    rolls?: number[] | null
-    status: string
-    targetLabel?: string | null
-    dialogRef?: RefObject<HTMLElement | null>
-    onCancel: () => void
-    onComplete: () => void
-    onRetry: () => void
-  }) => (
-    <section ref={dialogRef} role="dialog" aria-label="Dice Roller">
-      <strong>{die.toUpperCase()}</strong>
-      <span>Result {result}</span>
-      {rolls ? <span>Faces {rolls.join(', ')}</span> : null}
-      <span>Status {status}</span>
-      {targetLabel ? <span>{targetLabel}</span> : null}
-      <button type="button" onClick={onCancel} data-autofocus>
-        Cancel roll
-      </button>
-      <button type="button" onClick={onComplete}>
-        Complete roll
-      </button>
-      <button type="button" onClick={onRetry}>
-        Retry safely
-      </button>
-    </section>
-  ),
 }))
 
 const fixedNow = new Date('2026-06-06T12:00:00.000Z')

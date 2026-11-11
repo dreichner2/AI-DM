@@ -28,6 +28,7 @@ import {
   worldMapFromSnapshot,
   worldStateFromSnapshot,
 } from './gameSelectors'
+import type { StoryRoll } from './apiContract.generated'
 import type { CampaignSegment, MapItem, Player, SessionLogEntry, TimelineEntry } from './types'
 
 describe('game selector helpers', () => {
@@ -450,6 +451,26 @@ describe('game selector helpers', () => {
       turnStoryBeats: { 11: beats, 12: beats, 13: [] },
     })
     expect(timeline.map((entry) => entry.metadata.storyBeats)).toEqual([undefined, beats, logged, []])
+  })
+
+  it('puts a turn’s live roll cards on every entry of the turn until the log carries its own', () => {
+    const live: StoryRoll[] = [{ id: 't11-1', kind: 'check', label: 'Athletics check' }]
+    const logged: StoryRoll[] = [{ id: 't12-1', kind: 'save', label: 'Wisdom save' }]
+    const timeline = buildTimeline({
+      logEntries: [
+        { id: 1, entry_type: 'player', message: 'Ember: I climb.', timestamp: null, metadata: { turn_id: 11 } },
+        { id: 2, entry_type: 'dm', message: 'DM: The bell rings.', timestamp: null, metadata: { turn_id: 12, storyRolls: logged } },
+      ],
+      optimisticEntries: [],
+      streamingTurn: { turnId: 11, turnNumber: 1, text: 'You haul yourself up.', requiresRoll: false, rulesHint: {} },
+      turnStatuses: {},
+      turnStoryRolls: { 11: live, 12: live },
+    })
+    expect(timeline.map((entry) => [entry.id, entry.metadata.storyRolls])).toEqual([
+      ['log-1', live],
+      ['log-2', logged],
+      ['stream-11', live],
+    ])
   })
 
   it('derives subtle combat panel state from the session snapshot', () => {

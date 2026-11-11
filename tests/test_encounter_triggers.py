@@ -677,19 +677,16 @@ def test_narrated_opening_turns_land_even_when_the_narration_calls_for_initiativ
     assert (state['combat']['flags']['activeActorId'], state['combat']['round']) == (ids['hero_id'], 1)
 
 
-def test_a_fight_narration_starts_ends_the_turn_with_the_hero(app, camp, monkeypatch):
+def test_in_a_pack_adventure_a_fight_narration_alone_starts_no_fight(app, camp, monkeypatch):
     ids = camp(_camp_pack())
     _enemies_go_first(monkeypatch)
 
     pipeline, state = _play_turn(app, ids, 'We rest by the fire.', 'A bandit bursts from the trees and attacks you!')
-    combat = state['combat']
-    engine_results = _engine_results(pipeline['postAppliedChanges'])
 
-    assert combat['flags']['combatStartedBy'] == 'post_dm_adjudicator'
-    assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', ids['hero_id'], 1)
-    visible_results = {change['id'] for change in engine_results if change.get('visible')}
-    assert visible_results and visible_results <= {line['changeId'] for line in pipeline['stateLog']['lines']}
-    assert 'engine_controlled_turns_resolved' in pipeline['postDmExtraction']['notes']
+    # Nothing is due and the hero attacked no one: the camp raid waits for what the pack says starts it.
+    assert state['combat']['status'] != 'active'
+    assert _engine_results(pipeline['postAppliedChanges']) == []
+    assert not (state.get('flags') or {}).get('campaignPackTriggeredEncounterIds')
 
 
 def test_opening_turns_that_down_the_only_hero_end_the_fight(app, camp, monkeypatch):

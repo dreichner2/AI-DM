@@ -2128,161 +2128,6 @@ select:focus-visible {
   color: var(--heading);
 }
 
-.dice-dialog {
-  width: min(430px, 100%);
-  overflow: hidden;
-  border: 1px solid rgba(255, 176, 103, 0.42);
-  border-radius: 6px;
-  background:
-    linear-gradient(180deg, rgba(255, 107, 44, 0.075), transparent 120px),
-    linear-gradient(180deg, var(--surface-2), var(--surface));
-  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.52);
-}
-
-.dice-dialog header {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 16px 10px;
-  border-bottom: 1px solid var(--line);
-}
-
-.dice-dialog header span {
-  color: var(--story-ember);
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.dice-dialog h2 {
-  margin: 2px 0 0;
-  color: var(--heading);
-  font-size: 1.08rem;
-}
-
-.dice-dialog header button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  color: var(--heading);
-  background: rgba(255, 255, 255, 0.035);
-}
-
-.dice-stage {
-  position: relative;
-  min-height: 292px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
-    #091112;
-}
-
-.dice-canvas {
-  position: absolute;
-  inset: 0;
-  min-height: 292px;
-}
-
-.dice-canvas canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.dice-readout {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  display: grid;
-  min-width: 132px;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 176, 103, 0.36);
-  border-radius: 4px;
-  background: rgba(8, 16, 16, 0.82);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.34);
-}
-
-.dice-readout span {
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.dice-readout strong {
-  color: var(--heading);
-  font-family: var(--mono);
-  font-size: 2rem;
-  line-height: 1;
-}
-
-.dice-readout small {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 0.7rem;
-}
-
-.dice-private-provenance {
-  display: grid;
-  gap: 2px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 176, 103, 0.2);
-}
-
-.dice-private-provenance small {
-  margin-top: 0;
-  color: var(--text);
-}
-
-.dice-dialog.resolved .dice-readout {
-  border-color: rgba(107, 220, 104, 0.42);
-}
-
-.dice-request-state {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-}
-
-.dice-request-state span {
-  display: grid;
-  width: 96px;
-  height: 96px;
-  place-items: center;
-  border: 1px solid rgba(255, 176, 103, 0.42);
-  border-radius: 50%;
-  color: var(--story-ember);
-  background: rgba(255, 107, 44, 0.08);
-  font-family: var(--mono);
-  font-size: 1.1rem;
-  font-weight: 800;
-}
-
-.dice-request-state.requesting span {
-  animation: dice-request-pulse 1.2s ease-in-out infinite;
-}
-
-.dice-request-state.failed span {
-  border-color: rgba(255, 103, 103, 0.5);
-  color: #ff9b7d;
-}
-
-.dice-retry-button {
-  margin-top: 10px;
-  padding: 7px 10px;
-  border: 1px solid rgba(255, 176, 103, 0.45);
-  border-radius: 4px;
-  color: var(--heading);
-  background: rgba(255, 107, 44, 0.14);
-  font-size: 0.72rem;
-  font-weight: 750;
-}
-
 .shared-roll-notice {
   position: fixed;
   right: 20px;
@@ -2311,13 +2156,6 @@ select:focus-visible {
   font-size: 0.82rem;
 }
 
-@keyframes dice-request-pulse {
-  50% {
-    transform: scale(1.05);
-    box-shadow: 0 0 30px rgba(255, 107, 44, 0.18);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -2328,7 +2166,6 @@ select:focus-visible {
     transition-duration: 0.01ms !important;
   }
 
-  .dice-request-state.requesting span,
   .rail-skeleton-list span {
     animation: none;
   }

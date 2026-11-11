@@ -486,7 +486,10 @@ function usePreviewComposer(base: ActionComposerProps, inspector: InspectorPanel
       return true
     },
     startDiceRoll: (die) => log('start dice roll', die ?? selectedDie, rollMode, rollReason),
-    preloadDiceRollDialog: noop,
+    diceRoll: null,
+    markDiceRollPlayed: noop,
+    closeDiceRoll: noop,
+    retryDiceRoll: () => true,
   }
 }
 

@@ -721,6 +721,16 @@
             "mapIcon": {
               "type": "string",
               "enum": ["inn", "town", "road", "bridge", "ruin", "tower", "forest", "cave", "camp", "shrine", "cairn", "valley", "gate", "marsh", "peak", "unknown"]
+            },
+            "ambience": {
+              "description": "The generated sound bed the Story view plays here; without it the bed follows the map icon and the clock.",
+              "type": "string",
+              "enum": ["rain", "wind", "hearth", "night", "marsh", "cave", "hush"]
+            },
+            "weather": {
+              "description": "Shown behind the story; rain also adds the sound of rain over the place's bed.",
+              "type": "string",
+              "enum": ["rain", "fog", "snow", "clear"]
             }
           }
         }
@@ -891,6 +901,15 @@
         }
       }
     },
+    "barkLines": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
     "enemy": {
       "type": "object",
       "additionalProperties": true,
@@ -936,6 +955,17 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 600
+          }
+        },
+        "barks": {
+          "description": "Short lines this enemy speaks or shows in a fight. A line in quotation marks is speech (printed with its speaker); a line without is a described tell (printed as written). start: in the fight's first narration; hurt: the first time one of them is at half its hit points or less; turning: when one yields, flees or is captured; taunt: in place of a turn that only fills time, at most once per enemy every two rounds.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "start": {"$ref": "#/$defs/barkLines"},
+            "hurt": {"$ref": "#/$defs/barkLines"},
+            "turning": {"$ref": "#/$defs/barkLines"},
+            "taunt": {"$ref": "#/$defs/barkLines"}
           }
         },
         "abilities": {

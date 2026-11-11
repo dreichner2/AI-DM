@@ -314,7 +314,6 @@ export function StoryActionTray({
   ]
   const contentSections = sections.filter((candidate) => !SECTION_META[candidate].mode)
   const activeSection = contentSections.includes(section) ? section : contentSections[0]
-  const preloadDice = composer.preloadDiceRollDialog
 
   useEffect(() => {
     trayRef.current?.querySelector<HTMLElement>('[data-active-section="true"]')?.focus()
@@ -330,10 +329,6 @@ export function StoryActionTray({
     document.addEventListener('pointerdown', handlePointerDown)
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [onDismiss, toggleRef])
-
-  useEffect(() => {
-    if (activeSection === 'roll') preloadDice()
-  }, [activeSection, preloadDice])
 
   useEffect(() => {
     if (freeformSpell) freeformInputRef.current?.focus()
@@ -454,7 +449,6 @@ export function StoryActionTray({
             type="button"
             className="story-primary"
             disabled={sendPending}
-            onMouseEnter={composer.preloadDiceRollDialog}
             onClick={() => {
               composer.startDiceRoll()
               onDone()

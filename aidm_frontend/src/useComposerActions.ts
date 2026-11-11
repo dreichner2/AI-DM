@@ -28,6 +28,7 @@ import {
   type RollResult,
 } from './gameActions'
 import type { PendingRollOption } from './gameSelectors'
+import { PRESSED_HOLD_MS, PRESS_MIN_MS, SETTLE_MS, notePressedRoll } from './story/rollPlayback'
 import {
   canSubmitWithTurnControl,
   turnControlBlockMessage,
@@ -109,16 +110,22 @@ function sceneNpcTargets(sessionState: SessionState | null): InteractionTarget[]
     .map((entry) => entry.target)
 }
 
+/**
+ * A roll the player pressed, shown as its roll card where it was pressed: the
+ * d20 cycles while the request is out (`requesting`), lands on the server's
+ * result (`rolling`, from `landAt`), and has `played` once the card has landed.
+ */
 export type DiceRollState = {
   die: string
   message: string
   actionIntent: ActionIntent
-  roll: RollResult | null
-  provenance: Pick<RollResolvedPayload, 'ability' | 'proficiency' | 'modifier_breakdown'> | null
   clientMessageId: string
-  targetLabel: string | null
   rollKey: number
-  status: 'requesting' | 'rolling' | 'resolved' | 'failed'
+  /** `Date.now()` of the press: the card lands no sooner than `PRESS_MIN_MS` after it. */
+  startedAt: number
+  result: RollResolvedPayload | null
+  landAt: number | null
+  status: 'requesting' | 'rolling' | 'played' | 'failed'
   error?: string
 }
 
@@ -222,6 +229,7 @@ export function useComposerActions({
   const [adminToolsUnlocked, setAdminToolsUnlocked] = useState(false)
   const [queuedActionText, setQueuedActionText] = useState('')
   const [diceRoll, setDiceRoll] = useState<DiceRollState | null>(null)
+  const diceRollRef = useLatest(diceRoll)
   const [recoverableSubmission, setRecoverableSubmission] = useState<StoredSubmission | null>(null)
   const [reconnectingSubmission, setReconnectingSubmission] = useState<StoredSubmission | null>(null)
   const [turnRejectionMessage, setTurnRejectionMessage] = useState('')
@@ -964,7 +972,6 @@ export function useComposerActions({
 
     const normalizedDie = normalizeDie(die)
     const targetPendingTurnId = rollTargetPendingTurnId ? Number(rollTargetPendingTurnId) : null
-    const targetOption = pendingRollOptions.find((option) => option.turnId === targetPendingTurnId) ?? null
     const deferredActionDraft = targetPendingTurnId ? actionText.trim() : ''
     const roll = {
       die: normalizedDie,
@@ -995,11 +1002,11 @@ export function useComposerActions({
       die: normalizedDie,
       message,
       actionIntent,
-      roll: null,
-      provenance: null,
       clientMessageId,
-      targetLabel: targetOption ? `${targetOption.label} - ${targetOption.detail}` : null,
       rollKey,
+      startedAt: Date.now(),
+      result: null,
+      landAt: null,
       status: 'requesting',
     })
     if (!submitAction(message, actionIntent)) {
@@ -1014,24 +1021,17 @@ export function useComposerActions({
     }
   }
 
-  const completeDiceRoll = () => {
+  /** The pressed roll's card has landed: an action queued behind the roll is the composer's again. */
+  const markDiceRollPlayed = () => {
     if (!diceRoll || diceRoll.status !== 'rolling') return
     const { rollKey } = diceRoll
-    const returnToQueuedAction = Boolean(
-      diceRoll.actionIntent.roll?.target_pending_turn_id && queuedActionText,
-    )
-    setDiceRoll((current) =>
-      current?.rollKey === rollKey ? { ...current, status: 'resolved' } : current,
-    )
-    window.setTimeout(() => {
-      setDiceRoll((current) => (current?.rollKey === rollKey ? null : current))
-    }, 700)
-    if (returnToQueuedAction) setComposerMode('action')
+    setDiceRoll((current) => (current?.rollKey === rollKey ? { ...current, status: 'played' } : current))
+    if (diceRoll.actionIntent.roll?.target_pending_turn_id && queuedActionText) setComposerMode('action')
   }
 
-  const closeDiceRoll = () => {
+  const closeDiceRoll = useCallback(() => {
     setDiceRoll(null)
-  }
+  }, [])
 
   const retryDiceRoll = () => {
     if (recoverableSubmission) return retryRecoverableSubmission()
@@ -1067,25 +1067,23 @@ export function useComposerActions({
       return
     }
     if (!payload.client_message_id) return
-    const provenance = payload.ability !== undefined || payload.proficiency || payload.modifier_breakdown
-      ? {
-          ...(payload.ability !== undefined ? { ability: payload.ability } : {}),
-          ...(payload.proficiency ? { proficiency: payload.proficiency } : {}),
-          ...(payload.modifier_breakdown ? { modifier_breakdown: payload.modifier_breakdown } : {}),
-        }
-      : null
-    setDiceRoll((current) =>
-      current?.clientMessageId === payload.client_message_id
-        ? { ...current, die: payload.die, roll, provenance, status: 'rolling', error: undefined }
-        : current,
-    )
+    const pressed = diceRollRef.current
+    if (pressed?.clientMessageId === payload.client_message_id && pressed.status === 'requesting') {
+      const landAt = Math.max(Date.now(), pressed.startedAt + PRESS_MIN_MS)
+      notePressedRoll(payload.turn_id, landAt + SETTLE_MS + PRESSED_HOLD_MS)
+      setDiceRoll((current) =>
+        current?.rollKey === pressed.rollKey
+          ? { ...current, die: payload.die, result: payload, landAt, status: 'rolling', error: undefined }
+          : current,
+      )
+    }
     if (pendingSubmissionRef.current?.clientMessageId === payload.client_message_id) {
       pendingSubmissionRef.current = null
     }
     setRecoverableSubmission((current) =>
       current?.clientMessageId === payload.client_message_id ? null : current,
     )
-  }, [selectedPlayerId, selectedSessionId])
+  }, [diceRollRef, selectedPlayerId, selectedSessionId])
 
   const handleTurnDuplicate = useCallback((payload: {
     session_id: number
@@ -1204,7 +1202,6 @@ export function useComposerActions({
     adminToolsUnlocked,
     applyComposerMode,
     closeDiceRoll,
-    completeDiceRoll,
     composerMode,
     diceRoll,
     handleConnectionInterrupted,
@@ -1215,6 +1212,7 @@ export function useComposerActions({
     handleTurnDuplicate,
     handleTurnRejected,
     interactionTargets,
+    markDiceRollPlayed,
     openingDelayed: recoverableSubmission?.kind === 'opening',
     pendingSubmissionCampaignId,
     rollMode,

@@ -8,8 +8,8 @@ const distDir = join(projectRoot, 'dist')
 const assetsDir = join(distDir, 'assets')
 const mebibyte = 1024 * 1024
 
-// Keep first-load budgets strict while allowing bounded lazy chunks for dice,
-// character creation catalogs, and modal-only management tools. Distribution
+// Keep first-load budgets strict while allowing bounded lazy chunks for
+// character creation catalogs and modal-only management tools. Distribution
 // budgets intentionally accommodate the current long-form soundtrack while
 // preventing additional unbounded media or image growth.
 const budgets = {
@@ -19,20 +19,23 @@ const budgets = {
   jsRaw: 662.7 * 1024,
   jsGzip: 199.9 * 1024,
   // Story mode is the first screen and loads with the app; the classic console
-  // (rail, board, inspector), the creation flow, the map, the dice and the
-  // rarely used dialogs are lazy chunks. Measured at the same point: initial JS
+  // (rail, board, inspector), the creation flow, the map and the rarely used
+  // dialogs are lazy chunks. Measured at the same point: initial JS
   // 192.2, async JS 292.8, CSS 50.9, initial assets 243.1 and total assets
   // 536.7 KiB gzip; each limit is plus 4%. The Account and Settings sheets,
   // the chapter dialogs, the Story drawer and the narration queue then left the
   // entry chunk (199.9 to 187.3 KiB gzip); initial JS is that plus 6 KiB. What
-  // left the entry chunk landed in on-demand chunks (async 322.7, total assets
-  // 562.9 KiB gzip), so those two limits moved with it, plus 1%; they come
-  // down again when the three.js dice dialog is removed.
-  initialJsGzip: 193.3 * 1024,
-  asyncJsGzip: 326.0 * 1024,
+  // left the entry chunk landed in on-demand chunks. Removing the three.js dice
+  // dialog for roll cards (which load with the Story feed) took async JS from
+  // 322.6 to 165.7 and total assets from 562.9 to 410.1 KiB gzip; those two
+  // limits are that plus 4%.
+  // Roll cards joined the entry chunk (they show on the first screen); the limit is the
+  // measured 193.2 KiB plus working room, still under the 199.9 it started from.
+  initialJsGzip: 197.0 * 1024,
+  asyncJsGzip: 172.3 * 1024,
   cssGzip: 52.9 * 1024,
   initialAssetGzip: 252.8 * 1024,
-  totalAssetGzip: 568.5 * 1024,
+  totalAssetGzip: 426.5 * 1024,
   distRaw: 190 * mebibyte,
   staticRaw: 188 * mebibyte,
   largestStaticRaw: 175 * mebibyte,

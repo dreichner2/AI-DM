@@ -122,7 +122,11 @@ provider, and state contracts live in [API surface](api_surface.md),
 - `aidm_server/player_rolls.py` owns player dice generation. Clients may request
   a die, mode, reason, and permitted ability selection, but faces, modifiers,
   totals, and persisted provenance are server-owned. The committed result is
-  emitted as `roll_resolved`; frontend dice physics are presentation only.
+  emitted as `roll_resolved`. Every roll of a turn, the engine's and the
+  player's, is recorded as `storyRolls`
+  (`aidm_server/game_state/orchestration/story_rolls.py`) and shown as roll
+  cards whose number flicker is presentation only: they land on the server's
+  values.
 - Named skill checks keep their exact skill identity through the pending-roll
   lifecycle, so one related proficiency cannot qualify a different skill.
   Saving throws use the requested ability plus class-derived or explicitly

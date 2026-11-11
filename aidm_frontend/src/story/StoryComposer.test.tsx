@@ -554,3 +554,96 @@ describe('StoryComposer', () => {
     expect(screen.queryByText(/Enter to send/)).not.toBeInTheDocument()
   })
 })
+
+/** Let fake time pass the way a browser does: each timer fires, then the card re-renders and sets its next one. */
+function advance(ms: number) {
+  for (let elapsed = 0; elapsed < ms; elapsed += 1) {
+    act(() => {
+      vi.advanceTimersByTime(1)
+    })
+  }
+}
+
+describe('StoryComposer rolling in place', () => {
+  const pressedAt = new Date('2026-11-11T12:00:00.000Z').getTime()
+  const pressed = {
+    die: 'd20',
+    message: 'I roll a d20 for Stealth check',
+    actionIntent: {
+      kind: 'roll' as const,
+      source: 'dice_roller' as const,
+      text: 'I roll a d20 for Stealth check',
+      client_message_id: 'client-roll-1',
+      roll: { die: 'd20', mode: 'normal' as const, reason: 'Stealth check', result_visibility: 'hidden_until_landed' as const, target_pending_turn_id: 41 },
+    },
+    clientMessageId: 'client-roll-1',
+    rollKey: 1,
+    startedAt: pressedAt,
+    result: null,
+    landAt: null,
+    status: 'requesting' as const,
+  }
+  const result = {
+    session_id: 20,
+    turn_id: 42,
+    player_id: VIEWER_ID,
+    client_message_id: 'client-roll-1',
+    pending_turn_id: 41,
+    rule_type: 'stealth',
+    die: 'd20',
+    mode: 'normal' as const,
+    rolls: [15],
+    kept: 15,
+    modifier: 4,
+    total: 19,
+    reason: 'Stealth check',
+    result_visibility: 'hidden_until_landed' as const,
+    ability: { key: 'dexterity', label: 'DEX', score: 18, modifier: 4 },
+    dc: 13,
+    outcome: 'success' as const,
+    authoritative: true as const,
+  }
+
+  afterEach(() => vi.useRealTimers())
+
+  it('turns the roll prompt into the roll card, cycling until the result lands half a second after the press', () => {
+    vi.useFakeTimers({ now: pressedAt })
+    const notice = testRollNotice()
+    const { rerender, props } = renderComposer({ board: { pendingRollNotice: notice } })
+    expect(screen.getByRole('button', { name: 'Roll Stealth check' })).toBeInTheDocument()
+
+    const markDiceRollPlayed = vi.fn()
+    const withRoll = (diceRoll: ActionComposerProps['diceRoll']) => ({
+      ...props,
+      board: testBoard({ pendingRollNotice: notice }, { diceRoll, markDiceRollPlayed }),
+    })
+    rerender(<StoryComposer {...withRoll(pressed)} />)
+    const card = screen.getByRole('region', { name: 'Your roll' })
+    expect(screen.queryByRole('button', { name: 'Roll Stealth check' })).not.toBeInTheDocument()
+    expect(card.querySelector('.roll-card')).toHaveAttribute('data-phase', 'cycle')
+    expect(card.querySelector('.roll-card-label')).toHaveTextContent('Ysolde · Stealth check')
+
+    // The result arrives at once; the d20 keeps cycling until 500 ms after the press.
+    rerender(<StoryComposer {...withRoll({ ...pressed, result, landAt: pressedAt + 500, status: 'rolling' })} />)
+    advance(499)
+    expect(card.querySelector('.roll-card')).toHaveAttribute('data-phase', 'cycle')
+    advance(1)
+    expect(card.querySelector('.roll-card-total')).toHaveTextContent('15')
+    advance(150)
+    expect(card.querySelector('.roll-card-total')).toHaveTextContent('19')
+    expect(card.querySelector('.roll-card-outcome')).toHaveTextContent('success vs DC 13')
+    expect(markDiceRollPlayed).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers a retry when the roll could not be sent', () => {
+    const retryDiceRoll = vi.fn(() => true)
+    const closeDiceRoll = vi.fn()
+    renderComposer({ composer: { diceRoll: { ...pressed, status: 'failed', error: 'The roll request could not be sent.' }, retryDiceRoll, closeDiceRoll } })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('The roll request could not be sent.')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(retryDiceRoll).toHaveBeenCalledTimes(1)
+    expect(closeDiceRoll).toHaveBeenCalledTimes(1)
+  })
+})

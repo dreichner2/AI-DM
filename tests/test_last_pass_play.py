@@ -148,7 +148,8 @@ def test_a_wound_penalty_is_named_on_the_roll_and_said_once(table, monkeypatch):
     assert [(roll['modifier'], roll['modifiers']) for roll in rolls] == [(2, [{'label': 'Wounded', 'value': -2}])] * 2
     # Closing in is told in the hero's own voice, then the attack names the penalty the first time only.
     assert narrations[0].startswith('DM: You close in on the Cinder Scribe. ')
-    assert '— your wounds cost you 2.' in narrations[0]
+    # The roll's card shows the −2; the sentence names the wound in words.
+    assert '— your wounds drag at you.' in narrations[0]
     assert 'wounds' not in narrations[1]
     entries = table.client.get(f"/api/sessions/{table.ids['session_id']}/log?view=player&player_id={hero['playerId']}").get_json()['entries']
     persisted = [

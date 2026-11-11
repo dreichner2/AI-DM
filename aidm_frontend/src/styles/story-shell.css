@@ -15,6 +15,12 @@
   inherits: true;
   initial-value: rgba(255, 107, 44, 0.14);
 }
+/* The time of day's tint, set by StoryAtmosphere from the clock; registered so a new phase fades in. */
+@property --story-daylight {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
 
 .story-shell {
   --story-ink-bright: #fff8ea;
@@ -35,36 +41,85 @@
 /* ---- atmosphere ---- */
 
 .story-shell .story-atmosphere {
+  /* The day clock's tints: morning cool gold, afternoon neutral, evening amber, night deep blue-black. */
+  --story-daylight-morning: rgba(226, 210, 150, 0.08);
+  --story-daylight-afternoon: rgba(236, 229, 211, 0);
+  --story-daylight-evening: rgba(255, 138, 46, 0.1);
+  --story-daylight-night: rgba(2, 6, 24, 0.52);
+
   position: absolute;
   inset: 0;
   z-index: 0;
   overflow: hidden;
   pointer-events: none;
   background: var(--story-bg);
+  transition: --story-daylight 1.5s var(--story-ease);
 }
 .story-shell .story-atmosphere > * {
   position: absolute;
   inset: 0;
 }
+/* The sky's tint from above, over the mood light rising from below. */
 .story-shell .story-atmosphere-glow {
   background:
+    linear-gradient(180deg, var(--story-daylight), color-mix(in srgb, var(--story-daylight) 55%, transparent)),
     radial-gradient(60% 36% at 50% 108%, var(--mood-ember), transparent 70%),
     radial-gradient(120% 62% at 50% 112%, var(--mood-glow), transparent 62%);
-  transition: opacity 1.2s var(--story-ease);
 }
-.story-shell .story-atmosphere[data-still] .story-atmosphere-glow { transition: none; }
-/* The day clock: evening warms the light a little; night lowers it by a third and cools it. */
-.story-shell[data-phase='evening'] .story-atmosphere-glow {
-  background:
-    radial-gradient(60% 36% at 50% 108%, color-mix(in srgb, var(--mood-ember) 80%, rgba(255, 150, 60, 0.3)), transparent 70%),
-    radial-gradient(120% 62% at 50% 112%, color-mix(in srgb, var(--mood-glow) 84%, #4a2c12), transparent 62%);
+
+/*
+ * Weather sits behind the story. Particles peak at 30 % opacity and fog at
+ * 24 %; the mask holds them to a fifth of that (6 % at most) over the reading
+ * column, which is centred in the stage.
+ */
+.story-shell .story-weather {
+  --story-weather-center: 50%;
+  --story-weather-column: 26rem;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    #000 calc(var(--story-weather-center) - var(--story-weather-column) - 6rem),
+    rgba(0, 0, 0, 0.2) calc(var(--story-weather-center) - var(--story-weather-column)),
+    rgba(0, 0, 0, 0.2) calc(var(--story-weather-center) + var(--story-weather-column)),
+    #000 calc(var(--story-weather-center) + var(--story-weather-column) + 6rem)
+  );
+  mask-image: linear-gradient(
+    90deg,
+    #000 calc(var(--story-weather-center) - var(--story-weather-column) - 6rem),
+    rgba(0, 0, 0, 0.2) calc(var(--story-weather-center) - var(--story-weather-column)),
+    rgba(0, 0, 0, 0.2) calc(var(--story-weather-center) + var(--story-weather-column)),
+    #000 calc(var(--story-weather-center) + var(--story-weather-column) + 6rem)
+  );
 }
-.story-shell[data-phase='night'] .story-atmosphere-glow {
-  opacity: 0.67;
-  background:
-    radial-gradient(60% 36% at 50% 108%, color-mix(in srgb, var(--mood-ember) 62%, rgba(120, 150, 255, 0.16)), transparent 70%),
-    radial-gradient(120% 62% at 50% 112%, color-mix(in srgb, var(--mood-glow) 58%, #0e1d46), transparent 62%);
+@media (min-width: 1180px) {
+  .story-shell[data-drawer-open] .story-weather {
+    --story-weather-center: calc(50% - min(440px, 36vw) / 2);
+  }
 }
+.story-shell .story-weather[data-weather='rain'],
+.story-shell .story-weather[data-weather='snow'] {
+  width: 100%;
+  height: 100%;
+}
+.story-shell .story-fog-band {
+  position: absolute;
+  left: -40%;
+  width: 180%;
+  height: 34%;
+  background: radial-gradient(closest-side, rgba(212, 220, 224, 0.24), rgba(212, 220, 224, 0.1) 55%, transparent);
+  animation: story-fog-drift 52s ease-in-out infinite alternate;
+}
+.story-shell .story-fog-band:first-child { top: 12%; }
+.story-shell .story-fog-band:last-child {
+  top: 54%;
+  height: 40%;
+  animation-duration: 71s;
+  animation-direction: alternate-reverse;
+}
+@keyframes story-fog-drift {
+  from { transform: translateX(-12%); }
+  to { transform: translateX(12%); }
+}
+
 .story-shell .story-atmosphere-vignette {
   background: radial-gradient(ellipse at 50% 42%, transparent 52%, rgba(0, 0, 0, 0.62) 100%);
 }

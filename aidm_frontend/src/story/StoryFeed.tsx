@@ -14,6 +14,8 @@ import { NarrativeProse } from '../NarrativeProse'
 import type { SessionBoardProps, TurnQualityScores } from '../SessionBoard'
 import type { TimelineEntry } from '../types'
 import { D20Glyph, Ornament } from './glyphs'
+import { RollCard } from './RollCard'
+import { rollPlayback } from './rollPlayback'
 import type { StoryTextSize } from './sheets/storyPreferences'
 import {
   buildStoryBeats,
@@ -23,12 +25,14 @@ import {
   type ChapterBeat,
   type NarrationBeat,
   type RollBeat,
+  type RollCardBeat,
   type StoryBeat,
   type StoryChangeGlyph,
   type StoryTurnBeatTarget,
   type TurnBeatsBeat,
 } from './storyBeats'
 import { dismissEnding, useEndingDismissed } from './storyEnding'
+import { useReducedMotion } from './useReducedMotion'
 
 type StoryFeedProps = {
   board: SessionBoardProps
@@ -64,10 +68,16 @@ function maxScroll(container: HTMLElement) {
   return Math.max(0, container.scrollHeight - container.clientHeight)
 }
 
+/** A narration settles under what caused it: the action or roll line before it and its roll cards. */
 function anchorKeyFor(beats: StoryBeat[], narrationKey: string) {
-  const index = beats.findIndex((beat) => beat.key === narrationKey)
+  let index = beats.findIndex((beat) => beat.key === narrationKey)
+  let anchor = narrationKey
+  while (index > 0 && beats[index - 1].kind === 'rollCard') {
+    index -= 1
+    anchor = beats[index].key
+  }
   const before = index > 0 ? beats[index - 1] : null
-  return before && (before.kind === 'action' || before.kind === 'roll') ? before.key : narrationKey
+  return before && (before.kind === 'action' || before.kind === 'roll') ? before.key : anchor
 }
 
 /** The first beat that starts in view (else the one filling it) and its distance from the feed's top edge. */
@@ -102,6 +112,7 @@ type ScrollMemory = {
 /** A line the viewer sent: their action, or a roll in their name. */
 function isOwnBeat(beat: StoryBeat, viewerName: string | null) {
   if (beat.kind === 'action') return beat.own
+  if (beat.kind === 'rollCard') return Boolean(viewerName) && beat.card.actor?.name === viewerName
   return beat.kind === 'roll' && beat.entry.role === 'player' && Boolean(viewerName) && beat.roll.name === viewerName
 }
 
@@ -595,6 +606,11 @@ function RollBeatView({ beat }: { beat: RollBeat }) {
   )
 }
 
+/** A roll card: it plays when it arrived live in this page, and shows landed when read from history. */
+function RollCardBeatView({ beat, reduceMotion }: { beat: RollCardBeat; reduceMotion: boolean }) {
+  return <RollCard roll={beat.card} playback={reduceMotion ? null : rollPlayback(beat.card.id)} />
+}
+
 function ChangesBeatView({ beat }: { beat: ChangesBeat }) {
   return (
     <ul className="story-change-list" aria-label="What changed">
@@ -667,11 +683,13 @@ function BeatView({
   board,
   feedbackKey,
   onOpenBeatTarget,
+  reduceMotion,
 }: {
   beat: StoryBeat
   board: SessionBoardProps
   feedbackKey: string | null
   onOpenBeatTarget: (target: StoryTurnBeatTarget) => void
+  reduceMotion: boolean
 }) {
   switch (beat.kind) {
     case 'chapter':
@@ -682,6 +700,8 @@ function BeatView({
       return <ActionBeatView beat={beat} board={board} />
     case 'roll':
       return <RollBeatView beat={beat} />
+    case 'rollCard':
+      return <RollCardBeatView beat={beat} reduceMotion={reduceMotion} />
     case 'changes':
       return <ChangesBeatView beat={beat} />
     case 'turnBeats':
@@ -755,6 +775,7 @@ function LoadingStory() {
 
 export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: StoryFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const reduceMotion = useReducedMotion()
   const endingDismissed = useEndingDismissed(board.sessionId)
   const { turnRows, currentResponseEntry, sessionLogHasMore } = board
   const selectedPlayerName = board.selectedPlayer?.character_name ?? null
@@ -826,14 +847,20 @@ export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: 
             ? beats.map((beat) => (
                 <div
                   key={beat.key}
-                  className={`story-beat story-${beat.kind === 'turnBeats' ? 'changes' : beat.kind}`}
+                  className={`story-beat story-${beat.kind === 'turnBeats' ? 'changes' : beat.kind === 'rollCard' ? 'roll-card-beat' : beat.kind}`}
                   data-beat-key={beat.key}
                   data-gap={beat.gap}
                   data-opening={beat.kind === 'narration' && beat.opening ? '' : undefined}
                   data-streaming={beat.kind === 'narration' && beat.streaming ? '' : undefined}
                   data-delivery={beat.kind === 'action' ? beat.delivery : undefined}
                 >
-                  <BeatView beat={beat} board={board} feedbackKey={feedbackKey} onOpenBeatTarget={onOpenBeatTarget} />
+                  <BeatView
+                    beat={beat}
+                    board={board}
+                    feedbackKey={feedbackKey}
+                    onOpenBeatTarget={onOpenBeatTarget}
+                    reduceMotion={reduceMotion}
+                  />
                 </div>
               ))
             : null}

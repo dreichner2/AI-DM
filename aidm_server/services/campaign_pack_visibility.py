@@ -92,6 +92,9 @@ PUBLIC_LOCATION_KEYS = (
     'dangerLevel',
     'mood',
     'musicTag',
+    # What the place sounds and looks like: the Story view picks its ambience and weather from these.
+    'ambience',
+    'weather',
 )
 
 PUBLIC_NPC_KEYS = (
@@ -220,7 +223,8 @@ def filter_session_snapshot_for_player(
     ``acting_player_id`` names, else the first present hero. Enemies show a
     ``health`` word instead of their hit points; ``enemy_hit_points`` keeps the
     numbers for server-side rules that judge the projection, which then call
-    :func:`hide_enemy_hit_points`.
+    :func:`hide_enemy_hit_points`. A finishing blow a hero has yet to tell is
+    ``combat.pendingFinisher`` (with its offered actions only in that hero's view).
     """
 
     if not isinstance(snapshot, dict):
@@ -1141,6 +1145,9 @@ def _filter_combat_for_player(
     payload['initiative'] = _filter_combat_initiative(combat.get('initiative'), participants_by_id)
     flags = combat.get('flags') if isinstance(combat.get('flags'), dict) else {}
     payload['flags'] = _filter_combat_flags(flags, participants_by_id)
+    finisher = _pending_finisher_for_viewer(flags, private_player_ids)
+    if finisher:
+        payload['pendingFinisher'] = finisher
 
     # The same order less the participants players cannot see, so an index in
     # it is the full view's whenever nobody is hidden.
@@ -1152,6 +1159,23 @@ def _filter_combat_for_player(
         payload.setdefault('flags', {})['turnAuthorityRedacted'] = True
     combat.clear()
     combat.update(payload)
+
+
+def _pending_finisher_for_viewer(flags: dict, private_player_ids: frozenset[int]) -> dict | None:
+    """The finishing blow a hero has yet to tell: who, against whom, and the line the other players see; the
+    finishing hero's own view also carries its offered actions (``finishing_blow.finisher_actions``)."""
+
+    # Deferred import: the finishing blow reads pack records, whose modules import this one.
+    from aidm_server.game_state.orchestration.finishing_blow import PENDING_KEY, finisher_actions
+
+    pending = flags.get(PENDING_KEY) if isinstance(flags.get(PENDING_KEY), dict) else {}
+    hero_id = _text(pending.get('heroId'))
+    if not hero_id:
+        return None
+    finisher = {key: _text(pending.get(key)) for key in ('heroId', 'heroName', 'enemyName', 'waitingLine')}
+    if _record_player_id({'id': hero_id}) in private_player_ids:
+        finisher['offeredActions'] = finisher_actions({'combat': {'flags': flags}}, hero_id)
+    return finisher
 
 
 def _player_pack_snapshot(pack: dict, flags: dict) -> dict:

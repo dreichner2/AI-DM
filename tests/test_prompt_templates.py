@@ -250,3 +250,24 @@ def test_canon_extraction_request_snapshot():
         'Return JSON of the form:\n'
         f'{CANON_EXTRACTION_RESPONSE_SCHEMA}'
     )
+
+
+def test_roll_card_records_stay_out_of_the_narration_prompt():
+    from aidm_server.prompt_templates import prompt_rules_hint, rolls_shown
+
+    hint = {
+        'requires_roll': False,
+        'state_pipeline': {
+            'storyRolls': [{'id': 't1-1', 'kind': 'attack', 'total': 19}],
+            'managedDomains': ['combat'],
+        },
+    }
+
+    rendered = prompt_rules_hint(hint)
+
+    # The narrator still knows cards are shown, but sees no number from them.
+    assert rendered['state_pipeline']['storyRolls'] == [{'kind': 'attack'}]
+    assert rolls_shown(rendered) is True
+    assert rendered['state_pipeline']['managedDomains'] == ['combat']
+    # The stored hint is untouched.
+    assert hint['state_pipeline']['storyRolls'][0]['total'] == 19

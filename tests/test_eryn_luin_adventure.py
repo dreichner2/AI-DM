@@ -692,6 +692,8 @@ def test_the_people_of_the_vale_are_met_where_they_live_and_tell_what_they_know(
         'Met — Matho Burrows',
     ]
     assert _talk_offers(table.fight().snapshot) == ['Talk to Elenwen of Lindon', 'Talk to Matho Burrows']
+    # The last orc's end is the hero's to tell; they let the story tell it before talking.
+    assert table.talk('Let the story tell it') == 'DM: The pale hand orc falls.'
     told('Elenwen', 'npc_elenwen_of_lindon')
     told('Matho', 'npc_matho_burrows')
 

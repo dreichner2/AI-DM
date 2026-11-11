@@ -47,6 +47,10 @@ import {
 } from './SessionDirectorPanels'
 import { SessionPresenceStrip } from './SessionPresenceStrip'
 import type { SceneDisplayState } from './sceneState'
+import { RollCard } from './story/RollCard'
+import { rollPlayback } from './story/rollPlayback'
+import { entryRollCards } from './story/storyRolls'
+import { useReducedMotion } from './story/useReducedMotion'
 import type {
   ActivePlayer,
   Campaign,
@@ -437,6 +441,20 @@ function canReportBadTurn(entry: TimelineEntry | null) {
 
 function canRateTurnQuality(entry: TimelineEntry | null) {
   return canReportBadTurn(entry)
+}
+
+/** The turn's roll cards above its narration, as the Story view shows them. */
+function TurnRollCards({ entry }: { entry: TimelineEntry }) {
+  const reduceMotion = useReducedMotion()
+  const cards = entryRollCards(entry)
+  if (!cards?.length) return null
+  return (
+    <div className="turn-roll-cards">
+      {cards.map((card) => (
+        <RollCard key={card.id} roll={card} playback={reduceMotion ? null : rollPlayback(card.id)} />
+      ))}
+    </div>
+  )
 }
 
 function RollWaitBanner({
@@ -1003,14 +1021,20 @@ export function SessionBoard({
       : expanded
         ? turn.text
         : truncateText(turn.text, 180)
-    if (theaterMode && turn.role === 'dm') {
-      return <NarrativeProse text={text} />
-    }
-    return <p>{text}</p>
+    const copy = theaterMode && turn.role === 'dm' ? <NarrativeProse text={text} /> : <p>{text}</p>
+    return turn.role === 'dm' ? (
+      <>
+        <TurnRollCards entry={turn} />
+        {copy}
+      </>
+    ) : copy
   }
 
-  const renderDmResponseCopy = (text: string) => (
-    theaterMode ? <NarrativeProse text={text} /> : <p>{text}</p>
+  const renderDmResponseCopy = (entry: TimelineEntry, text: string) => (
+    <>
+      <TurnRollCards entry={entry} />
+      {theaterMode ? <NarrativeProse text={text} /> : <p>{text}</p>}
+    </>
   )
 
   return (
@@ -1374,7 +1398,7 @@ export function SessionBoard({
                   </div>
                   <div className="dm-response-actions">{renderReportButton(currentResponseEntry)}</div>
                   <div className="response-copy">
-                    {renderDmResponseCopy(latestDmText)}
+                    {renderDmResponseCopy(currentResponseEntry, latestDmText)}
                   </div>
                   {renderQualityPrompt(currentResponseEntry)}
                   <div className={`stream-state ${sendPending || streamingTurnActive ? 'streaming' : ''}`}>

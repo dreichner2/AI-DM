@@ -9,15 +9,19 @@ renders it above the player's words as ``ENGINE THIS TURN`` (see
 
 Fields: ``did`` (each executed result in plain words; in a fight the hero's
 resolved action with its numbers, each enemy turn, yields, captures, breaking
-free and opportunity attacks, or the line that no enemy has acted), ``notDone``
+free and opportunity attacks, or the line that no enemy has acted; each
+enemy's ``Bark:`` line under the result it follows; a look over the fight with
+where everyone stands; the finishing blow: the foe felled and left untold, the
+hero's own words told faithfully, or the moment let pass), ``notDone``
 (the message's deferred actions, then each engine-owned thing the player's
 words name with no result this turn, by its labels), ``here`` (objects with
 their available labels, loose items, ways onward, shops, captives held here
 with their enemy record and ``captiveKnows``), ``place``, ``actingHero``,
 ``heroes``, ``gains`` (the acting hero's ``xp``, ``coins`` by code and
 ``items`` gained so far), ``offered`` (the labels of the actions offered to
-the acting hero this turn) and ``engineOwned`` (every name above, and the
-things acted on).
+the acting hero this turn, a pending finishing blow's first),
+``engineOwned`` (every name above, and the things acted on) and ``ending``
+(only when the turn reaches the adventure's ending).
 """
 
 from __future__ import annotations
@@ -30,7 +34,8 @@ from aidm_server.combat.legal_actions import maneuver_actions, universal_combat_
 from aidm_server.combat.maneuvers import enemy_record
 from aidm_server.combat.state import normalize_combat_state
 from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, mentions, ways_onward
-from aidm_server.game_state.orchestration.narration_facts import PICKUP_SOURCE
+from aidm_server.game_state.orchestration.finishing_blow import finisher_actions
+from aidm_server.game_state.orchestration.narration_facts import PICKUP_SOURCE, enemy_prose
 from aidm_server.game_state.orchestration.story_beats import COIN_ORDER, beat_basis, object_check_text, story_beats
 from aidm_server.price_list import normalize_price
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
@@ -40,6 +45,11 @@ OWN_LINE_BEATS = frozenset({'check', 'hint'})
 # A fight turn on which no enemy acted says so, so the narrator has nothing to invent for them.
 NO_ENEMY_ACTED = 'No enemy has acted since the last narration.'
 SPOKE = 'The hero spoke: free, nothing is spent and nothing changes. Answer in the scene in at most three sentences.'
+LOOKED = 'The hero looked over the fight: free, nothing is spent and nothing changes. Describe what they see in at most two sentences.'
+FINISHER = "Finisher — the player's own words. Tell it faithfully in at most three sentences; add no new facts and no new dangers:"
+SPARED = 'The hero spares the enemy; it is alive and captured.'
+BARK = 'Bark: {line} ({name}; use this line, word for word if it is speech)'
+POSITION_WORDS = {'on': 'on the hero', 'close': 'in close', 'near': 'a few strides off', 'far': 'hanging back', 'distant': 'far off'}
 # A coin or XP beat: ``+15 gp``, ``Arden Vale −6 gp``, ``+75 XP each``.
 GAIN_BEAT = re.compile(r'^(?:(?P<hero>.+) )?(?P<sign>[+−-])(?P<amount>\d+) (?P<unit>\S+)(?P<each> each)?$')
 
@@ -143,9 +153,19 @@ def _enemy_line(action: dict[str, Any]) -> str | None:
     return _attack_line(action)
 
 
-def _combat_lines(combat_state: dict[str, Any], applied_changes: list[dict[str, Any]], enemies: list[str]) -> list[str]:
+def _bark_lines(barks: list[dict[str, Any]], after: str) -> list[str]:
+    return [BARK.format(line=_text(bark.get('line')), name=_text(bark.get('name'))) for bark in barks if _text(bark.get('after')) == after]
+
+
+def _combat_lines(
+    combat_state: dict[str, Any],
+    applied_changes: list[dict[str, Any]],
+    enemies: list[str],
+    barks: list[dict[str, Any]],
+) -> list[str]:
     against = f' against {_join(enemies)}' if enemies else ''
     lines = [f'A fight begins{against}.' for change in applied_changes if change.get('type') == 'combat.start'][:1]
+    lines.extend(_bark_lines(barks, 'start'))
     tactical = combat_state.get('playerResolvedCombatAction') if isinstance(combat_state.get('playerResolvedCombatAction'), dict) else {}
     if _text(tactical.get('outcome')):
         lines.append(_text(tactical['outcome']))
@@ -154,16 +174,62 @@ def _combat_lines(combat_state: dict[str, Any], applied_changes: list[dict[str, 
         if isinstance(attack, dict) and attack not in attacks:
             attacks.append(attack)
     lines.extend(_attack_line(attack) for attack in attacks)
+    lines.extend(_bark_lines(barks, 'hero'))
     enemy_actions = _dicts(combat_state.get('enemyResolvedActions'))
+    told: set[str] = set()
     for action in enemy_actions:
         if action.get('grappleEnded') is True:
             lines.append(f"{_text(action.get('enemyName')) or 'An enemy'} is no longer held.")
         lines.extend(_reaction_lines(action))
         if line := _enemy_line(action):
             lines.append(line)
+        enemy_id = _text(action.get('enemyId'))
+        if enemy_id and enemy_id not in told:
+            told.add(enemy_id)
+            lines.extend(_bark_lines(barks, enemy_id))
     if combat_state and not enemy_actions:
         lines.append(NO_ENEMY_ACTED)
     return lines
+
+
+def _enemy_prose(state: dict[str, Any], enemy_id: Any) -> str:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    participant = next((entry for entry in _dicts(combat.get('participants')) if _text(entry.get('id')) == _text(enemy_id)), {})
+    prose = enemy_prose(state, participant)
+    return f'{prose[:1].upper()}{prose[1:]}'
+
+
+def _finisher_lines(narration: dict[str, Any], state: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The finishing blow's lines: those that open the turn (the moment let pass, the hero's own telling)
+    and the one after the fight's results (the foe felled, its death left untold)."""
+
+    opening: list[str] = []
+    lapsed = narration.get('finisherLapsed') if isinstance(narration.get('finisherLapsed'), dict) else {}
+    if lapsed:
+        opening.append(f'The moment to finish {lapsed.get("enemy")} has passed. Say exactly, first: "{_enemy_prose(state, lapsed.get("enemyId"))} falls."')
+    told = narration.get('finisher') if isinstance(narration.get('finisher'), dict) else {}
+    if told:
+        opening.append(f'{FINISHER} "{_text(told.get("words"))}"')
+        if told.get('spared') is True:
+            opening.append(SPARED)
+    blow = narration.get('finishingBlow') if isinstance(narration.get('finishingBlow'), dict) else {}
+    closing = (
+        [
+            f"{blow.get('enemy')} is finished: down at {blow.get('hero')}'s mercy, not yet dead. Do not tell its death "
+            f'and add no closing question; the engine ends the turn by asking how {blow.get("hero")} ends it.'
+        ]
+        if blow
+        else []
+    )
+    return opening, closing
+
+
+def _positions_line(positions: list[dict[str, Any]]) -> str:
+    placed = [
+        f"{_text(entry.get('name'))} {POSITION_WORDS.get(_text(entry.get('where')), 'nearby')}{', ' + _text(entry.get('health')) if _text(entry.get('health')) else ''}"
+        for entry in positions
+    ]
+    return f"Where everyone stands: {'; '.join(placed) if placed else 'nobody else is standing'}."
 
 
 def _spell_lines(applied_changes: list[dict[str, Any]]) -> list[str]:
@@ -292,9 +358,11 @@ def _offered_labels(
     ways: list[dict[str, Any]],
     captives: list[dict[str, Any]],
 ) -> list[str]:
-    """The labels of the actions offered to the acting hero now, in a fight its fight actions."""
+    """The labels of the actions offered to the acting hero now, in a fight its fight actions; a finishing
+    blow the hero has yet to tell comes first."""
 
-    labels = [label for entry in objects for label in _available_labels(entry)]
+    labels = [action['label'] for action in finisher_actions(state, actor_id)]
+    labels.extend(label for entry in objects for label in _available_labels(entry))
     labels.extend(_text(item.get('takeLabel')) or f"Take {_text(item.get('name'))}" for item in items)
     labels.extend(f"Go to {_text(way.get('name'))}" for way in ways)
     labels.extend(f"Question {captive['name']}" for captive in captives)
@@ -371,13 +439,16 @@ def engine_brief(
         if (text := object_check_text(change, state_before))
     }
     taken_coins = _taken_coins(changes)
-    did: list[str] = []
+    finisher_opening, finisher_closing = _finisher_lines(narration, state_after)
+    did: list[str] = [*finisher_opening]
     if _text(narration.get('captivesLeft')):
         did.append(_text(narration['captivesLeft']))
     if _text(narration.get('arrival')):
         did.append(f"Arrived at {narration['arrival']}.")
     if (narration.get('freeText') or {}).get('kind') == 'speech':
         did.append(SPOKE)
+    elif (narration.get('freeText') or {}).get('kind') == 'look' and isinstance(narration.get('positions'), list):
+        did.extend([LOOKED, _positions_line(_dicts(narration['positions']))])
     did.extend(_object_line(fact, checks.get(_text(fact.get('targetId')))) for fact in _dicts(narration.get('objects')))
     taken = [_text(phrase) for phrase in narration.get('taken') or [] if _text(phrase)]
     if taken:
@@ -389,7 +460,8 @@ def engine_brief(
     did.extend(_spell_lines(changes))
     combat_state = dm_context.get('combatState') if isinstance(dm_context.get('combatState'), dict) else {}
     enemies = [_text(enemy.get('name')) for enemy in _dicts(narration.get('enemies')) if _text(enemy.get('name'))]
-    did.extend(_combat_lines(combat_state, changes, enemies))
+    did.extend(_combat_lines(combat_state, changes, enemies, _dicts(narration.get('barks'))))
+    did.extend(finisher_closing)
     did.extend(line for beat in beats if (line := _beat_line(beat, taken_coins, acting_hero=acting_hero)))
     did.extend(
         f"Refused: {_text(action.get('reason'))}"
@@ -442,6 +514,7 @@ def engine_brief(
         'heroes': [_text(hero.get('name')) for hero in _dicts(state_after.get('playerCharacters')) if _text(hero.get('name'))],
         'gains': gains,
         'offered': _offered_labels(state_after, actor_id=actor_id, objects=objects, items=items, ways=ways, captives=captives),
+        **({'ending': True} if any(beat.get('kind') == 'ending' for beat in beats) else {}),
         'engineOwned': list(
             dict.fromkeys(
                 name

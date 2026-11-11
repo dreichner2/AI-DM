@@ -1,13 +1,16 @@
 import { isRecord, numberValue, stringValue } from '../gameSelectors'
 import type { JsonRecord, TimelineEntry } from '../types'
+import { entryRollCards, type RollCardRecord } from './storyRolls'
 
 /**
  * Story beats: the reading model of a session timeline.
  *
  * The console shows one card per log entry. Story mode reads the same entries
  * as a book would: narration as prose, a player's action as a short indented
- * line, dice as one centred line, mechanical consequences as quiet chips, and
- * engine bookkeeping not at all.
+ * line, each roll of the turn as a roll card between the action and the
+ * narration (a turn from before roll cards keeps its one roll line read from
+ * the text), mechanical consequences as quiet chips, and engine bookkeeping not
+ * at all.
  */
 
 export type StoryGap = 'none' | 'tight' | 'speaker' | 'turn'
@@ -108,11 +111,21 @@ export type RollBeat = BeatBase & {
   /** The server's check beat for this roll ("Investigation check: 14 — success"), shown instead of the client's outcome. */
   checkText?: string
 }
+/** One of the turn's `storyRolls`, shown as a roll card. */
+export type RollCardBeat = BeatBase & { kind: 'rollCard'; entry: TimelineEntry; card: RollCardRecord; turnId: number }
 export type ChangesBeat = BeatBase & { kind: 'changes'; entry: TimelineEntry; changes: StoryChange[] }
 export type TurnBeatsBeat = BeatBase & { kind: 'turnBeats'; entry: TimelineEntry; beats: StoryTurnBeat[] }
 export type NoticeBeat = BeatBase & { kind: 'notice'; entry: TimelineEntry; text: string }
 
-export type StoryBeat = ChapterBeat | NarrationBeat | ActionBeat | RollBeat | ChangesBeat | TurnBeatsBeat | NoticeBeat
+export type StoryBeat =
+  | ChapterBeat
+  | NarrationBeat
+  | ActionBeat
+  | RollBeat
+  | RollCardBeat
+  | ChangesBeat
+  | TurnBeatsBeat
+  | NoticeBeat
 
 export type BuildStoryBeatsOptions = {
   selectedPlayerName?: string | null
@@ -524,6 +537,25 @@ function turnBeatsByTurn(entries: TimelineEntry[]) {
   return byTurn
 }
 
+/**
+ * Each turn's roll cards, from the entry of the turn that carries them last
+ * (the narration once logged; before that, the cards that arrived live).
+ */
+function rollCardsByTurn(entries: TimelineEntry[]) {
+  const byTurn = new Map<number, RollCardRecord[]>()
+  entries.forEach((entry) => {
+    const turnId = turnIdOf(entry)
+    const cards = turnId === null ? null : entryRollCards(entry)
+    if (turnId !== null && cards) byTurn.set(turnId, cards)
+  })
+  return byTurn
+}
+
+/** A player's line that arrived live: its turn's dice are shown as roll cards, never read from its text. */
+function isLivePlayerEntry(entry: TimelineEntry) {
+  return entry.role === 'player' && entry.id.startsWith('socket-player-')
+}
+
 function actionDelivery(entry: TimelineEntry): StoryActionDelivery {
   const status = persistenceStatus(entry)
   if (status === 'failed') return 'failed'
@@ -553,6 +585,8 @@ function gapBefore(beat: PendingBeat, previous: PendingBeat | undefined): StoryG
       if (previous.kind === 'action' && previous.speaker === beat.roll.name) return 'tight'
       if (previous.kind === 'roll' && previous.roll.name === beat.roll.name) return 'tight'
       return 'speaker'
+    case 'rollCard':
+      return previous.kind === 'action' || previous.kind === 'roll' || previous.kind === 'rollCard' ? 'tight' : 'speaker'
     default:
       return 'speaker'
   }
@@ -572,11 +606,19 @@ export function buildStoryBeats(
       .map(turnIdOf)
       .filter((turnId): turnId is number => turnId !== null),
   )
+  const cardsByTurn = rollCardsByTurn(entries)
   const rolls = new Map<TimelineEntry, StoryRoll>()
+  // Lines whose dice the turn's roll cards show instead: only a player's words beside them are kept.
+  const cardedRollEntries = new Set<TimelineEntry>()
   const playerRollTurnIds = new Set<number>()
   entries.forEach((entry) => {
     const roll = rollFromEntry(entry)
     if (!roll) return
+    const entryTurnId = turnIdOf(entry)
+    if ((entryTurnId !== null && cardsByTurn.has(entryTurnId)) || isLivePlayerEntry(entry)) {
+      cardedRollEntries.add(entry)
+      return
+    }
     rolls.set(entry, roll)
     const turnId = turnIdOf(entry)
     if (entry.role === 'player' && turnId !== null) playerRollTurnIds.add(turnId)
@@ -607,6 +649,13 @@ export function buildStoryBeats(
     serverBeats.set(turnId, turnBeats.filter((beat) => beat !== check))
   })
   const emittedTurnBeats = new Set<number>()
+  const emittedCardTurns = new Set<number>()
+  const narratedTurnIds = new Set(entries.filter((entry) => entry.role === 'dm').map(turnIdOf).filter((turnId): turnId is number => turnId !== null))
+  const lastIndexByTurn = new Map<number, number>()
+  entries.forEach((entry, index) => {
+    const turnId = turnIdOf(entry)
+    if (turnId !== null) lastIndexByTurn.set(turnId, index)
+  })
 
   const beats: PendingBeat[] = []
   const usedKeys = new Map<string, number>()
@@ -618,6 +667,15 @@ export function buildStoryBeats(
   let sawNarration = false
   let sawStory = false
 
+  // A turn's cards go before its narration, or after its last line while it has none yet.
+  const pushRollCards = (turnId: number, entry: TimelineEntry) => {
+    const cards = cardsByTurn.get(turnId)
+    if (!cards || emittedCardTurns.has(turnId)) return
+    emittedCardTurns.add(turnId)
+    cards.forEach((card) => beats.push({ kind: 'rollCard', key: uniqueKey(`card-${card.id}`), entry, card, turnId }))
+    if (cards.length) sawStory = true
+  }
+
   const pushTurnBeats = (turnId: number, entry: TimelineEntry) => {
     const turnBeats = serverBeats.get(turnId)
     if (!turnBeats || emittedTurnBeats.has(turnId)) return
@@ -625,11 +683,12 @@ export function buildStoryBeats(
     if (turnBeats.length) beats.push({ kind: 'turnBeats', key: uniqueKey(`beats-${turnId}`), entry, beats: turnBeats })
   }
 
-  entries.forEach((entry) => {
+  const visit = (entry: TimelineEntry) => {
     const turnId = turnIdOf(entry)
 
     if (entry.role === 'dm') {
       if (entry.streaming && turnId !== null && loggedDmTurnIds.has(turnId)) return
+      if (turnId !== null) pushRollCards(turnId, entry)
       const text = narrationText(entry)
       if (!text.trim() && !entry.streaming) return
       beats.push({
@@ -645,6 +704,23 @@ export function buildStoryBeats(
       sawNarration = true
       sawStory = true
       if (turnId !== null && !entry.streaming) pushTurnBeats(turnId, entry)
+      return
+    }
+
+    if (cardedRollEntries.has(entry)) {
+      const actionText = entry.role === 'player' ? actionTextBesideRoll(entry.text) : ''
+      if (actionText) {
+        beats.push({
+          kind: 'action',
+          key: uniqueKey(`act-${stringValue(entry.metadata.client_message_id) || entry.id}`),
+          entry,
+          speaker: entry.speaker,
+          text: actionText,
+          delivery: actionDelivery(entry),
+          own: Boolean(selectedPlayerName) && entry.speaker === selectedPlayerName,
+        })
+        sawStory = true
+      }
       return
     }
 
@@ -739,6 +815,12 @@ export function buildStoryBeats(
     const text = entry.text.replace(/\*\*/g, '').trim()
     if (!text || hasRawChangeType(text)) return
     beats.push({ kind: 'notice', key: uniqueKey(`note-${entry.id}`), entry, text })
+  }
+
+  entries.forEach((entry, index) => {
+    visit(entry)
+    const turnId = turnIdOf(entry)
+    if (turnId !== null && !narratedTurnIds.has(turnId) && lastIndexByTurn.get(turnId) === index) pushRollCards(turnId, entry)
   })
 
   return beats.map((beat, index) => ({ ...beat, gap: gapBefore(beat, beats[index - 1]) }) as StoryBeat)

@@ -762,35 +762,6 @@
 .story-dialog .modal-loading-dialog .story-dialog-body { padding-bottom: 4px; }
 .story-dialog .modal-loading-dialog .story-dots { margin-left: 2px; }
 
-/* ---- dice: the frame only, the dice keep their stage ---- */
-
-.story-dialog .story-dialog-panel.dice-dialog { padding-bottom: 0; }
-.story-dialog .dice-dialog .dice-stage {
-  margin: 4px calc(-1 * var(--sheet-gutter)) 0;
-  border-top: 1px solid var(--story-hairline);
-  background: radial-gradient(ellipse at 50% 40%, rgba(255, 107, 44, 0.06), transparent 70%), rgba(4, 8, 9, 0.6);
-}
-.story-dialog .dice-dialog .dice-readout {
-  border-color: var(--story-glass-edge);
-  border-radius: 12px;
-  background: var(--story-glass);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-}
-.story-dialog .dice-dialog .dice-readout strong { font-family: var(--story-prose); color: var(--story-ink); }
-.story-dialog .dice-dialog .dice-readout span { letter-spacing: var(--story-label-tracking); color: var(--story-muted); }
-.story-dialog .dice-dialog.resolved .dice-readout { border-color: color-mix(in srgb, var(--story-success) 40%, transparent); }
-.story-dialog .dice-dialog .dice-retry-button {
-  justify-self: start;
-  margin-top: 10px;
-  padding: 2px 0;
-  border: 0;
-  font-size: 0.9rem;
-  font-weight: 560;
-  color: var(--story-ember-soft);
-  background-color: transparent;
-}
-
 /* ---- pack import ---- */
 
 .story-dialog .pack-lint-title span {

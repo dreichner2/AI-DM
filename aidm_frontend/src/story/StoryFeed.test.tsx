@@ -9,6 +9,8 @@ import type { SessionBoardProps } from '../SessionBoard'
 import type { JsonRecord, TimelineEntry } from '../types'
 import { testBoard, testWorld } from './dockTestFixtures'
 import { makeBoardFixture } from './preview/fixtures'
+import { playRolls, resetRollPlayback } from './rollPlayback'
+import type { RollCardRecord } from './storyRolls'
 import { StoryComposer } from './StoryComposer'
 import { StoryFeed } from './StoryFeed'
 
@@ -604,3 +606,66 @@ describe('StoryFeed following the reader', () => {
   })
 })
 
+
+describe('StoryFeed roll cards', () => {
+  const save: RollCardRecord = {
+    id: 't9-1',
+    kind: 'save',
+    actor: { id: 'player_1', name: 'Arden Vale', side: 'hero' },
+    label: 'Wisdom save',
+    source: 'Lantern-Lure',
+    d20: { faces: [12], kept: 12, mode: 'normal' },
+    parts: [],
+    total: 12,
+    against: { kind: 'DC', value: 12 },
+    outcome: 'success',
+    natural: null,
+  }
+
+  beforeEach(() => {
+    resetRollPlayback()
+    window.localStorage.clear()
+  })
+
+  afterEach(() => vi.useRealTimers())
+
+  it('shows a card read from history landed, between the action and the narration', () => {
+    const { container } = render(
+      <StoryFeed
+        board={board({
+          turnRows: [
+            entry('log-1', 'player', 'Arden Vale', 'I step toward the lantern.', { turn_id: 9 }),
+            entry('log-2', 'dm', 'DM', 'The light slides off you.', { turn_id: 9, storyRolls: [save] }),
+          ],
+        })}
+        textSize="default"
+        onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()}
+      />,
+    )
+    const beats = [...container.querySelectorAll('.story-beat')].map((element) => element.className.replace('story-beat ', ''))
+    expect(beats).toEqual(['story-action', 'story-roll-card-beat', 'story-narration'])
+    const card = container.querySelector('.roll-card')
+    expect(card).toHaveAttribute('data-phase', 'done')
+    expect(card).not.toHaveAttribute('data-live')
+    expect(card?.querySelector('.roll-card-total')).toHaveTextContent('12')
+  })
+
+  it('plays a card that arrived live, and with reduced motion shows it landed at once', () => {
+    vi.useFakeTimers({ now: new Date('2026-11-11T12:00:00.000Z') })
+    playRolls(9, [save])
+    const rows = [
+      entry('socket-player-client-9', 'player', 'Arden Vale', 'I step toward the lantern.', { turn_id: 9, storyRolls: [save] }),
+    ]
+    const { container, unmount } = render(
+      <StoryFeed board={board({ turnRows: rows })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
+    )
+    expect(container.querySelector('.roll-card')).toHaveAttribute('data-phase', 'cycle')
+    unmount()
+
+    window.localStorage.setItem('aidm:storyReduceMotion', 'true')
+    const reduced = render(
+      <StoryFeed board={board({ turnRows: rows })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />,
+    )
+    expect(reduced.container.querySelector('.roll-card')).toHaveAttribute('data-phase', 'done')
+  })
+})

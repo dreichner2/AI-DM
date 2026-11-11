@@ -22,6 +22,8 @@ import {
   type RollMode,
 } from './gameActions'
 import type { PendingRollOption } from './gameSelectors'
+import { PressedRollCard } from './story/PressedRollCard'
+import type { DiceRollState } from './useComposerActions'
 import type { ActivePlayer, TurnControl, TurnControlMode, TurnControlSource } from './types'
 
 const ROLL_TRAY_DICE_OPTIONS = ['d20', ...DICE_OPTIONS.filter((die) => die !== 'd20')]
@@ -76,7 +78,11 @@ export type ActionComposerProps = {
   submitAction: (overrideMessage?: string, overrideIntent?: ActionIntent) => boolean
   toggleAdminTools: () => void
   startDiceRoll: (die?: string) => void
-  preloadDiceRollDialog: () => void
+  /** The roll the player pressed, shown as its roll card until the story shows it. */
+  diceRoll: DiceRollState | null
+  markDiceRollPlayed: () => void
+  closeDiceRoll: () => void
+  retryDiceRoll: () => boolean
   applyComposerMode: (mode: ComposerMode) => void
   updateSelectedDie: (die: string) => void
   rollMode: RollMode
@@ -147,7 +153,10 @@ export function ActionComposer({
   submitAction,
   toggleAdminTools,
   startDiceRoll,
-  preloadDiceRollDialog,
+  diceRoll,
+  markDiceRollPlayed,
+  closeDiceRoll,
+  retryDiceRoll,
   applyComposerMode,
   updateSelectedDie,
   rollMode,
@@ -184,12 +193,6 @@ export function ActionComposer({
   const selectedItemIndex = selectedItem
     ? itemOptions.findIndex((item) => item === selectedItem || (item.id && item.id === selectedItem.id))
     : -1
-  useEffect(() => {
-    if (composerMode === 'roll') {
-      preloadDiceRollDialog()
-    }
-  }, [composerMode, preloadDiceRollDialog])
-
   useEffect(() => {
     if (!canUseOperatorTools && adminToolsUnlocked) toggleAdminTools()
   }, [adminToolsUnlocked, canUseOperatorTools, toggleAdminTools])
@@ -248,6 +251,15 @@ export function ActionComposer({
 
   return (
     <section className={`action-composer ${isRollMode ? 'roll-focused' : ''}`}>
+      {diceRoll ? (
+        <PressedRollCard
+          roll={diceRoll}
+          heroName={selectedCharacterName}
+          onPlayed={markDiceRollPlayed}
+          onRetry={() => void retryDiceRoll()}
+          onDismiss={closeDiceRoll}
+        />
+      ) : null}
       {!isRollMode ? (
         <>
           <label htmlFor="action-input" onClick={handleActionLabelClick}>
@@ -373,8 +385,6 @@ export function ActionComposer({
                   aria-label="Dice mode"
                   aria-pressed={false}
                   onClick={toggleRollMode}
-                  onFocus={preloadDiceRollDialog}
-                  onMouseEnter={preloadDiceRollDialog}
                   disabled={sendPending}
                 >
                   <ThinIcon name="dice" size={18} />
@@ -748,8 +758,6 @@ export function ActionComposer({
           className={isRollMode ? 'selected' : ''}
           aria-pressed={isRollMode}
           onClick={toggleRollMode}
-          onFocus={preloadDiceRollDialog}
-          onMouseEnter={preloadDiceRollDialog}
           disabled={sendPending}
         >
           <ThinIcon name="dice" size={16} /> Roll <ThinIcon name="chevron" size={13} />

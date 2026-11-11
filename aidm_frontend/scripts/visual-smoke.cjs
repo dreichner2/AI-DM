@@ -639,11 +639,21 @@ async function runStoryFlow(browser, frontendUrl, consoleErrors, artifactDir) {
   await waitForStoryNarrations(page, 2)
   screenshots.push(...await captureStoryState(page, 'action', artifactDir))
 
+  // An object check is a roll card between the action and its narration, never a dice dialog.
+  await expect(actionInput).toBeEnabled({ timeout: 15_000 })
+  await actionInput.fill("Search under the driver's bench.")
+  await actionInput.press('Enter')
+  await waitForStoryNarrations(page, 3)
+  const rollCard = page.locator('.story-feed .roll-card').last()
+  await expect(rollCard).toHaveAttribute('data-phase', 'done', { timeout: 15_000 })
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  screenshots.push(...await captureStoryState(page, 'roll-card', artifactDir))
+
   await page.getByRole('button', { name: 'Open character panel' }).click()
   await expect(page.getByRole('tab', { name: 'Character' })).toBeVisible()
   screenshots.push(...await captureStoryState(page, 'drawer', artifactDir))
   await page.close()
-  log('captured Story opening, action and drawer at 1440x900 and 390x844')
+  log('captured Story opening, action, roll card and drawer at 1440x900 and 390x844')
   return screenshots
 }
 

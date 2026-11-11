@@ -260,6 +260,34 @@ describe('StorySettingsSheet', () => {
     expect(screen.getByRole('slider', { name: 'Music volume' })).toBeDisabled()
   })
 
+  it('offers ambience and effects under music, off until turned on, at 35 % and 50 %, each kept in this browser', () => {
+    render(<StorySettingsSheet {...settingsProps()} />)
+
+    const sound = screen.getByRole('region', { name: 'Sound' })
+    expect(within(sound).getAllByRole('slider').map((slider) => slider.getAttribute('aria-valuetext'))).toEqual(['70%', '35%', '50%'])
+    expect(within(setting('Ambience')).getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(setting('Effects')).getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('slider', { name: 'Ambience volume' })).toBeDisabled()
+    expect(screen.getByRole('slider', { name: 'Effects volume' })).toBeDisabled()
+
+    fireEvent.click(within(setting('Ambience')).getByRole('button', { name: 'On' }))
+    fireEvent.click(within(setting('Effects')).getByRole('button', { name: 'On' }))
+    fireEvent.change(screen.getByRole('slider', { name: 'Ambience volume' }), { target: { value: '60' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Effects volume' }), { target: { value: '25' } })
+    expect(stored('aidm:storySoundPreferences')).toEqual({
+      ambienceEnabled: true,
+      ambienceVolume: 0.6,
+      effectsEnabled: true,
+      effectsVolume: 0.25,
+    })
+    expect(screen.getByRole('slider', { name: 'Ambience volume' })).toHaveValue('60')
+    expect(screen.getByRole('slider', { name: 'Effects volume' })).toHaveValue('25')
+
+    fireEvent.click(within(setting('Effects')).getByRole('button', { name: 'Off' }))
+    expect(screen.getByRole('slider', { name: 'Effects volume' })).toBeDisabled()
+    expect(stored('aidm:storySoundPreferences').effectsEnabled).toBe(false)
+  })
+
   it('follows the system for reduced motion until the player chooses', () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: query === '(prefers-reduced-motion: reduce)',

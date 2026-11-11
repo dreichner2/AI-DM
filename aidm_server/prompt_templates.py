@@ -26,12 +26,31 @@ ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
 7. People in the scene speak from what they know; they neither reveal nor deny hidden things.
 8. Resolve what the hero attempted this turn from the "Did" results. Never leave it "still to be done", never hand the decision back, and never end by naming an available action.
 9. Do not say whose turn it is or that a turn is over; the engine adds that.
-10. Enemies do only what "Did" says they did this turn. Otherwise they hold, watch or brace: they never attack, spring, close in, move off, flee, take or drop anything."""
+10. Enemies do only what "Did" says they did this turn. Otherwise they hold, watch or brace: they never attack, spring, close in, move off, flee, take or drop anything.
+11. Be brisk. In a fight: at most 60 words. Outside a fight: at most 90 words. Arriving somewhere new or opening a chapter: at most 140. An ending may run long.
+12. Open on what the hero does or perceives, not on the weather twice running.
+13. End on what matters now. Usually that is one concrete thing that presses for a response — someone waiting on an answer, a sound getting closer, a door that was shut standing open. After a win, a discovery, a kindness or a joke, let that moment land instead and end there. Never a question to the players, never a list of options, never the name of a button.
+14. When someone present would plainly react to what the hero just did, give them one short spoken line in their own voice.
+15. Do not start a fight, and do not bring any creature, enemy or new danger into the scene, unless "Did" says a fight began. What belongs to other places stays there."""
 # With more than one hero the story is shared by every player, so rule 6 names the heroes instead.
 PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(
     '6. Speak to the acting hero as "you".',
     '6. Name the acting hero and every other hero by name; never write "you" for a hero.',
 )
+# Added on turns whose rolls are shown to the players as cards (``state_pipeline.storyRolls``).
+DICE_SHOWN_RULE = (
+    '16. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs '
+    'or damage numbers.'
+)
+STORY_ROLLS_KEY = 'storyRolls'
+
+
+def rolls_shown(rules_hint: dict | None) -> bool:
+    """The turn's pipeline carries roll cards (``storyRolls``) for the players to see."""
+
+    state_pipeline = rules_hint.get('state_pipeline') if isinstance(rules_hint, dict) and isinstance(rules_hint.get('state_pipeline'), dict) else {}
+    rolls = state_pipeline.get(STORY_ROLLS_KEY)
+    return isinstance(rolls, list) and bool(rolls)
 
 # Change this one line to switch the live DM narration prompt.
 ACTIVE_DM_SYSTEM_PROMPT_VERSION = 'v3'
@@ -321,16 +340,20 @@ def prompt_rules_hint(rules_hint: dict) -> dict:
 
     The opening brief and the engine brief travel on the hint but are rendered
     as their own blocks, and ``state_pipeline.currentStateSummary`` repeats
-    CONTEXT. The stored rules hint keeps all three.
+    CONTEXT. ``state_pipeline.storyRolls`` is for the players' roll cards: a
+    narrator needs to know the cards exist (``rolls_shown``) but is told the
+    outcomes in words under "Did", so only each roll's kind is kept and no
+    number reaches the prompt. The stored rules hint keeps everything.
     """
     hint = {key: value for key, value in rules_hint.items() if key != OPENING_BRIEF_HINT_KEY}
     state_pipeline = hint.get('state_pipeline')
-    if isinstance(state_pipeline, dict) and {'currentStateSummary', ENGINE_BRIEF_KEY} & set(state_pipeline):
-        hint['state_pipeline'] = {
-            key: value
-            for key, value in state_pipeline.items()
-            if key not in {'currentStateSummary', ENGINE_BRIEF_KEY}
-        }
+    rendered_elsewhere = {'currentStateSummary', ENGINE_BRIEF_KEY}
+    if isinstance(state_pipeline, dict) and (rendered_elsewhere | {STORY_ROLLS_KEY}) & set(state_pipeline):
+        trimmed = {key: value for key, value in state_pipeline.items() if key not in rendered_elsewhere}
+        rolls = trimmed.get(STORY_ROLLS_KEY)
+        if isinstance(rolls, list):
+            trimmed[STORY_ROLLS_KEY] = [{'kind': roll.get('kind')} for roll in rolls if isinstance(roll, dict)]
+        hint['state_pipeline'] = trimmed
     return hint
 
 
@@ -355,7 +378,8 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     """The ``ENGINE THIS TURN`` block and its rules, from the turn's engine brief; None without one.
 
     With more than one hero, the block opens with who acts and who the party is, and rule 6 is the
-    party form (:data:`PARTY_ENGINE_BRIEF_RULES`).
+    party form (:data:`PARTY_ENGINE_BRIEF_RULES`). On a turn whose rolls are shown as cards the dice rule
+    (:data:`DICE_SHOWN_RULE`) follows.
     """
 
     state_pipeline = rules_hint.get('state_pipeline') if isinstance(rules_hint.get('state_pipeline'), dict) else {}
@@ -402,6 +426,7 @@ def render_engine_brief(rules_hint: dict) -> str | None:
             f"The party is at {brief.get('place') or 'an unnamed place'}.",
             '',
             PARTY_ENGINE_BRIEF_RULES if party else ENGINE_BRIEF_RULES,
+            *([DICE_SHOWN_RULE] if rolls_shown(rules_hint) else []),
         ]
     )
 

@@ -1476,6 +1476,43 @@ def _add_scene_danger_change(
     changes.append(payload)
 
 
+# Scene states only a fight the engine started may set: in an adventure with a campaign pack narration
+# alone never does (``narration_starts_no_fight``).
+NARRATED_FIGHT_STATES = frozenset({'active', 'starting', 'pending'})
+FIGHT_DANGER_LEVEL = 8
+NARRATED_DANGER_REASON = 'DM described danger; only the engine starts a fight.'
+SCENE_UPDATE_META_KEYS = frozenset({'id', 'turnId', 'type', 'source', 'reason', 'visible', 'actorId', 'dangerLevel'})
+
+
+def _without_narrated_fight(changes: list[dict[str, Any]], scene: dict[str, Any]) -> list[dict[str, Any]]:
+    """The changes with every scene update that would make the scene a fight (combat state active, a combat
+    scene type, a fight's danger level) kept short of one; an update left with nothing to change is dropped."""
+
+    current_danger = _scene_danger_level(scene)
+    kept: list[dict[str, Any]] = []
+    for change in changes:
+        if not isinstance(change, dict) or change.get('type') != 'scene.update':
+            kept.append(change)
+            continue
+        update = dict(change)
+        if str(update.get('combatState') or '').strip().lower() in NARRATED_FIGHT_STATES:
+            update.pop('combatState')
+        if str(update.get('sceneType') or '').strip().lower() == 'combat':
+            update.pop('sceneType')
+        try:
+            danger = int(update['dangerLevel']) if 'dangerLevel' in update else None
+        except (TypeError, ValueError):
+            danger = None
+        if danger is not None and danger >= FIGHT_DANGER_LEVEL > current_danger:
+            update['dangerLevel'] = max(current_danger, FIGHT_DANGER_LEVEL - 1)
+        if update == change:
+            kept.append(change)
+            continue
+        if set(update) - SCENE_UPDATE_META_KEYS or update.get('dangerLevel', current_danger) != current_danger:
+            kept.append({**update, 'reason': NARRATED_DANGER_REASON})
+    return kept
+
+
 def _heuristic_scene_danger_changes(
     *,
     state_before_dm: dict[str, Any],
@@ -2873,7 +2910,12 @@ def extract_post_dm_outcomes(
     actor_id: str,
     turn_id: int,
     before_provider_call: Callable[[], None] | None = None,
+    narration_starts_no_fight: bool = False,
 ) -> dict[str, Any]:
+    """The changes the narration claims beyond what was applied before it. With
+    ``narration_starts_no_fight`` (an adventure with a campaign pack and no fight running), no scene update
+    makes the scene a fight: that follows only a fight the engine starts."""
+
     declared_flags = _story_flags_for(state_before_dm)
     helper_payload: dict[str, Any] | None = None
     helper_attempted = False
@@ -3110,6 +3152,8 @@ def extract_post_dm_outcomes(
         if conflict_resolved and 'resolved_combat_scene_conflict' not in notes:
             notes.append('resolved_combat_scene_conflict')
         normalized['notes'] = notes
+        if narration_starts_no_fight:
+            normalized['proposedChanges'] = _without_narrated_fight(normalized.get('proposedChanges') or [], _current_scene(state_before_dm))
         return _attach_debug(normalized, helper_debug)
 
     fallback = _heuristic_extract(
@@ -3138,6 +3182,8 @@ def extract_post_dm_outcomes(
         normalized['notes'] = [*normalized['notes'], 'dropped_narrated_damage']
     if fallback.get('authorizedCrossActorChangeIds'):
         normalized['authorizedCrossActorChangeIds'] = fallback.get('authorizedCrossActorChangeIds')
+    if narration_starts_no_fight:
+        normalized['proposedChanges'] = _without_narrated_fight(normalized['proposedChanges'], _current_scene(state_before_dm))
     helper_debug['fallbackRan'] = True
     helper_debug['fallbackReason'] = fallback_reason
     return _attach_debug(normalized, helper_debug)

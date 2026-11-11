@@ -146,6 +146,20 @@ removed on 6 January 2027. Players pick a voice, an accent and a quality in
 Voice keys, like every provider key, live only in the server environment; the
 browser never sees them.
 
+### Sound
+
+Besides the music and the narrator's voice, the Story view can play a quiet
+ambience bed for the party's place (rain, wind, a hearth, night insects, a
+marsh, a cave) and short cues when a fight starts or is won or lost, and for a
+clue or a new level. Every one of these sounds is generated in the browser with
+the Web Audio API: no audio files, no provider, no key. Both are off until the
+player turns them on in **Settings → Sound** (**Ambience** and **Effects**, each
+with a volume); nothing plays before the player's first click or key press, and
+the bed drops while the narrator speaks.
+A campaign pack chooses a place's bed and its weather (rain, fog or snow drawn
+behind the story) with the location fields `ambience` and `weather`; see
+[docs/campaign_packs.md](docs/campaign_packs.md).
+
 Never commit `.env.local` or paste real credentials into logs, issues, or
 screenshots.
 

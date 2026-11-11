@@ -944,19 +944,18 @@ describe('App user workflow regressions', () => {
     )
   })
 
-  it('requests a server-only roll and landing the authoritative result does not send again', async () => {
+  it('requests a server-only roll, shows it as its roll card where it was pressed, and landing the result does not send again', async () => {
     await renderLoadedApp()
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
     expect(screen.getByLabelText('Roll options')).toBeInTheDocument()
-    expect(screen.queryByRole('dialog', { name: 'Dice Roller' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
 
-    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
-    expect(within(dialog).getByText('D20')).toBeInTheDocument()
-    expect(within(dialog).getByText('Status requesting')).toBeInTheDocument()
-    expect(within(dialog).getByText('Result')).toHaveTextContent('Result')
+    const card = await screen.findByRole('region', { name: 'Your roll' })
+    expect(within(card).getByText('Rolling')).toBeInTheDocument()
+    expect(card.querySelector('.roll-card')).toHaveAttribute('data-phase', 'cycle')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.queryByLabelText(/Your Action/i)).not.toBeInTheDocument()
 
     const requestCall = socketMock.socket.emit.mock.calls.find(([event]) => event === 'send_message')
@@ -990,17 +989,27 @@ describe('App user workflow regressions', () => {
         rollResolvedPayload({ client_message_id: request.client_message_id }),
       )
     })
-    expect(within(dialog).getByText('Status rolling')).toBeInTheDocument()
-    expect(within(dialog).getByText('Result 14')).toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Complete roll' }))
+    // The card lands on the server's face no sooner than half a second after the press.
+    await waitFor(() => expect(card.querySelector('.roll-card')).toHaveAttribute('data-phase', 'done'), { timeout: 3000 })
+    expect(card.querySelector('.roll-card-total')).toHaveTextContent('14')
     expect(socketMock.socket.emit.mock.calls.filter(([event]) => event === 'send_message')).toHaveLength(sendCount)
+
+    // The turn's cards arrive: the pressed card hands over to them where the story shows the turn.
+    await act(async () => {
+      socketHandler<{ session_id: number; turn_id: number; rolls: unknown[] }>('turn_rolls')({
+        session_id: 20,
+        turn_id: 81,
+        rolls: [{ id: 't81-1', kind: 'check', actor: { id: 'player_30', name: 'Ember', side: 'hero' }, label: 'd20', d20: { faces: [14], kept: 14, mode: 'normal' }, parts: [], total: 14, against: null, outcome: null, natural: null }],
+      })
+    })
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Your roll' })).not.toBeInTheDocument(), { timeout: 3000 })
   })
 
   it('ignores stale or wrong-session roll results and announces another player authoritative roll', async () => {
     await renderLoadedApp()
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
     fireEvent.click(screen.getByRole('button', { name: 'Roll dice' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
+    const card = await screen.findByRole('region', { name: 'Your roll' })
     const requestCall = socketMock.socket.emit.mock.calls.find(([event]) => event === 'send_message')
     const clientMessageId = (requestCall?.[1] as { client_message_id: string }).client_message_id
 
@@ -1012,9 +1021,8 @@ describe('App user workflow regressions', () => {
         rollResolvedPayload({ client_message_id: 'stale-client-id' }),
       )
     })
-    expect(within(dialog).getByText('Status requesting')).toBeInTheDocument()
+    expect(within(card).getByText('Rolling')).toBeInTheDocument()
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel roll' }))
     await act(async () => {
       socketHandler<RollResolvedPayload>('roll_resolved')(
         rollResolvedPayload({
@@ -1028,21 +1036,20 @@ describe('App user workflow regressions', () => {
     })
     const sharedNotice = screen.getByText('Player 31').closest('aside')
     expect(sharedNotice).toHaveTextContent('I roll a d20+3 for Stealth check: 14 = 17')
+    expect(within(card).getByText('Rolling')).toBeInTheDocument()
   })
 
-  it('traps dice presentation focus, closes with Escape, and restores the roll button', async () => {
+  it('rolls in place: no dialog opens and focus stays on the roll button', async () => {
     await renderLoadedApp()
     fireEvent.click(screen.getByRole('button', { name: 'Roll' }))
     const rollButton = screen.getByRole('button', { name: 'Roll dice' })
     rollButton.focus()
     fireEvent.click(rollButton)
-    const dialog = await screen.findByRole('dialog', { name: 'Dice Roller' })
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel roll' })).toHaveFocus())
 
-    fireEvent.keyDown(document, { key: 'Escape' })
-
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Dice Roller' })).not.toBeInTheDocument())
-    expect(screen.getByLabelText('Roll reason')).toHaveFocus()
+    const card = await screen.findByRole('region', { name: 'Your roll' })
+    expect(card).toHaveAttribute('aria-live', 'polite')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(rollButton).toHaveFocus()
   })
 
   it('shows a party-visible roll wait indicator with the remaining character and check', async () => {

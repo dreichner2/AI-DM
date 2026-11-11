@@ -49,7 +49,10 @@ function actionComposerProps(): ActionComposerProps {
     submitAction: vi.fn(),
     toggleAdminTools: vi.fn(),
     startDiceRoll: vi.fn(),
-    preloadDiceRollDialog: vi.fn(),
+    diceRoll: null,
+    markDiceRollPlayed: vi.fn(),
+    closeDiceRoll: vi.fn(),
+    retryDiceRoll: vi.fn(() => true),
     applyComposerMode: vi.fn(),
     updateSelectedDie: vi.fn(),
     rollMode: 'normal',
@@ -491,6 +494,43 @@ describe('SessionBoard visible theater surfaces', () => {
     expect(changes).toHaveTextContent('Restored 5 HP.')
     expect(changes).not.toHaveTextContent('Hidden operator fact.')
     expect(screen.queryByText(/^State updated:/)).not.toBeInTheDocument()
+  })
+
+  it('shows a turn’s roll cards above its narration, as the Story view does', () => {
+    const { container } = render(
+      <SessionBoard
+        {...sessionBoardProps({
+          turnRows: [{
+            id: 'log-9',
+            role: 'dm',
+            speaker: 'DM',
+            text: 'The lantern’s light slides off you.',
+            timestamp: '2026-06-06T10:42:00.000Z',
+            metadata: {
+              turn_id: 9,
+              storyRolls: [{
+                id: 't9-1',
+                kind: 'save',
+                actor: { id: 'player_1', name: 'Arden Vale', side: 'hero' },
+                label: 'Wisdom save',
+                source: 'Lantern-Lure',
+                d20: { faces: [12], kept: 12, mode: 'normal' },
+                parts: [],
+                total: 12,
+                against: { kind: 'DC', value: 10 },
+                outcome: 'success',
+                natural: null,
+              }],
+            },
+          }],
+        })}
+      />,
+    )
+
+    const card = container.querySelector('.turn-roll-cards .roll-card')
+    expect(card).toHaveAttribute('data-phase', 'done')
+    expect(card).toHaveTextContent('Arden Vale · Wisdom save (Lantern-Lure)')
+    expect(card?.querySelector('.roll-card-outcome')).toHaveTextContent('success vs DC 10')
   })
 
   it('submits exact scene item and adjacent-exit identities from Current Situation', () => {

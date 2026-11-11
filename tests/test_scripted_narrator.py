@@ -733,7 +733,8 @@ def test_a_failed_attempt_never_prints_the_authored_result_text():
         SPEAKER,
     )
 
-    assert text == 'You force the culvert grate. It will not give.'
+    # A failed attempt tries: it never says it was done.
+    assert text == 'You try to force the culvert grate. It will not give.'
 
 
 def test_chained_unlock_and_open_steps_are_told_in_one_sentence():
@@ -911,7 +912,7 @@ def test_in_party_play_object_actions_pickups_and_travel_name_the_hero():
     ]
     assert failed == (
         'Seren Ashgrove takes their time over it; the light has changed by the time they are done. '
-        "Seren Ashgrove searches under the driver's bench. Seren Ashgrove comes up empty."
+        "Seren Ashgrove tries to search under the driver's bench. Seren Ashgrove comes up empty."
     )
     assert taken == 'Arden Vale takes the Caravan Strongbox Key.'
     assert arrival.startswith('The party arrives at the Old North Road.')

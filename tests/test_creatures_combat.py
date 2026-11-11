@@ -776,15 +776,21 @@ def test_prepare_combat_from_dm_response_prefers_active_campaign_pack_encounter(
         db.session.add(turn)
         db.session.flush()
 
-        result = prepare_combat_from_dm_response(
-            state=state,
-            session_obj=session_obj,
-            campaign=campaign,
-            turn=turn,
-            player_message=turn.player_input,
-            dm_response='Black-feathered orcs rise from the reeds and attack you. Roll initiative.',
-            workspace_id=campaign.workspace_id,
-        )
+        def narrated(state):
+            return prepare_combat_from_dm_response(
+                state=state,
+                session_obj=session_obj,
+                campaign=campaign,
+                turn=turn,
+                player_message=turn.player_input,
+                dm_response='Black-feathered orcs rise from the reeds and attack you. Roll initiative.',
+                workspace_id=campaign.workspace_id,
+            )
+
+        # In a pack adventure narration alone starts no fight; only an encounter whose trigger is due.
+        assert narrated(deepcopy(state))['changes'] == []
+        state['campaignPack']['catalog']['encounters'][0]['trigger'] = {'type': 'on_checkpoint', 'checkpointId': 'cp_midgewater_courier'}
+        result = narrated(state)
 
     combat = result['changes'][0]['combat']
     enemies = [participant for participant in combat['participants'] if participant['team'] == 'enemy']

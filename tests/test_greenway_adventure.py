@@ -455,6 +455,9 @@ def test_hadrin_is_met_in_the_marsh_once_the_scouts_are_driven_off(table):
     assert scouts.flags == {'hadrin_saved': True}
     assert meeting._met_beats(table) == ['Met — Hadrin Vale']
     assert meeting._talk_offers(scouts.snapshot) == ['Talk to Hadrin Vale']
+    # The last scout's end is the hero's to tell; they let the story tell it before talking.
+    table.send('Let the story tell it', {'kind': 'message'})
+    assert table.narration() == 'DM: The black-feather orc scout falls.'
     _told_in_turn(table, 'Hadrin Vale', 'Hadrin')
     table.reads_cleanly()
 

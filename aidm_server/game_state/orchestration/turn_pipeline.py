@@ -13,6 +13,7 @@ from aidm_server.combat.pipeline import (
     engine_controlled_turn_is_up,
     engine_turn_advance_change,
     finalize_combat_prepare,
+    has_campaign_pack,
     prepare_combat_for_turn,
     prepare_combat_from_dm_response,
     record_combat_debug_from_outcome,
@@ -50,16 +51,20 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     without_trusted_damage_overlaps,
 )
 from aidm_server.game_state.orchestration.engine_brief import engine_brief
+from aidm_server.game_state.orchestration.finishing_blow import finishing_blow, hold_spared_captive
 from aidm_server.game_state.orchestration.narration_facts import (
     PICKUP_SOURCE,
     captives_left_behind,
+    enemy_barks,
     enemy_names,
+    fight_positions,
     fight_start,
     next_actor_line,
     object_facts,
     plain_results,
 )
 from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis
+from aidm_server.game_state.orchestration.story_rolls import SETTLED_ACTIONS_KEY, STORY_ROLLS_KEY, numbered, story_rolls_before_narration
 from aidm_server.game_state.models import (
     compact_state_for_extraction,
     display_actor_id,
@@ -79,7 +84,7 @@ from aidm_server.models import Campaign, DmTurn, Player, Session, safe_json_dump
 from aidm_server.price_list import catalog_item, normalize_price
 from aidm_server.telemetry import telemetry_metric
 from aidm_server.turn_events import record_turn_event
-from aidm_server.turn_rules import fight_speech
+from aidm_server.turn_rules import fight_look, fight_speech, finishing
 
 
 STATE_UPDATE_EVENT = 'state_update'
@@ -128,6 +133,8 @@ CURRENCY_TRANSFER_CONFIRMATION_PATTERN = re.compile(
 DOWNED_ACTOR_REFUSAL = 'You are down and cannot act.'
 # How many of the hero's earlier rolled turns are searched for their previous attack roll.
 PREVIOUS_ATTACK_LOOKBACK = 40
+# How many earlier turns with barks are searched for the lines a fight has already told.
+BARK_LOOKBACK = 40
 
 
 def _sentences(text: str) -> list[str]:
@@ -725,6 +732,7 @@ def _settle_engine_turns(
         return state, applied_post, post_validation, post_extraction
     post_extraction = deepcopy(post_extraction)
     post_extraction['proposedChanges'] = [*(post_extraction.get('proposedChanges') or []), *settled.changes]
+    post_extraction[SETTLED_ACTIONS_KEY] = [*(post_extraction.get(SETTLED_ACTIONS_KEY) or []), *settled.resolved_actions]
     notes = list(post_extraction.get('notes') or [])
     if 'engine_controlled_turns_resolved' not in notes:
         notes.append('engine_controlled_turns_resolved')
@@ -1542,8 +1550,10 @@ def augment_rules_hint_with_state_packet(rules_hint_payload: dict[str, Any], dm_
 
 
 def _is_free_text(action_intent: dict[str, Any] | None, player_message: str) -> bool:
+    """Typed words to read for actions; a hero's finishing blow is told, never read for one."""
+
     kind = str((action_intent or {}).get('kind') or '').strip().lower() if isinstance(action_intent, dict) else ''
-    return bool(str(player_message or '').strip()) and kind in {'', 'message'}
+    return bool(str(player_message or '').strip()) and kind in {'', 'message'} and not finishing(action_intent)
 
 
 def _previous_target(turn: DmTurn) -> tuple[str, str] | None:
@@ -1738,6 +1748,9 @@ def _narration_packet(
         packet['talk'] = _talk_facts(session_obj=session_obj, turn=turn, state=state_before, npc=talk_npc)
     if free_text is not None:
         packet['freeText'] = {'kind': free_text.kind, 'more': free_text.more, 'deferred': deepcopy(list(free_text.deferred))}
+    elif fight_look(action_intent):
+        packet['freeText'] = {'kind': 'look', 'more': False}
+        packet['positions'] = fight_positions(state_after, actor_id=actor_id)
     elif fight_speech(action_intent):
         packet['freeText'] = {'kind': 'speech', 'more': False}
     elif free and not declared_actions and not talk_npc and not turn.requires_roll:
@@ -1764,6 +1777,68 @@ def _narration_packet(
     if modifiers:
         packet['attackModifiers'] = modifiers
     return packet
+
+
+def _barks_told_this_fight(turn: DmTurn, state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The barks earlier turns told in this fight (spoken by its enemies, whose ids are the fight's own)."""
+
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    enemy_ids = {str(participant.get('id') or '') for participant in combat.get('participants') or [] if isinstance(participant, dict)}
+    earlier = (
+        DmTurn.query.filter(
+            DmTurn.session_id == turn.session_id,
+            DmTurn.turn_id < turn.turn_id,
+            DmTurn.metadata_json.contains('"barks"'),
+        )
+        .order_by(DmTurn.turn_id.desc())
+        .limit(BARK_LOOKBACK)
+    )
+    told = []
+    for earlier_turn in earlier:
+        pipeline = _metadata(earlier_turn).get(STATE_PIPELINE_METADATA_KEY)
+        narration = ((pipeline or {}).get('dmContextPacket') or {}).get('narration') if isinstance(pipeline, dict) else None
+        barks = narration.get('barks') if isinstance(narration, dict) else None
+        told.extend(bark for bark in barks or [] if isinstance(bark, dict) and str(bark.get('enemyId') or '') in enemy_ids)
+    return told
+
+
+def _with_finishing_blow(
+    *,
+    turn: DmTurn,
+    state_before: dict[str, Any],
+    state: dict[str, Any],
+    actor_id: str,
+    action_intent: dict[str, Any] | None,
+    applied_immediate: list[dict[str, Any]],
+    applied_combat: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """The state and applied combat changes once the turn's finishing blow is set, told or lapsed, and its
+    narration facts (``finishing_blow``)."""
+
+    changes, facts = finishing_blow(
+        state_before=state_before,
+        state=state,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+        action_intent=action_intent,
+        applied_changes=[*applied_immediate, *applied_combat],
+    )
+    if not changes:
+        return state, applied_combat, facts
+    applied = apply_state_changes(state, validated_changes_for_application(validate_state_changes(state=state, changes=changes)))
+    state = applied['nextState']
+    applied_changes = applied['appliedChanges']
+    told = facts.get('finisher') or {}
+    if told.get('spared') is True:
+        captives = hold_spared_captive(state, told['enemyId'])
+        if captives:
+            applied_changes = [
+                {**change, 'captives': captives}
+                if change.get('type') == 'combat.participant.update' and change.get('participantId') == told['enemyId']
+                else change
+                for change in applied_changes
+            ]
+    return state, [*applied_combat, *applied_changes], facts
 
 
 def _conditions_shaken_off(state: dict[str, Any], *, turn_id: Any) -> list[dict[str, Any]]:
@@ -1932,6 +2007,9 @@ def pre_dm_pipeline(
             'declaredActions': declared_actions_override,
             'notes': ['clarification_resume'],
         }
+    elif finishing(action_intent):
+        # The finishing blow is the hero's own words: no action, no roll, no cost.
+        pre_extraction = {'declaredActions': [], 'notes': ['finisher']}
     else:
         helper_session_released = False
 
@@ -2036,7 +2114,8 @@ def pre_dm_pipeline(
         session_obj=session_obj,
         campaign=campaign,
         turn=turn,
-        player_message=player_message,
+        # A finishing blow told in words never starts a fight.
+        player_message='' if finishing(action_intent) else player_message,
         workspace_id=campaign.workspace_id,
         before_intent_provider_call=(
             _before_combat_provider_call if before_helper_call else None
@@ -2136,6 +2215,15 @@ def pre_dm_pipeline(
         combat_validation = _merge_validation_results(combat_validation, action_end_validation)
     defeat_recovery = party_defeat_recovery(state_before_dm, turn_id=turn.turn_id)
     applied_combat = [*([wake] if wake else []), *applied_combat, *([defeat_recovery] if defeat_recovery else [])]
+    state_before_dm, applied_combat, finisher_facts = _with_finishing_blow(
+        turn=turn,
+        state_before=state,
+        state=state_before_dm,
+        actor_id=actor_id,
+        action_intent=action_intent,
+        applied_immediate=applied_immediate,
+        applied_combat=applied_combat,
+    )
     finalize_combat_prepare(
         session_obj=session_obj,
         campaign=campaign,
@@ -2179,6 +2267,18 @@ def pre_dm_pipeline(
     )
     if trusted_player_changes:
         dm_context['trustedStateChanges'] = deepcopy(trusted_player_changes)
+    # The roll cards, shown to the players while the narrator writes.
+    dm_context[STORY_ROLLS_KEY] = numbered(
+        story_rolls_before_narration(
+            actor_id=actor_id,
+            state_before=state,
+            state_before_dm=state_before_dm,
+            authoritative_roll=_metadata(turn).get('authoritative_roll'),
+            applied_changes=[*applied_immediate, *applied_combat],
+            dm_context=dm_context,
+        ),
+        turn_id=turn.turn_id,
+    )
     dm_context['narration'] = _narration_packet(
         session_obj=session_obj,
         turn=turn,
@@ -2192,7 +2292,22 @@ def pre_dm_pipeline(
         declared_actions=pre_extraction.get('declaredActions') or [],
         turn_ends=opening_enemy_turns or enemy_deferred_reason is None,
     )
-    if fight_speech(action_intent):
+    dm_context['narration'].update(finisher_facts)
+    barks = enemy_barks(
+        state_before=state,
+        state_after=state_before_dm,
+        enemy_actions=(dm_context.get('combatState') or {}).get('enemyResolvedActions') or [],
+        applied_changes=[*applied_immediate, *applied_combat],
+        told=_barks_told_this_fight(turn, state_before_dm),
+        turn_id=turn.turn_id,
+    )
+    if barks:
+        dm_context['narration']['barks'] = barks
+    if fight_look(action_intent):
+        dm_context['dmInstructions'].append(
+            'The hero looks over the fight: it costs nothing and changes nothing. Describe what they see in at most two sentences.'
+        )
+    elif fight_speech(action_intent):
         dm_context['dmInstructions'].append(
             'The hero speaks in the fight: it costs nothing and changes nothing. Answer in the scene in at most three sentences.'
         )
@@ -2551,6 +2666,9 @@ def post_dm_pipeline(
         elif fight_speech(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None):
             # Words said in a fight change nothing, whatever the narration makes of them.
             post_extraction = _skipped_post_extraction('fight_speech')
+        elif finishing(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None):
+            # The finishing blow's telling changes only what the engine already made of it.
+            post_extraction = _skipped_post_extraction('finisher')
         else:
             helper_session_released = False
 
@@ -2575,6 +2693,8 @@ def post_dm_pipeline(
                 actor_id=actor_id,
                 turn_id=turn.turn_id,
                 before_provider_call=_before_provider_call if before_helper_call else None,
+                # In a pack adventure the narration alone never makes the scene a fight (as it never starts one).
+                narration_starts_no_fight=has_campaign_pack(state_before_dm) and not _combat_is_running(state_before_dm),
             )
             if helper_session_released:
                 turn, session_obj, campaign, player = _reload_post_dm_orm(orm_token)

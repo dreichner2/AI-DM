@@ -604,11 +604,10 @@ def _roll(
     modifier, ability = _modifier(actor, roll_type=roll_type, ability=ability)
     roller = deterministic_roller(seed)
     roll, rolls = _d20(roller, context["mode"])
-    bonus = sum(
-        rolled["total"]
-        for dice in context.get("bonusDice") or []
-        if (rolled := roll_signed_dice(dice, roller)) is not None
-    )
+    bonus_dice = [
+        rolled for dice in context.get("bonusDice") or [] if (rolled := roll_signed_dice(dice, roller)) is not None
+    ]
+    bonus = sum(rolled["total"] for rolled in bonus_dice)
     return {
         "ability": ability,
         "roll": roll,
@@ -616,6 +615,7 @@ def _roll(
         "mode": context["mode"],
         "modifier": modifier,
         "bonus": bonus,
+        "bonusDice": bonus_dice,
         "total": roll + modifier + bonus,
     }
 
