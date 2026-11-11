@@ -29,8 +29,9 @@ All notable AIDM closed-beta changes should be recorded here.
 - Every menu and dialog was redone as a clean sheet. Settings now shows which
   narrator is running and lets the host pick another.
 - Sessions are now chapters of one continuing adventure. Starting the next
-  chapter carries the world forward and closes the previous one, which stays
-  readable.
+  chapter carries the world forward — the day, the shops and what they have
+  left, your quests, clues and places — opens with a short "Previously" line in
+  plain prose, and closes the previous chapter, which stays readable.
 - Saves are a single file you can download, and import as a read-only archive or
   restore as the next chapter.
 - The classic console is still there as "Table tools" for hosts.

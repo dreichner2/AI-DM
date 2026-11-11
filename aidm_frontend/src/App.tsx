@@ -1298,7 +1298,6 @@ function AIDMApp() {
   const latestDmText =
     currentResponseEntry?.text ||
     latestDmEntry?.text ||
-    sessionState?.rolling_summary ||
     welcomeText
 
   useEffect(() => {
