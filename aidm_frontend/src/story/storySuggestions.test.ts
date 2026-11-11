@@ -355,3 +355,33 @@ describe('Take heart', () => {
     expect(suggestions.at(-1)?.kind).toBe('more')
   })
 })
+
+describe('storySuggestions in a conversation', () => {
+  it("offers the conversation's own actions in the server's order instead of the scene's", () => {
+    const suggestions = storySuggestions(
+      world({
+        presentNpcs: [npc('Mara Reedwake'), npc('Tovin Bell')],
+        sceneItems: [{ id: 'key', name: 'Key', quantity: 1, type: 'key', takeLabel: 'Take the Key' }],
+        conversation: {
+          npcId: 'npc_mara',
+          name: 'Mara Reedwake',
+          summary: 'The innkeeper.',
+          actions: [
+            { kind: 'topic', id: 'mara_caravan', label: 'Ask about the caravan' },
+            { kind: 'topic', id: 'mara_promise', label: 'Promise to bring word of the drivers' },
+            { kind: 'say_free', id: '', label: 'Say something else' },
+            { kind: 'leave_conversation', id: '', label: 'Leave it there' },
+          ],
+        },
+      }),
+      controls(),
+    )
+
+    expect(suggestions).toEqual([
+      { kind: 'topic', key: 'topic:mara_caravan', label: 'Ask about the caravan', npcId: 'npc_mara', topicId: 'mara_caravan' },
+      { kind: 'topic', key: 'topic:mara_promise', label: 'Promise to bring word of the drivers', npcId: 'npc_mara', topicId: 'mara_promise' },
+      { kind: 'say_free', key: 'say_free', label: 'Say something else' },
+      { kind: 'leave_conversation', key: 'leave', label: 'Leave it there', npcId: 'npc_mara' },
+    ])
+  })
+})

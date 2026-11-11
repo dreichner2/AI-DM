@@ -6,6 +6,7 @@ from typing import Any
 from aidm_server.combat.positioning import REACH_LABELS, reach_kind
 from aidm_server.combat.state import combat_turn_order, normalize_battlefield, normalize_position
 from aidm_server.game_state.campaign_pack_encounters import flag_condition_holds
+from aidm_server.game_state.orchestration.conversations import conversation_view, journal_person, journal_promises, shown_disposition
 from aidm_server.game_state.zones import (
     captive_zone_id,
     fight_running,
@@ -400,6 +401,9 @@ def filter_session_snapshot_for_player(
         filtered['currentScene']['merchants'] = open_merchant_projections(migrated)
         filtered['currentScene']['restPolicy'] = scene_rest_policy(raw_scene)
         _place_scene_for_viewer(migrated, filtered['currentScene'], viewer_id)
+        talking = conversation_view(migrated, viewer_id)
+        if talking:
+            filtered['currentScene']['conversation'] = talking
 
     filtered['clock'] = public_clock(migrated.get('clock'))
     if pack:
@@ -501,6 +505,10 @@ def with_scene_offers(snapshot: Any, *, acting_player_id: int | None = None) -> 
     for item in scene.get('items') or []:
         if isinstance(item, dict):
             item['takeLabel'] = take_label(item)
+    viewer = acting_hero(snapshot, acting_player_id)
+    talking = conversation_view(snapshot, _text((viewer or {}).get('id')))
+    if talking:
+        scene['conversation'] = talking
     payload['currentScene'] = scene
     return payload
 
@@ -619,6 +627,9 @@ def _npc_for_viewer(
     visible_quest_ids: set[str],
 ) -> dict:
     payload = _public_scalar_fields(record, PUBLIC_NPC_KEYS)
+    if 'disposition' in record:
+        # The engine's number is the players' word (``warm``), never the number.
+        payload['disposition'] = shown_disposition(record)
     location_id = _id_key(payload.get('locationId'))
     if location_id and location_id not in visible_location_ids:
         payload.pop('locationId', None)
@@ -1422,8 +1433,11 @@ def _journal(snapshot: dict, filtered: dict, owned_player_ids: frozenset[int]) -
 
     The quest and stage come from the active checkpoint; objectives are every
     completed one, then the open ones of the active checkpoint (later ones are
-    spoilers); clues, people and places are only those the party knows;
-    threads are the tie lines told for the viewer's own heroes.
+    spoilers); clues, people and places are only those the party knows,
+    each person with their disposition word and up to two lines of what they
+    remember of the viewer's heroes; threads are the tie lines told for the
+    viewer's own heroes, and ``yourWord`` their promises (open ones; once the
+    story has ended, all of them, an open one ``left open``).
     """
 
     pack = snapshot['campaignPack']
@@ -1458,6 +1472,7 @@ def _journal(snapshot: dict, filtered: dict, owned_player_ids: frozenset[int]) -
     if variant:
         stage_title, stage_summary = variant['title'], _told_ending(variant['text'], pack, _chosen_variant(active, flags))
     stage_objective_ids = {_id_key(value) for value in _ids_from(active, 'objectiveIds', 'objective_ids')}
+    owned_hero_ids = {f'player_{player_id}' for player_id in owned_player_ids}
     completed: list[dict] = []
     open_now: list[dict] = []
     for record in quests:
@@ -1509,6 +1524,7 @@ def _journal(snapshot: dict, filtered: dict, owned_player_ids: frozenset[int]) -
                 'role': ' '.join(_text(npc.get('role')).replace('_', ' ').split()),
                 'summary': _public_alias_text(npc, 'playerSummary', 'player_summary'),
                 'met': True,
+                **journal_person(npc, owned_hero_ids),
             }
             for npc in {
                 _record_id(record): record
@@ -1526,6 +1542,7 @@ def _journal(snapshot: dict, filtered: dict, owned_player_ids: frozenset[int]) -
             for record in pack.get(THREADS_KEY) or []
             if isinstance(record, dict) and _record_player_id({'id': record.get('heroId')}) in owned_player_ids
         ],
+        'yourWord': journal_promises(snapshot, owned_hero_ids, ended=bool((filtered.get('campaignPack') or {}).get('ending'))),
     }
 
 

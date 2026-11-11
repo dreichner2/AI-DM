@@ -473,6 +473,35 @@ describe('game selector helpers', () => {
     ])
   })
 
+  it("reads the viewer's conversation from the scene, keeping only actions it knows", () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: {
+        name: 'The Lantern Post',
+        conversation: {
+          npcId: 'npc_mara',
+          name: 'Mara Reedwake',
+          summary: 'The innkeeper.',
+          actions: [
+            { kind: 'topic', id: 'mara_bell', label: 'Ask about the bell' },
+            { kind: 'dance', id: 'x', label: 'Dance' },
+            { kind: 'leave_conversation', label: 'Leave it there' },
+          ],
+        },
+      },
+    })
+
+    expect(panel.conversation).toEqual({
+      npcId: 'npc_mara',
+      name: 'Mara Reedwake',
+      summary: 'The innkeeper.',
+      actions: [
+        { kind: 'topic', id: 'mara_bell', label: 'Ask about the bell' },
+        { kind: 'leave_conversation', id: '', label: 'Leave it there' },
+      ],
+    })
+    expect(worldStateFromSnapshot({ currentScene: { name: 'The Lantern Post' } }).conversation).toBeUndefined()
+  })
+
   it('derives subtle combat panel state from the session snapshot', () => {
     const panel = worldStateFromSnapshot({
       currentScene: { name: 'Ash Road', sceneType: 'combat', mood: 'dangerous', dangerLevel: 8 },

@@ -285,6 +285,454 @@
     }
   },
   "$defs": {
+    "talkRequirement": {
+      "description": "When a topic is offered (or a check DC applies): every key given must hold. flags: each flag equals its value, an unset flag counting as false; clueIds: the party knows each clue; itemIds: the hero holds each item; topicIds: this person has told each topic; encounterResolvedIds: each encounter is complete; dispositionAtLeast: the person's disposition (-2 hostile to 2 loyal) is at least this; remembers: the person remembers this key of the hero; anyOf: at least one of these requirements holds.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "clueIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "itemIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "topicIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "encounterResolvedIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "dispositionAtLeast": {
+          "type": "integer",
+          "minimum": -2,
+          "maximum": 2
+        },
+        "remembers": {
+          "$ref": "#/$defs/id"
+        },
+        "anyOf": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "$ref": "#/$defs/talkRequirement"
+          }
+        }
+      }
+    },
+    "talkAffect": {
+      "description": "Another person's disposition moved by this: only when that person is known and present (and the when flag holds). line is the story beat shown; without it the engine writes one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "npcId",
+        "disposition"
+      ],
+      "properties": {
+        "npcId": {
+          "$ref": "#/$defs/id"
+        },
+        "disposition": {
+          "type": "integer",
+          "minimum": -2,
+          "maximum": 2
+        },
+        "line": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "when": {
+          "$ref": "#/$defs/flagCondition"
+        }
+      }
+    },
+    "talkEffects": {
+      "description": "What a told topic, a reaction or a callback does. givesItems go to the hero; disposition moves this person; promise sets that flag and records the hero's word (kept or broken only by keepsPromise / breaksPromise naming it); remember and forget are memory keys of this hero.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "setsFlags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "discoversClueIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "discoversLocationIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "givesItems": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "type": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 99
+              }
+            }
+          }
+        },
+        "disposition": {
+          "type": "integer",
+          "minimum": -2,
+          "maximum": 2
+        },
+        "affects": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/talkAffect"
+          }
+        },
+        "promise": {
+          "$ref": "#/$defs/id"
+        },
+        "keepsPromise": {
+          "$ref": "#/$defs/id"
+        },
+        "breaksPromise": {
+          "$ref": "#/$defs/id"
+        },
+        "remember": {
+          "$ref": "#/$defs/id"
+        },
+        "forget": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "talkDcWhen": {
+      "description": "A requirement with the DC that applies while it holds, or noCheck: told without a check.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "clueIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "itemIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "topicIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "encounterResolvedIds": {
+          "$ref": "#/$defs/idList"
+        },
+        "dispositionAtLeast": {
+          "type": "integer",
+          "minimum": -2,
+          "maximum": 2
+        },
+        "remembers": {
+          "$ref": "#/$defs/id"
+        },
+        "anyOf": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "$ref": "#/$defs/talkRequirement"
+          }
+        },
+        "dc": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 40
+        },
+        "noCheck": {
+          "type": "boolean"
+        }
+      }
+    },
+    "talkCheck": {
+      "description": "A check the engine rolls for the hero. dcWhen: requirements with their own dc (or noCheck: told without a check); the first that holds decides.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skill"
+      ],
+      "properties": {
+        "skill": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "ability": {
+          "type": "string",
+          "enum": [
+            "strength",
+            "dexterity",
+            "constitution",
+            "intelligence",
+            "wisdom",
+            "charisma"
+          ]
+        },
+        "dc": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 40
+        },
+        "dcWhen": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/talkDcWhen"
+          }
+        },
+        "failLine": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "failEffects": {
+          "$ref": "#/$defs/talkEffects"
+        }
+      }
+    },
+    "talkTopic": {
+      "description": "Something a person tells once. ask topics are offered as \"Ask about {label}\", say topics by their label as written. Offered while requires holds and it is not told; typed words holding the label or a keyword (whole words) choose it. A failed check offers it again only in a later conversation. private: offered only when no other known person stands in the hero's room.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "line"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "say"
+          ]
+        },
+        "keywords": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          }
+        },
+        "line": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "requires": {
+          "$ref": "#/$defs/talkRequirement"
+        },
+        "check": {
+          "$ref": "#/$defs/talkCheck"
+        },
+        "effects": {
+          "$ref": "#/$defs/talkEffects"
+        },
+        "inspires": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "private": {
+          "type": "boolean"
+        }
+      }
+    },
+    "talkReaction": {
+      "description": "What a person does with a speech act (promise, show, threaten, offer, claim, apologise; about narrows it to an item, a clue, or for a claim authority or identity). The first entry that matches is used; once spends it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "act",
+        "line"
+      ],
+      "properties": {
+        "act": {
+          "type": "string",
+          "enum": [
+            "promise",
+            "show",
+            "threaten",
+            "offer",
+            "claim",
+            "apologise"
+          ]
+        },
+        "about": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "skill",
+            "dc"
+          ],
+          "properties": {
+            "skill": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "ability": {
+              "type": "string",
+              "enum": [
+                "strength",
+                "dexterity",
+                "constitution",
+                "intelligence",
+                "wisdom",
+                "charisma"
+              ]
+            },
+            "dc": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 40
+            },
+            "dcWhen": {
+              "type": "array",
+              "maxItems": 10,
+              "items": {
+                "$ref": "#/$defs/talkDcWhen"
+              }
+            }
+          }
+        },
+        "line": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "failLine": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "effects": {
+          "$ref": "#/$defs/talkEffects"
+        },
+        "failEffects": {
+          "$ref": "#/$defs/talkEffects"
+        },
+        "once": {
+          "type": "boolean"
+        }
+      }
+    },
+    "talkCallback": {
+      "description": "An earlier act brought back once: when the person remembers when.remembers of a hero and when.flags hold, at the event (arrival, at atLocationId when given; fight_end; rest; topic:<id>), with the person known and present, text opens the narration, effects apply for that hero and offers opens those topics.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "when",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "remembers",
+            "on"
+          ],
+          "properties": {
+            "remembers": {
+              "$ref": "#/$defs/id"
+            },
+            "flags": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              }
+            },
+            "on": {
+              "type": "string",
+              "pattern": "^(?:arrival|fight_end|rest|topic:[a-z0-9_]+)$"
+            },
+            "atLocationId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "effects": {
+          "$ref": "#/$defs/talkEffects"
+        },
+        "offers": {
+          "$ref": "#/$defs/idList"
+        }
+      }
+    },
     "id": {
       "type": "string",
       "minLength": 1,
@@ -447,6 +895,17 @@
             "$ref": "#/$defs/objectAction"
           },
           "uniqueItems": true
+        },
+        "affects": {
+          "description": "People's dispositions moved when the named action succeeds, for example {\"break\": [{\"npcId\": \"npc_osric_hale\", \"disposition\": -1, \"line\": \"Osric Hale will remember that.\"}]}; each applies only when that person is known and present.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/$defs/talkAffect"
+            }
+          }
         },
         "zoneId": {
           "description": "The zone of its location it stands in; without it, the location's startZoneId.",
@@ -844,8 +1303,86 @@
               "maxLength": 160
             },
             "disposition": {
+              "description": "How the person starts out towards the party: hostile, wary, neutral, warm or loyal (anything else starts neutral). In play it moves from -2 to 2 and players see the word.",
               "type": "string",
               "maxLength": 80
+            },
+            "greeting": {
+              "description": "Told when a conversation with the person opens for the first time.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 600
+            },
+            "topics": {
+              "description": "What the person can be talked about (stored in the operator catalog; a line reaches players only when told). Without topics a person tells their knows lines one by one.",
+              "type": "array",
+              "maxItems": 40,
+              "items": {
+                "$ref": "#/$defs/talkTopic"
+              }
+            },
+            "reacts": {
+              "description": "Authored reactions to speech acts; without one the engine's defaults apply.",
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "$ref": "#/$defs/talkReaction"
+              }
+            },
+            "callbacks": {
+              "description": "Remembered acts that return to play.",
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "$ref": "#/$defs/talkCallback"
+              }
+            },
+            "caresAbout": {
+              "description": "Item or clue ids that move the person when shown.",
+              "$ref": "#/$defs/idList"
+            },
+            "wants": {
+              "description": "What an offer must meet: item ids or coin:<gold pieces>. Never shown to players.",
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "pattern": "^(?:coin:[0-9]{1,6}|[a-z0-9_]+)$"
+              }
+            },
+            "believes": {
+              "description": "Claims the person takes as true without a check when ifFlags hold and the hero holds ifItems. Never shown to players.",
+              "type": "array",
+              "maxItems": 10,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "claim"
+                ],
+                "properties": {
+                  "claim": {
+                    "type": "string",
+                    "enum": [
+                      "authority",
+                      "identity"
+                    ]
+                  },
+                  "ifFlags": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ]
+                    }
+                  },
+                  "ifItems": {
+                    "$ref": "#/$defs/idList"
+                  }
+                }
+              }
             },
             "locationId": {
               "$ref": "#/$defs/id"
@@ -1213,11 +1750,20 @@
           ]
         },
         "outcomes": {
-          "description": "Outcome-specific rewards, consequences, quest events, and allocation policy. Prefer victory, defeat, retreat, surrender, negotiation, and objective_completion keys.",
+          "description": "Outcome-specific rewards, consequences, quest events, allocation policy and affects (people's dispositions moved by that outcome, each only when the person is known and present). Prefer victory, defeat, retreat, surrender, negotiation, and objective_completion keys.",
           "type": "object",
           "additionalProperties": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "properties": {
+              "affects": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                  "$ref": "#/$defs/talkAffect"
+                }
+              }
+            }
           }
         },
         "outcomeRewards": {

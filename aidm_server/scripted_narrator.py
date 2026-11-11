@@ -42,6 +42,13 @@ fall, or by its sparing (``finisher``); a moment let pass opens the turn with
 is its own paragraph after the hero's results and a fight's setup; taking heart
 (``takeHeart``) is one line.
 
+A conversation (``conversation``) is told in the people's own authored words: opening it tells the person's
+greeting the first time (a greeting that is all speech is given to them: ``"…," Mara says.``), after that
+``Mara Reedwake turns to you.``; a topic's line or its failure line verbatim, the generated topic's ``knows`` line as
+before; a reaction's authored line, else one plain sentence for what the act did; words that reach nothing read
+``Mara Reedwake has nothing to say to that.``; leaving reads ``You leave it there with Mara Reedwake.``. A person's
+callback (``callbacks``) opens the reply as its own paragraph, word for word.
+
 In a place with rooms the people present are those in the hero's own zone
 (``present``). A step into another zone opens the reply (``zoneMove``): ``You
 step into the common room.``, the zone's description the first time, then who
@@ -554,6 +561,21 @@ FINISHER_LAPSED = '{enemy} falls.'
 # Take heart: the hero spends their Inspiration.
 TAKE_HEART = {False: 'You take a breath and remember why you came.', True: '{hero} takes a breath and remembers why they came.'}
 # A look over the fight: where someone stands from the hero.
+TURNS_TO = {False: '{name} turns to you.', True: '{name} turns to {actor}.'}
+LEAVES_IT = {False: 'You leave it there with {name}.', True: '{actor} leaves it there with {name}.'}
+NOTHING_TO_SAY = '{name} has nothing to say to that.'
+SAYS_NO_MORE = '{name} says nothing more about that.'
+# What an act did when nobody wrote a line for it, by (act, outcome); a pair of forms is (alone, party play).
+REACTION_LINES: dict[tuple[str, str], Any] = {
+    ('promise', 'default'): ('{name} takes your word.', "{name} takes {actor_s} word."),
+    ('show', 'cares'): '{name} looks at it for a long moment.',
+    ('threaten', 'worked'): '{name} gives way.',
+    ('threaten', 'failed'): '{name} does not give way.',
+    ('offer', 'accepted'): '{name} takes it.',
+    ('claim', 'believed'): ('{name} takes you at your word.', '{name} takes {actor} at their word.'),
+    ('claim', 'disbelieved'): ('{name} does not believe you.', '{name} does not believe {actor}.'),
+    ('apologise', 'forgiven'): '{name} lets it go.',
+}
 POSITION_WORDS = {'on': 'is on {hero}', 'close': 'is in close', 'near': 'is a few strides off', 'far': 'hangs back', 'distant': 'is far off'}
 
 
@@ -706,13 +728,14 @@ def narrate(
         return _compose(turn, [[_finisher_line(turn, told)]])
     # The place first, then the hero's own result, then the fight, then what it brought.
     arrival = _text(turn.facts.get('arrival'))
-    blocks: list[list[str]] = [_captives_left_lines(turn)]
+    blocks: list[list[str]] = [*_callback_blocks(turn), _captives_left_lines(turn)]
     blocks.extend(_arrival_blocks(turn, {'locationName': _the(arrival)}) if arrival else [])
     moved = _zone_move_blocks(turn)
     blocks.extend(moved)
     if moved and _dict(turn.facts.get('talk')):
         # Stepped next door to talk: the talk follows the arrival in the same reply.
         blocks.append([_talk_line(turn, _dict(turn.facts['talk']))])
+    blocks.extend(_conversation_blocks(turn))
     own_blocks, aftermath = _change_blocks(turn)
     blocks.append([*_take_heart_lines(turn), *_spell_lines(turn), *_capability_lines(turn)])
     blocks.extend(own_blocks)
@@ -804,6 +827,60 @@ def _talk_line(turn: NarrationInput, talk: dict) -> str:
         return f'{name or "They"} has nothing more to add.'
     first = _first_name(name) or name
     return turn.pick('npc_knows', fact=_speech(fact), first=first)
+
+
+def _callback_blocks(turn: NarrationInput) -> list[list[str]]:
+    return [[_text(callback.get('text'))] for callback in _dicts(turn.facts.get('callbacks')) if _text(callback.get('text'))]
+
+
+def _given_to(line: str, first: str) -> str:
+    """A line that is all speech, given to its speaker: ``"Say it quickly," Osric says.``; any other line as it is."""
+
+    text = _text(line)
+    inner = text[1:-1].strip() if len(text) > 2 and text[0] == text[-1] == '"' and '"' not in text[1:-1] else ''
+    if not inner or not first:
+        return text
+    if inner.endswith('.'):
+        inner = f'{inner[:-1]},'
+    return f'"{inner}" {first} says.'
+
+
+def _reaction_line(turn: NarrationInput, name: str, reaction: dict) -> str:
+    if _text(reaction.get('line')):
+        return _text(reaction['line'])
+    forms = REACTION_LINES.get((_text(reaction.get('act')), _text(reaction.get('outcome'))))
+    if forms is None:
+        return NOTHING_TO_SAY.format(name=name)
+    form = forms if isinstance(forms, str) else forms[turn.party_play]
+    return form.format(name=name, actor=turn.actor, actor_s=_possessive(turn.actor))
+
+
+def _conversation_blocks(turn: NarrationInput) -> list[list[str]]:
+    """The hero's conversation this turn, as the module docstring tells it."""
+
+    talk = _dict(turn.facts.get('conversation'))
+    name = _text(talk.get('name'))
+    if not talk or not name:
+        return []
+    first = _text(talk.get('first')) or name
+    lines: list[str] = []
+    if talk.get('opened') is True:
+        greeting = _text(talk.get('greeting'))
+        lines.append(_given_to(greeting, first) if greeting else TURNS_TO[turn.party_play].format(name=name, actor=turn.actor))
+    topic = _dict(talk.get('topic'))
+    reaction = _dict(talk.get('reaction'))
+    if topic.get('knows') is True:
+        told = _text(topic.get('line'))
+        lines.append(turn.pick('npc_knows', fact=_speech(told), first=first) if told else f'{name} has nothing more to add.')
+    elif topic:
+        lines.append(_text(topic.get('line')) or SAYS_NO_MORE.format(name=name))
+    elif reaction:
+        lines.append(_reaction_line(turn, name, reaction))
+    elif talk.get('free') is True:
+        lines.append(NOTHING_TO_SAY.format(name=name))
+    if talk.get('left') is True:
+        lines.append(LEAVES_IT[turn.party_play].format(name=name, actor=turn.actor))
+    return [[line] for line in lines if line]
 
 
 def _take_heart_lines(turn: NarrationInput) -> list[str]:

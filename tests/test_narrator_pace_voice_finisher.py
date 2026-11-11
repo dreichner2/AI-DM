@@ -53,8 +53,12 @@ SPACE_RULE = (
     'them into another area. A fight\'s distances are given under "Positions"; a hero cannot strike with a hand '
     'weapon beyond 5 ft unless "Did" says they closed in.'
 )
+CONVERSATION_RULE = (
+    '17. In a conversation speak as that person: at most three sentences, in their voice; you may end on their own '
+    'question. Tell a "May tell" line only when the player asks about it. Reveal nothing else that matters.'
+)
 DICE_RULE = (
-    '17. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs or '
+    '18. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs or '
     'damage numbers.'
 )
 ROLL_STUB = [{'id': 't4-1', 'kind': 'attack'}]
@@ -216,7 +220,7 @@ def test_the_pace_rules_are_given_to_the_ai_narrator_and_the_dice_rule_only_with
         for rule in NEW_RULES:
             assert rule in prompt
     assert DICE_RULE not in plain and DICE_RULE not in empty
-    assert f'{NEW_RULES[-1]}\n{SPACE_RULE}\n{DICE_RULE}\n\nPLAYER INPUT:' in carded
+    assert f'{NEW_RULES[-1]}\n{SPACE_RULE}\n{CONVERSATION_RULE}\n{DICE_RULE}\n\nPLAYER INPUT:' in carded
 
 
 def _sentences(count: int, words: int = 10) -> str:

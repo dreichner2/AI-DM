@@ -232,6 +232,8 @@ consumer.
 | npc | `role`, `race`, `questIds` | prompt, player |
 | npc | `playerSummary`, `description`/`playerDescription`, `aliases`, `tags` | player |
 | npc | `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `gmNotes`, `trueName` | stored |
+| npc | `greeting`, `topics`, `reacts`, `callbacks`, `caresAbout`, `wants`, `believes` (see People You Can Talk To) | mechanical (a line reaches players only when told) |
+| scene object | `affects` (see People You Can Talk To) | mechanical |
 | quest | `id`, `title`, `status`, `objectives`, `completionPolicy`, `failOnObjectiveFailure`, `rewards`, `xpReward`, `rewardActorId`, `onComplete`, `onFail`, `visibleAtStart` | mechanical |
 | quest | `summary`, `stage` | prompt, player |
 | quest | `playerSummary`, `description` | player |
@@ -485,6 +487,8 @@ The linter uses the same import dry-run validator as the API, then adds authorin
 | warning | `unread_checkpoint_condition_key` | checkpoint `completeWhen`/`failWhen` has a key progress does not read (for example `summary`) |
 | warning | `starting_campaign_flags_alias` | `startingState.campaignFlags` is used (prefer `flags`) |
 | warning (error under `--strict`) | `story_flag_set_by_pack` | a `storyFlags` key that an object's `setsFlags`, an encounter (outcome, reward or hook), a quest (objective or `onComplete`/`onFail` consequence) or a location's `onEnter` also sets; the message names the first one. Narration may set any declared flag, so talk can set it before that does |
+| error | `talk_unknown_reference` | a topic's `requires` (or a `dcWhen` entry) names an unknown clue, item, encounter or topic of that person; an effect names an unknown clue, location or person (`affects`), or a promise no topic makes (`keepsPromise`, `breaksPromise`); a callback offers an unknown topic or names an unknown place or topic; `caresAbout`/`wants` name an unknown item or clue; a scene object's or encounter outcome's `affects` names an unknown person |
+| error | `talk_duplicate_topic` | two of a person's topics share an id |
 | warning | `npc_listed_nowhere` | a person with `knows` lines is neither `visibleAtStart` (nor a starting `knownNpcIds`/`activeNpcIds` entry) nor in any location's `npcIds`, so the party can never talk to them |
 | warning | `unsupported_scene_type` | a location's (or its `sceneState`'s) `sceneType` is not a supported scene type; the place is entered as `exploration` |
 | warning | `location_description_addresses_players` | a location `description` or `playerDescription` contains "the players" (any case); it is printed on arrival |
@@ -813,6 +817,91 @@ before arrival met people) meets them with the next change applied there.
           {"id": "npc_drowned_girl", "name": "The Drowned Girl", "hiddenUntil": {"flagKey": "mill_wheel_turned", "equals": true}},
           {"id": "npc_smuggler", "name": "Corran Vey", "hidden": true}]}
 ```
+
+## People You Can Talk To
+
+`Talk to {Name}` (or words that name someone in the hero's room) opens a
+conversation with that person: the turn tells their `greeting` the first time,
+after that `{Name} turns to you.`. A conversation is always with someone in the
+hero's own room and ends on `Leave it there`, travel, a fight starting, the hero
+stepping into another room, or any other action of that hero; two heroes may
+talk to two people at once. While talking, the hero is offered up to four of the
+person's available topics (`ask` topics first, as `Ask about {label}`, then
+`say` topics by their label), then `Say something else` and `Leave it there`;
+the rest follow as the first ones are used. A person without `topics` has one,
+`Ask what {first name} knows`, telling their next `knows` line each time.
+
+```json
+{"id": "npc_tovin_bell", "name": "Tovin Bell", "disposition": "neutral",
+ "greeting": "\"I didn't— I mean. Yes. What?\"",
+ "topics": [
+   {"id": "tovin_wheels", "label": "the wheels", "keywords": ["wheels", "mud"], "line": "\"That mud's wrong.\""},
+   {"id": "tovin_gently", "label": "Ask gently what he is hiding", "kind": "say",
+    "requires": {"flags": {"tovin_button_revealed": false}},
+    "check": {"skill": "persuasion", "ability": "charisma", "dc": 11, "failLine": "\"It's nothing!\"",
+              "failEffects": {"disposition": -1}},
+    "line": "He opens his fist. A silver button.",
+    "effects": {"givesItems": [{"id": "silver_drivers_button", "name": "Silver Driver's Button", "type": "quest"}],
+                "setsFlags": {"tovin_button_revealed": true}, "disposition": 1,
+                "affects": [{"npcId": "npc_mara_reedwake", "disposition": 1, "line": "Mara Reedwake saw how you spoke to the boy."}]}}]}
+```
+
+A topic is told once. It is offered while its `requires` hold: `flags` (an
+unset flag counts as `false`), `clueIds` the party knows, `itemIds` the hero
+holds, `topicIds` this person told, `encounterResolvedIds`,
+`dispositionAtLeast`, `remembers` (a memory key this person holds of the hero),
+and `anyOf` (a list of such requirements, one enough); `private: true` holds it
+until no other known person stands in the hero's room. A topic named in a
+callback's `offers` waits for that callback. Its `check` is rolled by the engine
+(a check beat); `dcWhen` entries are requirements with their own `dc`, or
+`noCheck: true`, the first that holds deciding. Success, or no check, tells the
+`line` (word for word with the scripted narrator; faithfully by a narrating
+model) with its `effects`; failure tells `failLine` with `failEffects`, and the
+topic is offered again only in a later conversation. `inspires` grants
+Inspiration with that reason; a topic with a check or a `dispositionAtLeast`
+grants it the first time it is told (`a secret uncovered`).
+
+Effects: `setsFlags`, `discoversClueIds`, `discoversLocationIds`, `givesItems`
+(to the hero), `disposition` (moves this person), `affects` (others, each only
+when known and present), `promise` (sets that flag and records the hero's word,
+granting `your word given`), `keepsPromise` / `breaksPromise` (an authored
+promise by its id; keeping grants `your word kept`), `remember` and `forget` (a
+memory key of this hero). A flag a topic, reaction or callback sets counts as set
+by the pack for `story_flag_set_by_pack` and `branch_flag_never_set`.
+
+`disposition` is written as `hostile`, `wary`, `neutral`, `warm` or `loyal`
+(anything else starts `neutral`); in play it moves from −2 to 2, each move a
+`bond` beat (the `line` written for it, else `{Name} warms to you.` or `{Name}
+will remember that.`), and players see only the word. A scene object's `affects`
+(`{"break": [{"npcId", "disposition", "line"?, "when"?}]}`) and an encounter
+outcome's (`outcomes.victory.affects`) move people the same way.
+
+Typed words to a person are read as a topic (its label, or one of its
+`keywords`, as whole words) or one of six speech acts by their cue words:
+`promise`, `show` (an item the hero holds or a clue the party knows, by name),
+`threaten`, `offer`, `claim` (by whose `authority`, or who the hero is:
+`identity`) and `apologise`. With an AI narrator, words with no cue are put once
+to the pre-narration helper, which only names the act. A person's first `reacts`
+entry for the act (and its `about`) decides, with an optional check; a promise
+otherwise reaches their topic that makes a promise, and a shown thing their
+`say` topic that requires it. Without one the engine's defaults apply: a promise
+is remembered and kept open under the hero's word (+1 the first time); a shown
+thing in `caresAbout` is +1 and remembered, anything else shrugged at; a threat
+rolls Intimidation against 10 + 2 × disposition (−1 and remembered either way;
+success spares the next check); an offer that meets `wants` (item ids or
+`coin:<gp>`) changes hands, +1, and spares the next check, else `{Name} is not
+for sale.`; a claim rolls Deception against 12 unless a `believes` entry
+(`{"claim", "ifFlags"?, "ifItems"?}`) backs it (+1, or −1 and remembered as a
+lie); an apology forgets the latest threat or lie and restores 1, once per
+person per chapter. Other words are free speech: they change nothing.
+
+Each person remembers up to eight things of the heroes (`remembers`), shown in
+the journal as two lines and given to a narrating model in full. `callbacks`
+bring one back once: `{"id", "when": {"remembers", "flags"?, "on": "arrival" |
+"fight_end" | "rest" | "topic:<id>", "atLocationId"?}, "text", "effects"?,
+"offers"?}` fires while the person is known and present, its `text` opening the
+narration. `topics`, `reacts`, `callbacks`, `caresAbout`, `wants` and `believes`
+never reach a player view; a topic's line does only once told.
 
 ## Rooms and Areas
 
@@ -1273,7 +1362,10 @@ The player view also carries a `journal` block built from what the party knows:
 the quest's `playerSummary`, the active checkpoint's `playerTitle` and
 `playerSummary` as the current stage, completed objectives and the active
 checkpoint's open ones (never future objectives), discovered clues, people met
-(with their `playerSummary` and a readable `role`), and places known. Author
+(with their `playerSummary`, a readable `role`, their disposition word and up to
+two things they remember of the viewer's heroes), places known, the viewer's
+heroes' threads, and their word given (`yourWord`: open promises; once the story
+has ended, every promise, an open one `left open`). Author
 `playerTitle`/`playerSummary` on every checkpoint and `playerSummary` on quests
 and NPCs so the journal reads well.
 

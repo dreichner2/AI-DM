@@ -20,7 +20,7 @@ sparing at the finishing blow (:data:`MERCY_REASON`); an object action the pack 
 fight (a ``take_heart`` fight action) or out of one (the ``inspiration`` intent). The hero gains the active
 effect ``inspired``: their next attack roll, check or saving throw — theirs or one the engine makes for
 their action — is made with advantage, and spends it (the modifier engine's ``d20`` consume event; an object
-check or save spends it here, ``operation`` ``clear``).
+check or save, or a conversation's check, spends it here, ``operation`` ``clear``).
 """
 
 from __future__ import annotations
@@ -64,6 +64,8 @@ PERSONAL_THREAD = 'Personal thread — tell it in one or two sentences, facts un
 MERCY_END_REASONS = frozenset({'enemies_surrendered', 'negotiated_resolution'})
 MERCY_OUTCOMES = frozenset({'surrender', 'negotiation'})
 FIRING_MOMENTS = frozenset({AT_OBJECT, AT_LOCATION, AT_ENCOUNTER, AT_LONG_REST})
+# Changes whose engine-made check may spend the advantage of a hero who took heart: an object's, a conversation's.
+CHECKED_CHANGES = frozenset({'scene.interactable.action', 'npc.talk'})
 FREE_ECONOMY = {
     'action': 0,
     'bonusAction': 0,
@@ -383,8 +385,8 @@ def hero_turn_changes(
     spent = {
         hero_id
         for change in applied
-        if change.get('type') == 'scene.interactable.action'
-        for hero_id in _spent_by(change.get('event'))
+        if change.get('type') in CHECKED_CHANGES
+        for hero_id in _spent_by(change.get('event') or change.get('check'))
         if is_inspired(find_actor(state, hero_id))
     }
     return [*threads, *grants.values(), *(_clear_change(hero_id, turn_id) for hero_id in sorted(spent))]

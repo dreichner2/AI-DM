@@ -4,8 +4,10 @@ import type { JsonRecord } from '../../types'
 /**
  * The server's player-safe journal (`state_snapshot.journal`): the quest and
  * its current stage, the objectives the party has completed or is working on
- * (never later ones), only the clues, people and places the party knows, and
- * the threads of the viewer's own hero the adventure has told.
+ * (never later ones), only the clues, people and places the party knows (each
+ * person with their disposition word and what they remember of the viewer's
+ * heroes), the threads of the viewer's own hero the adventure has told, and
+ * their word given (`yourWord`).
  */
 export type StoryJournal = {
   quest: {
@@ -18,9 +20,10 @@ export type StoryJournal = {
   } | null
   objectives: Array<{ id: string; title: string; optional: boolean; status: 'completed' | 'active' }>
   clues: Array<{ id: string; title: string; text: string }>
-  people: Array<{ id: string; name: string; role: string; summary: string }>
+  people: Array<{ id: string; name: string; role: string; summary: string; disposition: string; remembers: string[] }>
   places: Array<{ id: string; name: string; state: string }>
   threads: Array<{ id: string; title: string; text: string }>
+  yourWord: Array<{ id: string; text: string; to: string; status: string }>
 }
 
 function records(value: unknown): JsonRecord[] {
@@ -66,6 +69,8 @@ export function storyJournalFromSnapshot(snapshot: unknown): StoryJournal | null
         name: stringValue(person.name),
         role: humanizedRole(stringValue(person.role)),
         summary: stringValue(person.summary),
+        disposition: stringValue(person.disposition),
+        remembers: Array.isArray(person.remembers) ? person.remembers.map((line) => stringValue(line)).filter(Boolean) : [],
       }))
       .filter((person) => person.name),
     places: records(journal.places)
@@ -74,5 +79,13 @@ export function storyJournalFromSnapshot(snapshot: unknown): StoryJournal | null
     threads: records(journal.threads)
       .map((thread) => ({ id: stringValue(thread.id), title: stringValue(thread.title), text: stringValue(thread.text) }))
       .filter((thread) => thread.text),
+    yourWord: records(journal.yourWord)
+      .map((promise) => ({
+        id: stringValue(promise.id),
+        text: stringValue(promise.text),
+        to: stringValue(promise.to),
+        status: stringValue(promise.status),
+      }))
+      .filter((promise) => promise.text),
   }
 }

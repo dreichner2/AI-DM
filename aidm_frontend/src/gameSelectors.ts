@@ -401,6 +401,17 @@ export type WorldZonePerson = {
   kind: string
 }
 
+/** What the viewer's hero may do in a conversation: a topic, `Say something else` (needs words), `Leave it there`. */
+export type WorldConversationAction = { kind: 'topic' | 'say_free' | 'leave_conversation'; id: string; label: string }
+
+/** The viewer's conversation (`currentScene.conversation`): who with, their journal one-liner, what is offered. */
+export type WorldConversation = {
+  npcId: string
+  name: string
+  summary: string
+  actions: WorldConversationAction[]
+}
+
 /** A room or area of the current place that the party knows, with who stands there. */
 export type WorldZoneSummary = {
   id: string
@@ -434,6 +445,8 @@ export type WorldStatePanel = {
   captives?: WorldCaptiveSummary[]
   /** The rooms and areas of the current place the party knows; absent for a place that is one area. */
   zones?: WorldZoneSummary[]
+  /** The viewer's hero is talking with someone. */
+  conversation?: WorldConversation
   /** Completed and failed quests. */
   finishedQuests?: WorldQuestSummary[]
   clues?: WorldRecordSummary[]
@@ -1757,6 +1770,18 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
       ...(stringValue(zone.moveLabel) ? { moveLabel: stringValue(zone.moveLabel) } : {}),
     }))
     .filter((zone) => Boolean(zone.id && zone.name))
+  const talking = isRecord(scene.conversation) ? scene.conversation : null
+  const conversation: WorldConversation | null = talking && stringValue(talking.npcId)
+    ? {
+        npcId: stringValue(talking.npcId),
+        name: stringValue(talking.name),
+        summary: stringValue(talking.summary),
+        actions: recordArray(talking.actions)
+          .map((action) => ({ kind: stringValue(action.kind), id: stringValue(action.id), label: stringValue(action.label) }))
+          .filter((action): action is WorldConversationAction =>
+            Boolean(action.label) && ['topic', 'say_free', 'leave_conversation'].includes(action.kind)),
+      }
+    : null
   const connectedLocationIds = new Set(
     Array.isArray(currentLocation?.connectedLocationIds)
       ? currentLocation.connectedLocationIds.map((value) => stringValue(value)).filter(Boolean)
@@ -1792,6 +1817,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
     merchants: recordArray(scene.merchants).map(merchantSummary).filter((merchant) => Boolean(merchant.id)),
     ...(captives.length ? { captives } : {}),
     ...(zones.length ? { zones } : {}),
+    ...(conversation ? { conversation } : {}),
     finishedQuests: quests.filter(finished).map(questSummary),
     clues: discoveredRecords(root.clues),
     handouts: discoveredRecords(root.handouts),

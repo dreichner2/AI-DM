@@ -123,6 +123,29 @@ describe('JournalSection', () => {
     expect(people).not.toHaveTextContent(/cautious|unknown/)
   })
 
+  it('says how each person stands towards the party, what they remember, and the word the hero gave', () => {
+    const talked = {
+      ...journal,
+      people: [{ ...journal.people[0], disposition: 'warm', remembers: ['you gave your word to bring word of the drivers', 'you threatened them'] }],
+      yourWord: [
+        { id: 'promised_mara_word', text: 'Promise to bring word of the drivers', to: 'Mara Reedwake', status: 'open' },
+        { id: 'chg_1', text: '"I will find them."', to: 'Tovin Bell', status: 'left open' },
+      ],
+    }
+    render(<JournalSection board={withSnapshot({ journal: talked })} inspector={testInspector()} />)
+
+    const people = screen.getByRole('heading', { name: 'People' }).parentElement as HTMLElement
+    expect(within(people).getByRole('listitem')).toHaveTextContent(
+      'Mara Reedwake — innkeeper and local witness · warmRuns the Lantern Post.' +
+        'Remembers: you gave your word to bring word of the drivers.…: you threatened them.',
+    )
+    const word = screen.getByRole('heading', { name: 'Your word' }).parentElement as HTMLElement
+    expect(within(word).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'Promise to bring word of the drivers — to Mara Reedwake',
+      '"I will find them." — to Tovin Bell · left open',
+    ])
+  })
+
   it("lists the threads the story told of the viewer's own hero under Your threads", () => {
     const thread = {
       id: 'tie_ledger_name',

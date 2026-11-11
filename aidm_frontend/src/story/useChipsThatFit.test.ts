@@ -41,12 +41,14 @@ describe('chipsThatFit on two lines', () => {
     })
   })
 
-  it('gives narrow screens two lines of suggestions and keeps desktop to one', () => {
+  it('gives narrow screens two lines of suggestions and keeps desktop to one, but lets a conversation wrap', () => {
     const dockCss = readFileSync(resolve(__dirname, '../styles/story-dock.css'), 'utf8')
     const narrow = dockCss.slice(dockCss.indexOf('@media (max-width: 899px)'))
     const narrowBlock = narrow.slice(0, narrow.indexOf('\n}\n'))
     expect(narrowBlock).toMatch(/\.story-suggestions \{[^}]*--story-chip-rows: 2;[^}]*flex-wrap: wrap;/)
-    const outsideMedia = dockCss.replace(/@media[^{]+\{[\s\S]*?\n\}\n/g, '')
+    const talking = /\.story-suggestions\[data-talking\] \{[^}]*--story-chip-rows: 6;[^}]*flex-wrap: wrap;[^}]*\}/
+    expect(dockCss).toMatch(talking)
+    const outsideMedia = dockCss.replace(/@media[^{]+\{[\s\S]*?\n\}\n/g, '').replace(talking, '')
     expect(outsideMedia).not.toContain('--story-chip-rows')
   })
 })

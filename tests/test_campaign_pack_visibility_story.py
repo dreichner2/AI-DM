@@ -206,7 +206,7 @@ def test_the_journal_holds_the_stage_and_only_reached_objectives():
     assert 'Confront the warden' not in json.dumps(journal)
     assert journal['clues'] == [{'id': 'clue_scratch', 'title': 'Scratched Lock', 'text': 'Someone forced the lock.'}]
     assert journal['people'] == [
-        {'id': 'npc_warden', 'name': 'Old Warden', 'role': 'gate warden and witness', 'summary': 'Keeps the vault keys.', 'met': True}
+        {'id': 'npc_warden', 'name': 'Old Warden', 'role': 'gate warden and witness', 'summary': 'Keeps the vault keys.', 'met': True, 'disposition': 'neutral'}
     ]
     assert journal['places'] == [
         {'id': 'vault', 'name': 'The Vault', 'state': 'current'},

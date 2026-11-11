@@ -25,6 +25,13 @@ the acting hero this turn, a pending finishing blow's first),
 ``engineOwned`` (every name above, and the things acted on) and ``ending``
 (only when the turn reaches the adventure's ending).
 
+In a conversation (:mod:`aidm_server.game_state.orchestration.conversations`) ``did`` tells what the hero's
+words did: the person turning to them (their greeting the first time), ``{Name} tells: …`` for a topic (its check
+first, when it rolled one), a speech act and what came of it, words that reach nothing, leaving; a person's
+callback is ``Callback — tell it now: …``. ``conversation`` names the person, their personality, disposition word,
+the lines already told, what they remember of this hero and what they ``mayTell`` if asked; ``offered`` is then the
+conversation's own actions.
+
 In a place with rooms (:mod:`aidm_server.game_state.zones`) ``did`` also tells
 the hero's step into another zone, a call to someone next door and who came
 running into a fight; ``here`` holds only what stands in the hero's own zone,
@@ -44,17 +51,41 @@ from aidm_server.combat.maneuvers import enemy_record
 from aidm_server.combat.positioning import REACH_LABELS, reach_kind
 from aidm_server.combat.state import normalize_combat_state, participant_is_targetable
 from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, mentions, ways_onward
+from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, conversation_actions, conversation_brief
 from aidm_server.game_state.orchestration.finishing_blow import finisher_actions
 from aidm_server.game_state.orchestration.hero_threads import PERSONAL_THREAD, hero_line
 from aidm_server.game_state.orchestration.narration_facts import PICKUP_SOURCE, enemy_prose
-from aidm_server.game_state.orchestration.story_beats import COIN_ORDER, beat_basis, object_check_text, story_beats
+from aidm_server.game_state.orchestration.story_beats import COIN_ORDER, beat_basis, object_check_text, story_beats, talk_check_text
 from aidm_server.price_list import normalize_price
 from aidm_server.game_state.zones import hero_zone_id, where_line
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
-# Beats the brief leaves to its own lines: checks sit with their object, a pickup with "Took", a tie line with its
-# personal thread; Inspiration is the player's own reward, not something to narrate.
+# Beats the brief leaves to its own lines: checks sit with their object or topic, a pickup with "Took", a tie line
+# with its personal thread; Inspiration is the player's own reward, not something to narrate.
 OWN_LINE_BEATS = frozenset({'check', 'hint', 'thread', 'inspiration'})
+SPOKE_TO = 'The hero spoke to {name}: it reaches nothing the engine holds, so nothing changes. Answer as {name}.'
+CALLBACK = 'Callback — tell it now:'
+# What came of a speech act, for the narrator, by (act, outcome); ``{name}`` is the person.
+ACT_RESULTS = {
+    ('promise', 'default'): '{name} takes the word given and will remember it.',
+    ('show', 'cares'): 'It matters to {name}.',
+    ('show', 'shrugs'): '{name} is not moved by it.',
+    ('threaten', 'worked'): "It works: {name}'s next answer that needs a check needs none. {name} will remember the threat.",
+    ('threaten', 'failed'): 'It does not work. {name} will remember the threat.',
+    ('offer', 'accepted'): '{name} accepts, and it changes hands.',
+    ('offer', 'refused'): '{name} is not for sale.',
+    ('claim', 'believed'): '{name} believes it.',
+    ('claim', 'disbelieved'): '{name} does not believe it and will remember the lie.',
+    ('apologise', 'forgiven'): '{name} lets the old grievance go.',
+}
+ACT_VERBS = {
+    'promise': 'gave {name} their word',
+    'show': 'showed {name} {about}',
+    'threaten': 'threatened {name}',
+    'offer': 'made {name} an offer',
+    'claim': 'told {name} who they are or whom they serve',
+    'apologise': 'apologised to {name}',
+}
 # A fight turn on which no enemy acted says so, so the narrator has nothing to invent for them.
 NO_ENEMY_ACTED = 'No enemy has acted since the last narration.'
 SPOKE = 'The hero spoke: free, nothing is spent and nothing changes. Answer in the scene in at most three sentences.'
@@ -267,6 +298,48 @@ def _zone_lines(narration: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _check_words(check: Any) -> str:
+    text = talk_check_text({'type': TALK_CHANGE, 'check': check}) if isinstance(check, dict) else None
+    return f' ({text})' if text else ''
+
+
+def _conversation_lines(narration: dict[str, Any], hero: str) -> list[str]:
+    """The callbacks told this turn and what the hero's words did in their conversation (see the module docstring)."""
+
+    lines = [f'{CALLBACK} {_text(callback.get("text"))}' for callback in _dicts(narration.get('callbacks')) if _text(callback.get('text'))]
+    talk = narration.get('conversation') if isinstance(narration.get('conversation'), dict) else {}
+    name = _text(talk.get('name'))
+    if not name:
+        return lines
+    hero = hero or 'The hero'
+    if talk.get('opened') is True:
+        greeting = _text(talk.get('greeting'))
+        lines.append(f'{hero} turned to talk with {name}.' + (f' {name} greets them: {greeting}' if greeting else ''))
+    topic = talk.get('topic') if isinstance(talk.get('topic'), dict) else {}
+    reaction = talk.get('reaction') if isinstance(talk.get('reaction'), dict) else {}
+    if topic.get('knows') is True and not _text(topic.get('line')):
+        lines.append(f'{name} has nothing more to add.')
+    elif topic:
+        line = _text(topic.get('line'))
+        said = f'"{line}"' if topic.get('knows') is True else line
+        asked = f"{_text(topic.get('offered'))}{_check_words(topic.get('check'))}"
+        if topic.get('failed') is True:
+            lines.append(f'{asked}: it fails. {name} answers (tell it faithfully): {said}')
+        else:
+            lines.append(f'{asked}.{" No check: an earlier threat or offer made it unnecessary." if topic.get("waived") is True else ""} {name} tells: {said}')
+    elif reaction:
+        act, outcome = _text(reaction.get('act')), _text(reaction.get('outcome'))
+        did = ACT_VERBS.get(act, 'spoke to {name}').format(name=name, about=_text(reaction.get('about')) or 'something')
+        result = ACT_RESULTS.get((act, outcome), 'It works.' if outcome == 'worked' else 'It fails.' if outcome == 'failed' else '')
+        answer = f' {name} answers (tell it faithfully): {_text(reaction["line"])}' if _text(reaction.get('line')) else ''
+        lines.append(f'{hero} {did}{_check_words(reaction.get("check"))}. {result.format(name=name)}{answer}'.replace('  ', ' ').strip())
+    elif talk.get('free') is True:
+        lines.append(SPOKE_TO.format(name=name))
+    if talk.get('left') is True:
+        lines.append(f'{hero} leaves it there with {name}.')
+    return lines
+
+
 def _fight_positions(state: dict[str, Any], actor_id: str) -> str:
     """How far everyone standing in the fight is from the acting hero: ``Pale Lantern: out of reach this turn · 60 ft
     or more; Corin Ashby: in reach``; '' outside a fight."""
@@ -340,7 +413,7 @@ def _beat_line(beat: dict[str, Any], taken_coins: dict[str, int], *, acting_hero
         return None
     gain = GAIN_BEAT.match(text) if kind in {'coins', 'xp'} else None
     if not gain:
-        return f'{text}.'
+        return f"{text.rstrip('.')}."
     amount = int(gain['amount']) * (1 if gain['sign'] == '+' else -1)
     hero = gain['hero'] or ''
     if kind == 'coins' and not gain['each'] and hero in {'', acting_hero}:
@@ -416,9 +489,12 @@ def _offered_labels(
     ways: list[dict[str, Any]],
     captives: list[dict[str, Any]],
 ) -> list[str]:
-    """The labels of the actions offered to the acting hero now, in a fight its fight actions; a finishing
-    blow the hero has yet to tell comes first."""
+    """The labels of the actions offered to the acting hero now, in a fight its fight actions, in a conversation its
+    own; a finishing blow the hero has yet to tell comes first."""
 
+    talking = conversation_actions(state, actor_id)
+    if talking:
+        return [action['label'] for action in talking]
     labels = [action['label'] for action in finisher_actions(state, actor_id)]
     labels.extend(label for entry in objects for label in _available_labels(entry))
     labels.extend(_text(item.get('takeLabel')) or f"Take {_text(item.get('name'))}" for item in items)
@@ -504,6 +580,7 @@ def engine_brief(
     if _text(narration.get('arrival')):
         did.append(f"Arrived at {narration['arrival']}.")
     did.extend(_zone_lines(narration))
+    did.extend(_conversation_lines(narration, acting_hero))
     if (narration.get('freeText') or {}).get('kind') == 'speech':
         did.append(SPOKE)
     elif (narration.get('freeText') or {}).get('kind') == 'look' and isinstance(narration.get('positions'), list):
@@ -584,6 +661,7 @@ def engine_brief(
         **({'positions': positions} if (positions := _fight_positions(state_after, actor_id)) else {}),
         'actingHero': acting_hero,
         **({'hero': hero} if (hero := hero_line(state_after, actor_id)) else {}),
+        **({'conversation': talking} if (talking := conversation_brief(state_after, actor_id)) else {}),
         'heroes': [_text(hero.get('name')) for hero in _dicts(state_after.get('playerCharacters')) if _text(hero.get('name'))],
         'gains': gains,
         'offered': _offered_labels(state_after, actor_id=actor_id, objects=objects, items=items, ways=ways, captives=captives),

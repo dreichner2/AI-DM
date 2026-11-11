@@ -411,11 +411,15 @@ def test_the_opening_offers_only_authored_actions_in_the_evening_at_a_safe_gate(
 
 
 def _told_in_turn(table: GreenwayTable, name: str, first: str) -> None:
-    """Each talk tells the person's next line, in order, and then that they have nothing more to add."""
+    """Talking opens a conversation; asking what they know tells the person's next line each time, in order, and then
+    that they have nothing more to add."""
 
+    table.talk(first)
     for fact in KNOWS[name]:
-        assert fact.rstrip('.') in table.talk(first), (name, fact)
-    assert table.talk(first) == f'DM: {name} has nothing more to add.'
+        table.send(f'Ask what {first} knows', {'kind': 'message'})
+        assert fact.rstrip('.') in table.narration(), (name, fact)
+    table.send(f'Ask what {first} knows', {'kind': 'message'})
+    assert table.narration() == f'DM: {name} has nothing more to add.'
 
 
 def test_the_people_of_bree_are_met_where_they_are_and_tell_what_they_know(table):

@@ -84,6 +84,14 @@ All notable AIDM closed-beta changes should be recorded here.
 - Two players never block each other: adventures the engine runs hold no
   spotlight or queue, a hero who joins between turns is seen by everyone at
   once, and any refused action says why above the action box.
+- People can be talked with. "Talk to Mara Reedwake" opens a conversation: her
+  greeting, then what she can be asked about, what can be promised or asked of
+  her, "Say something else" and "Leave it there". What you say in your own words
+  counts too: a promise, something shown, a threat, an offer, a claim or an
+  apology changes how people stand towards you (warm, wary…), and they remember
+  it and bring it back later. Every person of the ready-made adventure has their
+  own topics, and winning them over is how their secrets, help and allies are
+  earned.
 
 #### Rules
 

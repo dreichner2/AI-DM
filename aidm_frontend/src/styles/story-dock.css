@@ -420,6 +420,20 @@
 }
 /* A chip with no room on the line waits behind More…. */
 .story-shell .story-suggestions .story-chip[hidden] { display: none; }
+/* In a conversation: who with, then their journal line, quiet, above its suggestions. */
+.story-shell .story-talking {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin: 0;
+  padding: 0 2px;
+}
+.story-shell .story-talking-summary { color: var(--story-muted); font-size: 0.86em; min-width: 0; }
+.story-shell .story-suggestions[data-talking] {
+  --story-chip-rows: 6;
+  flex-wrap: wrap;
+}
 
 /* ---- input row ---- */
 

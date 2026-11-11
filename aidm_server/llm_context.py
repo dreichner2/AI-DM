@@ -14,6 +14,7 @@ from aidm_server.database import db
 from aidm_server.game_clock import public_clock
 from aidm_server.emergent_memory import build_emergent_context, dormant_threads
 from aidm_server.game_state.campaign_pack_encounters import declared_story_flags
+from aidm_server.game_state.orchestration.conversations import disposition_word, shown_disposition
 from aidm_server.game_state.zones import names_here
 from aidm_server.interactables import offered_scene_actions, project_scene_interactables
 from aidm_server.models import (
@@ -179,7 +180,7 @@ def _compact_npc(npc: dict) -> dict:
         'name': _text_or_none(npc.get('name'), 180),
         'race': _text_or_none(npc.get('race'), 80),
         'role': _text_or_none(npc.get('role'), 160),
-        'disposition': _text_or_none(npc.get('disposition'), 80),
+        'disposition': _text_or_none(shown_disposition(npc), 80),
         'status': _text_or_none(npc.get('status'), 80),
         'locationId': _text_or_none(npc.get('locationId'), 120),
         'questIds': _string_list(npc.get('questIds'), limit=8),
@@ -715,16 +716,19 @@ def _compact_pack_npc(npc: dict) -> dict:
         'id': _text_or_none(npc.get('id'), 120),
         'name': _text_or_none(npc.get('name'), 180),
         'role': _text_or_none(npc.get('role'), 160),
-        'disposition': _text_or_none(npc.get('disposition'), 80),
+        'disposition': disposition_word(npc.get('disposition')),
         'status': _text_or_none(npc.get('status'), 80),
         'locationId': _text_or_none(npc.get('locationId') or npc.get('location_id'), 120),
         'questIds': _string_values(npc.get('questIds') or npc.get('quest_ids'), limit=8),
     }
-    for key in ('description', 'personality', 'motivation', 'secret'):
+    # A person with topics tells what they know through them: their brief's "May tell" holds what may be said now,
+    # so their secret and knows lines are never given here.
+    talks_by_topic = isinstance(npc.get('topics'), list) and bool(npc['topics'])
+    for key in ('description', 'personality', 'motivation', *(() if talks_by_topic else ('secret',))):
         text = _text_or_none(npc.get(key), MAX_PACK_AUTHOR_TEXT)
         if text:
             payload[key] = text
-    knows = _bounded_text_list(npc.get('knows'), MAX_PACK_AUTHOR_TEXT)
+    knows = [] if talks_by_topic else _bounded_text_list(npc.get('knows'), MAX_PACK_AUTHOR_TEXT)
     if knows:
         payload['knows'] = knows
     payload['dmOnly'] = list(PACK_NPC_DM_ONLY_FIELDS)

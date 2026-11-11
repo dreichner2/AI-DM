@@ -94,6 +94,60 @@ describe('StoryComposer', () => {
     expect(props.board.actionComposerProps.submitAction).toHaveBeenCalledWith('Question the Ashmarked Cutthroat')
   })
 
+  it('shows who the hero is talking with above the conversation, and sends its topics and leaving as intents', () => {
+    const { props, container } = renderComposer({
+      board: {
+        worldState: testWorld({
+          conversation: {
+            npcId: 'npc_mara',
+            name: 'Mara Reedwake',
+            summary: 'The innkeeper who notices everything.',
+            actions: [
+              { kind: 'topic', id: 'mara_caravan', label: 'Ask about the caravan' },
+              { kind: 'say_free', id: '', label: 'Say something else' },
+              { kind: 'leave_conversation', id: '', label: 'Leave it there' },
+            ],
+          },
+        }),
+      },
+    })
+    const composer = props.board.actionComposerProps
+    const talking = container.querySelector('.story-talking') as HTMLElement
+    expect(within(talking).getByText('Talking with Mara Reedwake')).toHaveClass('story-label')
+    expect(talking).toHaveTextContent('The innkeeper who notices everything.')
+    expect(talking.nextElementSibling).toHaveAttribute('aria-label', 'Suggestions')
+    expect(screen.getByLabelText('Your Action')).toHaveAttribute('placeholder', 'Say it in your own words')
+    const suggestions = screen.getByRole('group', { name: 'Suggestions' })
+    expect(within(suggestions).getAllByRole('button').map((chip) => chip.textContent)).toEqual([
+      'Ask about the caravan',
+      'Say something else',
+      'Leave it there',
+    ])
+    // The conversation's row wraps (stylesheet) so leaving it never waits behind More….
+    expect(suggestions).toHaveAttribute('data-talking', 'true')
+
+    fireEvent.click(within(suggestions).getByRole('button', { name: 'Ask about the caravan' }))
+    expect(composer.submitAction).toHaveBeenLastCalledWith('Ask about the caravan.', {
+      kind: 'talk',
+      source: 'scene_panel',
+      text: 'Ask about the caravan.',
+      client_message_id: expect.any(String),
+      talk: { action: 'topic', npc_id: 'npc_mara', topic_id: 'mara_caravan' },
+    })
+    fireEvent.click(within(suggestions).getByRole('button', { name: 'Leave it there' }))
+    expect(composer.submitAction).toHaveBeenLastCalledWith('Leave it there.', {
+      kind: 'talk',
+      source: 'scene_panel',
+      text: 'Leave it there.',
+      client_message_id: expect.any(String),
+      talk: { action: 'leave', npc_id: 'npc_mara' },
+    })
+    fireEvent.click(within(suggestions).getByRole('button', { name: 'Say something else' }))
+    expect(composer.submitAction).toHaveBeenCalledTimes(2)
+    expect(composer.updateActionText).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Your Action')).toHaveFocus()
+  })
+
   it('opens the action tray with "/" on an empty input and closes it with Escape', () => {
     renderComposer()
     const input = screen.getByLabelText('Your Action')

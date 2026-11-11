@@ -50,6 +50,7 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     settle_engine_controlled_turns,
     without_trusted_damage_overlaps,
 )
+from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, close_change, conversation_facts, talk_intent
 from aidm_server.game_state.orchestration.engine_brief import engine_brief
 from aidm_server.game_state.orchestration.finishing_blow import finishing_blow, hold_spared_captive
 from aidm_server.game_state.orchestration.hero_threads import hero_turn_changes, hero_turn_facts
@@ -65,6 +66,7 @@ from aidm_server.game_state.orchestration.narration_facts import (
     plain_results,
 )
 from aidm_server.game_state.orchestration.search_take import TAKEN_BY_SEARCH, search_take_actions, taken_by_search
+from aidm_server.game_state.orchestration.speech_acts import talk_extraction
 from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis
 from aidm_server.game_state.orchestration.story_rolls import SETTLED_ACTIONS_KEY, STORY_ROLLS_KEY, numbered, story_rolls_before_narration
 from aidm_server.game_state.orchestration.zone_turns import ZonePlan, without_zone_moves, zone_move_facts, zone_move_only, zone_plan
@@ -123,7 +125,10 @@ AUTHORITATIVE_PRE_NARRATION_CHANGE_TYPES = {
     'shop.buy',
     'shop.sell',
     'hero.inspiration',
+    'npc.talk',
 }
+# Intents that leave a hero's conversation open: words out of character, a gesture, a roll, taking heart.
+CONVERSATION_KEEPING_KINDS = frozenset({'talk', 'ooc', 'admin', 'emote', 'roll', 'inspiration'})
 CONFIRMATION_DENIAL_PATTERN = re.compile(
     r"\b(?:do not|don't|does not|doesn't|did not|cannot|can't|fail|fails|failed|before you can|instead)\b",
     re.IGNORECASE,
@@ -1819,7 +1824,11 @@ def _narration_packet(
         talk_npc = _present_npc_named(state_before, player_message, actor_id=actor_id)
     if talk_npc:
         packet['talk'] = _talk_facts(session_obj=session_obj, turn=turn, state=state_before, npc=talk_npc)
-    if free_text is not None:
+    packet.update(conversation_facts(applied_changes, actor_id=actor_id, declared=declared_actions))
+    if (packet.get('conversation') or {}).get('free') is True:
+        # Words that reach no topic and no act: the person has nothing to say to that (a narrator answers in voice).
+        packet['freeText'] = {'kind': None, 'unmatched': True, 'more': False}
+    elif free_text is not None:
         packet['freeText'] = {'kind': free_text.kind, 'more': free_text.more, 'deferred': deepcopy(list(free_text.deferred))}
     elif fight_look(action_intent):
         packet['freeText'] = {'kind': 'look', 'more': False}
@@ -2073,6 +2082,27 @@ def _with_zone_move(
     return applied['nextState'], applied['appliedChanges'], validation
 
 
+def _with_conversation_ended(
+    state: dict[str, Any],
+    applied: list[dict[str, Any]],
+    *,
+    actor_id: str,
+    action_intent: dict[str, Any] | None,
+    player_message: str,
+    turn_id: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Any other action of a hero in a conversation ends it (:mod:`aidm_server.game_state.orchestration.conversations`)."""
+
+    kind = str((action_intent or {}).get('kind') or '').strip().lower() if isinstance(action_intent, dict) else ''
+    if kind in CONVERSATION_KEEPING_KINDS or (not kind and not str(player_message or '').strip()):
+        return state, applied
+    change = close_change(state, actor_id, turn_id=turn_id, reason='action')
+    if change is None:
+        return state, applied
+    result = apply_state_changes(state, validated_changes_for_application(validate_state_changes(state=state, changes=[change])))
+    return result['nextState'], [*applied, *result['appliedChanges']]
+
+
 def _with_search_takes(
     *,
     state: dict[str, Any],
@@ -2152,6 +2182,7 @@ def pre_dm_pipeline(
     if down_refusal:
         return _downed_actor_result(turn=turn, state=state, actor_id=actor_id, players_by_id=players_by_id, refusal=down_refusal)
     # In a place with rooms the action may first need the hero to step next door, or be out of their reach.
+    talk = talk_intent(action_intent)
     plan = (
         ZonePlan()
         if declared_actions_override or finishing(action_intent)
@@ -2162,8 +2193,8 @@ def pre_dm_pipeline(
             turn=turn, state=state, actor_id=actor_id, players_by_id=players_by_id, refusal=plan.refusal, refused_as='zoneRefusal'
         )
     state, moved, moved_validation = _with_zone_move(state, plan, actor_id=actor_id, turn_id=turn.turn_id)
-    # A move that starts something (more than the move itself) is all the turn does.
-    only_move = bool(moved) and (plan.only_move or len(moved) > 1)
+    # A move that starts something (more than the move itself and the conversation it leaves) is all the turn does.
+    only_move = bool(moved) and (plan.only_move or len([change for change in moved if change.get('type') != TALK_CHANGE]) > 1)
 
     if declared_actions_override:
         pre_extraction = {
@@ -2185,7 +2216,14 @@ def pre_dm_pipeline(
                 before_helper_call()
                 helper_session_released = True
 
-        pre_extraction = extract_pre_dm_actions(
+        # A conversation: the engine reads the words (asking the helper at most once, for a speech act) and holds it.
+        pre_extraction = talk_extraction(
+            state,
+            actor_id=actor_id,
+            talk=talk,
+            words=player_message,
+            before_provider_call=_before_provider_call if before_helper_call else None,
+        ) if talk is not None else extract_pre_dm_actions(
             current_state=compact_state_for_extraction(state),
             player_message=player_message,
             recent_timeline=recent_timeline,
@@ -2241,6 +2279,14 @@ def pre_dm_pipeline(
         actor_id=actor_id,
         turn_id=turn.turn_id,
     )
+    state_after_immediate, applied_immediate = _with_conversation_ended(
+        state_after_immediate,
+        applied_immediate,
+        actor_id=actor_id,
+        action_intent=action_intent,
+        player_message=player_message,
+        turn_id=turn.turn_id,
+    )
     immediate_combat = (
         state_after_immediate.get('combat')
         if isinstance(state_after_immediate.get('combat'), dict)
@@ -2285,8 +2331,8 @@ def pre_dm_pipeline(
         session_obj=session_obj,
         campaign=campaign,
         turn=turn,
-        # A finishing blow told in words never starts a fight.
-        player_message='' if finishing(action_intent) else player_message,
+        # A finishing blow told in words never starts a fight, nor do words said in a conversation.
+        player_message='' if finishing(action_intent) or talk is not None else player_message,
         workspace_id=campaign.workspace_id,
         before_intent_provider_call=(
             _before_combat_provider_call if before_helper_call else None
@@ -2857,6 +2903,9 @@ def post_dm_pipeline(
         if engine_resolved:
             # The narration only describes what the engine already did: no model reads it for state or a fight.
             post_extraction = _skipped_post_extraction('engine_resolved')
+        elif talk_intent(metadata.get('action_intent')) is not None:
+            # A conversation turn: the engine applied what the words did; the narration of it changes nothing.
+            post_extraction = _skipped_post_extraction('conversation')
         elif fight_speech(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None):
             # Words said in a fight change nothing, whatever the narration makes of them.
             post_extraction = _skipped_post_extraction('fight_speech')

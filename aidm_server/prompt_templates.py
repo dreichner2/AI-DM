@@ -32,7 +32,8 @@ ENGINE_BRIEF_RULES = """RULES FOR THIS TURN (they override style)
 13. End on what matters now, taken from what this brief already holds: the result just told, someone here waiting on an answer, or something under "Here" still untouched. Invent nothing to end on: no new sound, movement, object, clue or mystery. After a win, a discovery, a kindness or a joke, let that moment land and end there. Never a question to the players, never a list of options, never the name of a button.
 14. When someone present would plainly react to what the hero just did, give them one short spoken line in their own voice: a reaction, never a new fact about what happened here.
 15. Do not start a fight, and do not bring any creature, enemy or new danger into the scene, unless "Did" says a fight began. What belongs to other places stays there.
-16. Someone or something in another area is not here: the hero cannot touch it, search it or hold a conversation with it until they go there. The hero stays in the area "Where" names unless "Did" says they moved: never walk them into another area. A fight's distances are given under "Positions"; a hero cannot strike with a hand weapon beyond 5 ft unless "Did" says they closed in."""
+16. Someone or something in another area is not here: the hero cannot touch it, search it or hold a conversation with it until they go there. The hero stays in the area "Where" names unless "Did" says they moved: never walk them into another area. A fight's distances are given under "Positions"; a hero cannot strike with a hand weapon beyond 5 ft unless "Did" says they closed in.
+17. In a conversation speak as that person: at most three sentences, in their voice; you may end on their own question. Tell a "May tell" line only when the player asks about it. Reveal nothing else that matters."""
 # With more than one hero the story is shared by every player, so rule 6 names the heroes instead.
 PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(
     '6. Speak to the acting hero as "you".',
@@ -40,7 +41,7 @@ PARTY_ENGINE_BRIEF_RULES = ENGINE_BRIEF_RULES.replace(
 )
 # Added on turns whose rolls are shown to the players as cards (``state_pipeline.storyRolls``).
 DICE_SHOWN_RULE = (
-    '17. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs '
+    '18. The dice are shown to the players. Tell what happened in the fiction; do not restate roll totals, ACs, DCs '
     'or damage numbers.'
 )
 STORY_ROLLS_KEY = 'storyRolls'
@@ -381,7 +382,9 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     With more than one hero, the block opens with who acts and who the party is, and rule 6 is the
     party form (:data:`PARTY_ENGINE_BRIEF_RULES`); the acting hero's desire and attachment follow as
     their ``Hero:`` line. In a place with rooms ``Where:`` says who is where, and in a fight ``Positions:`` how
-    far everyone is from the acting hero. On a turn whose rolls are shown as cards the dice rule
+    far everyone is from the acting hero. In a conversation ``Conversation:`` names the person, their personality
+    and disposition, then the lines they have told, what they remember of the hero (with the rule that they speak
+    from it) and ``May tell if asked:``. On a turn whose rolls are shown as cards the dice rule
     (:data:`DICE_SHOWN_RULE`) follows.
     """
 
@@ -409,6 +412,19 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     header = [f"Acting hero: {brief.get('actingHero') or heroes[0]}. The party: {', '.join(heroes)}."] if party else []
     if str(brief.get('hero') or '').strip():
         header.append(f"Hero: {brief['hero']}")
+    talk = brief.get('conversation') if isinstance(brief.get('conversation'), dict) else None
+    conversation = (
+        [
+            f"Conversation: {brief.get('actingHero') or 'The hero'} is talking with {talk.get('person')}. "
+            f"Personality: {str(talk.get('personality') or 'unknown').rstrip('.')}. Disposition: {talk.get('disposition')}.",
+            f"Already told: {' | '.join(talk.get('told') or []) or 'nothing yet'}",
+            f"Remembers of {brief.get('actingHero') or 'the hero'}: {'; '.join(talk.get('remembers') or []) or 'nothing yet'}. "
+            'They speak from what they remember of this hero.',
+            f"May tell if asked: {' | '.join(talk.get('mayTell') or []) or 'nothing more'}",
+        ]
+        if talk
+        else []
+    )
     captives = [
         f"{captive.get('name')}{': ' + str(captive['description']) if captive.get('description') else ''}"
         f"{' Speaks: ' + str(captive['speech']) if captive.get('speech') else ''}"
@@ -431,6 +447,7 @@ def render_engine_brief(rules_hint: dict) -> str | None:
             f"The party is at {brief.get('place') or 'an unnamed place'}.",
             *([f"Where: {brief['where']}"] if str(brief.get('where') or '').strip() else []),
             *([f"Positions: {brief['positions']}"] if str(brief.get('positions') or '').strip() else []),
+            *conversation,
             '',
             PARTY_ENGINE_BRIEF_RULES if party else ENGINE_BRIEF_RULES,
             *([DICE_SHOWN_RULE] if rolls_shown(rules_hint) else []),

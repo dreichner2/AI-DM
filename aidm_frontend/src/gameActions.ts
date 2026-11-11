@@ -148,7 +148,7 @@ export type ShopIntent = {
 } & ({ action: 'buy'; stock_id: string } | { action: 'sell'; item_id: string })
 
 export type ActionIntent = {
-  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'zone_move' | 'rest' | 'shop' | 'combat' | 'inspiration'
+  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'zone_move' | 'rest' | 'shop' | 'combat' | 'inspiration' | 'talk'
   source: 'composer' | 'dice_roller' | 'combat_hud' | 'scene_panel'
   text: string
   client_message_id: string
@@ -193,6 +193,8 @@ export type ActionIntent = {
   }
   /** Retry a failed object check slowly: the clock advances and the check is taken as a 20. */
   take_time?: boolean
+  /** A conversation: a topic chosen, or leaving it. */
+  talk?: { action: 'topic' | 'leave'; npc_id: string; topic_id?: string }
   inventory_action?: InventoryAction
   cost_gold?: number
   interaction?: {

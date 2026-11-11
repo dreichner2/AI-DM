@@ -17,11 +17,13 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { ComposerMode } from '../gameActions'
-import type { CombatPendingFinisher } from '../gameSelectors'
+import type { CombatPendingFinisher, WorldConversation } from '../gameSelectors'
 import {
+  leaveConversationSubmission,
   objectActionSubmission,
   pickupSubmission,
   takeHeartSubmission,
+  talkTopicSubmission,
   travelSubmission,
   zoneMoveSubmission,
   type ActionSubmission,
@@ -71,12 +73,15 @@ const SUGGESTION_ICONS: Partial<Record<StorySuggestion['kind'], LucideIcon>> = {
   zone_move: DoorOpen,
   travel: Footprints,
   take_heart: Sparkles,
+  topic: MessageCircle,
+  say_free: Quote,
 }
 
 const DOWN_STATUS = 'You are down. Your companions can still reach you.'
 const DOWN_PLACEHOLDER = 'You are down.'
 const OUT_STATUS = 'You are out of this fight. You will come round when it ends.'
 const OUT_PLACEHOLDER = 'You are out of this fight.'
+const TALK_PLACEHOLDER = 'Say it in your own words'
 
 const CONNECTION_LABELS = {
   connecting: 'Connecting…',
@@ -146,18 +151,33 @@ function FinisherRow({
   )
 }
 
-/** One line of suggestions; chips that would not fit wait behind `More…` instead of being cut off. */
+/** Who the viewer's hero is talking with, as one quiet label line above the conversation's suggestions. */
+function TalkingLine({ conversation }: { conversation: WorldConversation }) {
+  return (
+    <p className="story-talking">
+      <span className="story-label">Talking with {conversation.name}</span>
+      {conversation.summary ? <span className="story-talking-summary">{conversation.summary}</span> : null}
+    </p>
+  )
+}
+
+/**
+ * One line of suggestions; chips that would not fit wait behind `More…` instead of being cut off. A conversation's
+ * row wraps instead (the stylesheet gives it the lines), so leaving it is never hidden.
+ */
 function SuggestionRow({
   suggestions,
   onChoose,
+  talking = false,
 }: {
   suggestions: StorySuggestion[]
   onChoose: (suggestion: StorySuggestion) => void
+  talking?: boolean
 }) {
   const chips = suggestions.filter((suggestion) => suggestion.kind !== 'more')
   const rowRef = useChipsThatFit<HTMLDivElement>(chips.length < suggestions.length)
   return (
-    <div ref={rowRef} className="story-suggestions" role="group" aria-label="Suggestions">
+    <div ref={rowRef} className="story-suggestions" data-talking={talking || undefined} role="group" aria-label="Suggestions">
       {[...chips, MORE_SUGGESTION].map((suggestion, index) => {
         const Icon = SUGGESTION_ICONS[suggestion.kind]
         return (
@@ -246,6 +266,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const suggestions = quietMoment && !ribbonActive && !storyEnded
     ? storySuggestions(board.worldState, board.gameplayControls)
     : []
+  const talking = suggestions.length ? board.worldState.conversation : undefined
   const { turnRows, currentResponseEntry } = board
   const heroName = composer.selectedCharacterName ?? ''
   const recentSpells = useMemo(
@@ -346,8 +367,17 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
       if (composer.submitAction(suggestion.label)) recordSent()
       return
     }
+    if (suggestion.kind === 'topic') {
+      submitTyped(talkTopicSubmission(suggestion.npcId, suggestion.topicId, suggestion.label))
+      return
+    }
+    if (suggestion.kind === 'leave_conversation') {
+      submitTyped(leaveConversationSubmission(suggestion.npcId, suggestion.label))
+      return
+    }
     if (composerMode !== 'action') applyComposerMode('action')
-    composer.updateActionText(suggestion.text)
+    // Say something else: the words are the player's own.
+    if (suggestion.kind === 'talk') composer.updateActionText(suggestion.text)
     focusInput()
   }
 
@@ -543,11 +573,15 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
               }}
             />
           ) : suggestions.length ? (
-            <SuggestionRow
-              key={suggestions.map((suggestion) => suggestion.key).join('|')}
-              suggestions={suggestions}
-              onChoose={chooseSuggestion}
-            />
+            <>
+              {talking ? <TalkingLine conversation={talking} /> : null}
+              <SuggestionRow
+                key={suggestions.map((suggestion) => suggestion.key).join('|')}
+                suggestions={suggestions}
+                onChoose={chooseSuggestion}
+                talking={Boolean(talking)}
+              />
+            </>
           ) : null}
 
           <div className="story-input-row">
@@ -575,7 +609,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
                 composerMode,
                 hasCharacter,
                 viewerDown ? (viewerOut ? OUT_PLACEHOLDER : DOWN_PLACEHOLDER) : '',
-                finisherPrompt,
+                finisherPrompt || (board.worldState.conversation ? TALK_PLACEHOLDER : ''),
               )}
               disabled={inputDisabled}
               onChange={(event) => composer.updateActionText(event.target.value)}

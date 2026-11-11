@@ -403,6 +403,7 @@ def _engine_contract_issues(pack: dict[str, Any], *, strict: bool) -> list[Campa
     issues.extend(_route_issues(pack, ids))
     issues.extend(_tie_line_issues(pack, ids))
     issues.extend(_inspires_issues(pack))
+    issues.extend(_talk_issues(pack, ids))
     starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
     if 'campaignFlags' in starting_state or 'campaign_flags' in starting_state:
         issues.append(
@@ -1260,7 +1261,8 @@ def _reward_containers(record: dict[str, Any], path: str = '') -> list[tuple[str
 
 
 def _flag_setters(pack: dict[str, Any]) -> list[tuple[str, str]]:
-    """``(slugged flag key, path)`` for every flag set by an object, an encounter, a quest or an arrival, in that order."""
+    """``(slugged flag key, path)`` for every flag set by an object, an encounter, a quest, an arrival or a person (a
+    topic, reaction or callback, a promise included), in that order."""
 
     setters: list[tuple[str, str]] = []
     for path, interactable in _pack_interactables(pack):
@@ -1286,6 +1288,10 @@ def _flag_setters(pack: dict[str, Any]) -> list[tuple[str, str]]:
             for flag in _records(flags if isinstance(flags, list) else [flags]):
                 if _text(flag.get('flagKey') or flag.get('key')):
                     setters.append((stable_slug(flag.get('flagKey') or flag.get('key')), f'{container_path}.flags'))
+    for path, effects in _talk_effects(pack):
+        setters.extend((stable_slug(key), f'{path}.setsFlags') for key in _dict(effects.get('setsFlags')))
+        if _text(effects.get('promise')):
+            setters.append((stable_slug(effects['promise']), f'{path}.promise'))
     return setters
 
 
@@ -1701,6 +1707,120 @@ def _inspires_issues(pack: dict[str, Any]) -> list[CampaignPackLintIssue]:
             for action in inspires
             if action not in supported
         )
+    return issues
+
+
+TALK_REFERENCE_FIELDS = {'clueIds': 'clues', 'encounterResolvedIds': 'encounters'}
+TALK_EFFECT_REFERENCES = {'discoversClueIds': 'clues', 'discoversLocationIds': 'locations'}
+
+
+def _pack_item_ids(pack: dict[str, Any]) -> set[str]:
+    """Every item the pack can put in a hero's hands: container contents, encounter rewards, people's gifts."""
+
+    item_ids = {_text(item.get('id')) for _path, record in _pack_interactables(pack) for item in _records(record.get('contents')) if _text(item.get('id'))}
+    item_ids |= _encounter_reward_item_ids(pack)
+    for _path, effects in _talk_effects(pack):
+        item_ids.update(_text(item.get('id')) for item in _records(effects.get('givesItems')) if _text(item.get('id')))
+    return item_ids
+
+
+def _talk_effects(pack: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """``(path, effects)`` for every effects block of the people's topics, reactions and callbacks."""
+
+    found = []
+    for index, npc in enumerate(_records(pack.get('npcs'))):
+        for collection in ('topics', 'reacts', 'callbacks'):
+            for record_index, record in enumerate(_records(npc.get(collection))):
+                path = f'npcs[{index}].{collection}[{record_index}]'
+                check = _dict(record.get('check'))
+                for key, block in (('effects', record.get('effects')), ('failEffects', record.get('failEffects')), ('check.failEffects', check.get('failEffects'))):
+                    if isinstance(block, dict):
+                        found.append((f'{path}.{key}', block))
+    return found
+
+
+def _talk_requirements(value: Any, path: str) -> list[tuple[str, dict[str, Any]]]:
+    """A ``requires`` (or ``dcWhen`` entry) and every ``anyOf`` requirement inside it, with their paths."""
+
+    if not isinstance(value, dict):
+        return []
+    found = [(path, value)]
+    for index, entry in enumerate(_records(value.get('anyOf'))):
+        found.extend(_talk_requirements(entry, f'{path}.anyOf[{index}]'))
+    return found
+
+
+def _talk_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    """Every id a person's topics, reactions and callbacks name is one the pack has; a topic id is unique per person."""
+
+    item_ids = _pack_item_ids(pack)
+    promises = {_text(effects.get('promise')) for _path, effects in _talk_effects(pack) if _text(effects.get('promise'))}
+    issues: list[CampaignPackLintIssue] = []
+
+    def unknown(path: str, kind: str, value: str) -> None:
+        issues.append(_error('talk_unknown_reference', path, f'Unknown {kind} "{value}".'))
+
+    for index, npc in enumerate(_records(pack.get('npcs'))):
+        topic_ids = [_text(topic.get('id')) for topic in _records(npc.get('topics'))]
+        for duplicate in sorted({topic_id for topic_id in topic_ids if topic_ids.count(topic_id) > 1}):
+            issues.append(_error('talk_duplicate_topic', f'npcs[{index}].topics', f'Topic id "{duplicate}" is used twice.'))
+        requirements = []
+        for topic_index, topic in enumerate(_records(npc.get('topics'))):
+            path = f'npcs[{index}].topics[{topic_index}]'
+            requirements.extend(_talk_requirements(topic.get('requires'), f'{path}.requires'))
+            for when_index, entry in enumerate(_records(_dict(topic.get('check')).get('dcWhen'))):
+                requirements.extend(_talk_requirements(entry, f'{path}.check.dcWhen[{when_index}]'))
+        for react_index, react in enumerate(_records(npc.get('reacts'))):
+            for when_index, entry in enumerate(_records(_dict(react.get('check')).get('dcWhen'))):
+                requirements.extend(_talk_requirements(entry, f'npcs[{index}].reacts[{react_index}].check.dcWhen[{when_index}]'))
+            about = _text(react.get('about'))
+            if about and _text(react.get('act')) in {'show', 'offer'} and about not in item_ids | ids['clues']:
+                unknown(f'npcs[{index}].reacts[{react_index}].about', 'item or clue', about)
+        for path, requirement in requirements:
+            for field, collection in TALK_REFERENCE_FIELDS.items():
+                for value in _string_list(requirement.get(field)):
+                    if value not in ids[collection]:
+                        unknown(f'{path}.{field}', collection[:-1], value)
+            for value in _string_list(requirement.get('itemIds')):
+                if value not in item_ids:
+                    unknown(f'{path}.itemIds', 'item', value)
+            for value in _string_list(requirement.get('topicIds')):
+                if value not in topic_ids:
+                    unknown(f'{path}.topicIds', 'topic of this person', value)
+        for callback_index, callback in enumerate(_records(npc.get('callbacks'))):
+            path = f'npcs[{index}].callbacks[{callback_index}]'
+            for value in _string_list(callback.get('offers')):
+                if value not in topic_ids:
+                    unknown(f'{path}.offers', 'topic of this person', value)
+            when = _dict(callback.get('when'))
+            if _text(when.get('atLocationId')) and _text(when['atLocationId']) not in ids['locations']:
+                unknown(f'{path}.when.atLocationId', 'location', _text(when['atLocationId']))
+            if _text(when.get('on')).startswith('topic:') and _text(when['on'])[len('topic:'):] not in topic_ids:
+                unknown(f'{path}.when.on', 'topic of this person', _text(when['on'])[len('topic:'):])
+        for value in _string_list(npc.get('caresAbout')):
+            if value not in item_ids | ids['clues']:
+                unknown(f'npcs[{index}].caresAbout', 'item or clue', value)
+        for value in _string_list(npc.get('wants')):
+            if not value.startswith('coin:') and value not in item_ids:
+                unknown(f'npcs[{index}].wants', 'item', value)
+    for path, effects in _talk_effects(pack):
+        for field, collection in TALK_EFFECT_REFERENCES.items():
+            for value in _string_list(effects.get(field)):
+                if value not in ids[collection]:
+                    unknown(f'{path}.{field}', collection[:-1], value)
+        for key in ('keepsPromise', 'breaksPromise'):
+            if _text(effects.get(key)) and _text(effects[key]) not in promises:
+                unknown(f'{path}.{key}', 'promise (no topic makes it)', _text(effects[key]))
+    affects = [(f'{path}.affects', entry) for path, effects in _talk_effects(pack) for entry in _records(effects.get('affects'))]
+    for path, record in _pack_interactables(pack):
+        for action, entries in _dict(record.get('affects')).items():
+            affects.extend((f'{path}.affects.{action}', entry) for entry in _records(entries))
+    for index, encounter in enumerate(_records(pack.get('encounters'))):
+        for outcome, spec in _dict(encounter.get('outcomes')).items():
+            affects.extend((f'encounters[{index}].outcomes.{outcome}.affects', entry) for entry in _records(_dict(spec).get('affects')))
+    for path, entry in affects:
+        if _text(entry.get('npcId')) not in ids['npcs']:
+            unknown(f'{path}.npcId', 'person', _text(entry.get('npcId')))
     return issues
 
 

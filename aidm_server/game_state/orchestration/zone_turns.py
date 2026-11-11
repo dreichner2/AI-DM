@@ -5,7 +5,7 @@ talked to, or words the hero says — against the zones of :mod:`aidm_server.gam
 
 - a zone move (``zone_move`` intent, clicked or typed): the move alone, refused when it is not next door or a fight
   is on;
-- an action on something or someone in the hero's own zone: nothing to do;
+- an action on something or someone in the hero's own zone (words to a person included): nothing to do;
 - in a zone next door, outside a fight: the move first, then the action, in one turn;
 - further off, or next door during a fight: refused before narration (``Mara Reedwake is in the common room. Go
   there first.``);
@@ -112,6 +112,10 @@ def _targets(state: Mapping[str, Any], intents: list[dict[str, Any]], free_text:
             if merchant:
                 person = _npc_name(state, merchant.get('npcId')) or _text(merchant.get('name'))
                 targets.append((merchant_zone_id(state, merchant), person))
+        elif kind == 'talk':
+            npc_id = _dict(intent.get('talk')).get('npc_id')
+            if _npc_name(state, npc_id):
+                targets.append((npc_zone_id(state, npc_id), _npc_name(state, npc_id)))
         elif kind == 'interact':
             target = _dict(intent.get('target'))
             if _text(target.get('kind')) == 'npc' and _text(target.get('npc_id')):

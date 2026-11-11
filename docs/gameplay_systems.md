@@ -164,6 +164,38 @@ turn takes exactly the path that action's button takes:
 - a captive the party holds (see "Captives") is questioned like a person
   present: `question`, `interrogate`, `ask` or `talk to` it.
 
+### Talking with people
+
+`Talk to {Name}` opens a conversation with someone in the hero's room (words
+aimed at someone next door step the hero in first): their greeting the first
+time, `{Name} turns to you.` after. While it lasts the hero is offered up to four
+of the person's topics (`Ask about the caravan`, then `say` topics such as
+`Promise to bring word of the drivers`), `Say something else` and `Leave it
+there`. Typed words outside a fight that talk to someone, or are said to the
+person the hero talks with (or names in their room), become a `talk` intent and
+are never read for a roll; words that name another action are that action and
+end the conversation, as do leaving, travel, a fight starting or stepping into
+another room. Two heroes may talk to two people at once.
+
+The engine holds every conversation turn (`conversations.py`): a chosen topic's
+check is rolled by the engine and its line told with its effects (flags, clues,
+places, items, disposition moves of this person and others, promises,
+memories); typed words choose a topic by its label or keywords, or are one of
+six speech acts recognised by cue words (`speech_acts.py`) — with an AI
+narrator, words with no cue go once to the pre-narration helper, which only
+names the act — answered by the person's authored reaction or the engine's
+defaults; other words are free speech and change nothing (`{Name} has nothing to
+say to that.` in Safe Mode). A clicked topic, `Talk to` and free speech reach
+only the narrator (free speech with no cue the helper once as well); `Leave it
+there` is told by the engine and reaches no model; the post-narration helper is
+never asked about a conversation turn. People keep a disposition from −2 to 2
+(the journal shows its word), what they remember of each hero (eight at most,
+two lines in the journal), and callbacks that bring a remembered act back once,
+opening the narration. A narrating model gets the person's personality,
+disposition, the lines told, what they remember and `May tell if asked:` (the
+available `ask` topics' lines; a secret never, unless an available topic tells
+it), under rule 17. See People You Can Talk To in `campaign_packs.md`.
+
 ### Typed words in a fight
 
 In a fight, typed words that are not a roll are decided by the fight's own

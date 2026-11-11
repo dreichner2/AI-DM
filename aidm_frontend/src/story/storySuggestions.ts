@@ -1,4 +1,5 @@
 import type {
+  WorldConversation,
   WorldLocationSummary,
   WorldMerchantSummary,
   WorldSceneItemSummary,
@@ -30,7 +31,8 @@ const TRAVEL_LIMIT = 2
  * One thing the player could do next. `talk` fills the composer so the player
  * can finish the sentence; `say` sends its label as the player's own words;
  * `take`, `object`, `zone_move`, `travel` and `take_heart` submit typed intents;
- * `trade` opens the merchant's wares; `more` opens the action tray.
+ * `trade` opens the merchant's wares; `more` opens the action tray. In a conversation, `topic` and
+ * `leave_conversation` submit typed intents and `say_free` puts the player in the box to say it in their own words.
  */
 export type StorySuggestion =
   | { kind: 'take'; key: string; label: string; item: WorldSceneItemSummary }
@@ -48,6 +50,9 @@ export type StorySuggestion =
   | { kind: 'zone_move'; key: string; label: string; zone: WorldZoneSummary }
   | { kind: 'travel'; key: string; label: string; exit: WorldLocationSummary }
   | { kind: 'take_heart'; key: string; label: string }
+  | { kind: 'topic'; key: string; label: string; npcId: string; topicId: string }
+  | { kind: 'say_free'; key: string; label: string }
+  | { kind: 'leave_conversation'; key: string; label: string; npcId: string }
   | { kind: 'more'; key: string; label: string }
 
 type ObjectSuggestion = Extract<StorySuggestion, { kind: 'object' }>
@@ -129,6 +134,16 @@ function objectSuggestions(objects: GameplayInteractableControl[], zones?: World
     .slice(0, OBJECT_LIMIT)
 }
 
+/** A conversation's offered actions, in the server's order: its topics, `Say something else`, `Leave it there`. */
+function conversationSuggestions({ npcId, actions }: WorldConversation): StorySuggestion[] {
+  return actions.map((action): StorySuggestion =>
+    action.kind === 'topic'
+      ? { kind: 'topic', key: `topic:${action.id}`, label: action.label, npcId, topicId: action.id }
+      : action.kind === 'leave_conversation'
+        ? { kind: 'leave_conversation', key: 'leave', label: action.label, npcId }
+        : { kind: 'say_free', key: 'say_free', label: action.label })
+}
+
 /**
  * Contextual suggestions for the Story dock, in priority order: the choices
  * an object puts before the player, what may be said to the captives a fight
@@ -140,13 +155,15 @@ function objectSuggestions(objects: GameplayInteractableControl[], zones?: World
  * offered after what stands in the viewer's own zone and marked with its zone
  * (`Talk to Mara Reedwake · common room`), anything further off is not offered,
  * and ways onward only from a zone the party can leave by. Combat has its own
- * ribbon, so nothing is suggested while it lasts.
+ * ribbon, so nothing is suggested while it lasts. While the viewer's hero is in a conversation, its own actions are
+ * the suggestions.
  */
 export function storySuggestions(
   worldState: WorldStatePanel,
   gameplayControls: GameplayControlState,
 ): StorySuggestion[] {
   if (worldState.combat.active || gameplayControls.inCombat) return []
+  if (worldState.conversation) return conversationSuggestions(worldState.conversation)
 
   const take: StorySuggestion[] = worldState.sceneItems
     .filter((item) => item.id && item.takeLabel)

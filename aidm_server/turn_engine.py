@@ -41,6 +41,8 @@ from aidm_server.game_state.change_types import (
     WORLD_STATE_CHANGE_TYPES,
 )
 from aidm_server.game_state.extraction.free_text_actions import fight_words
+from aidm_server.game_state.orchestration.conversations import TALK_KIND, TALK_WORDS_SOURCE
+from aidm_server.game_state.orchestration.speech_acts import conversation_words
 from aidm_server.game_state.models import display_actor_id
 from aidm_server.interactables import NOT_WHILE_FIGHTING
 from aidm_server.game_state.orchestration.combat_resolution import player_attack_target
@@ -987,6 +989,39 @@ class TurnEngine:
             combat_request['attempt'] = message
         command.action_intent = {**routed, 'kind': 'combat', 'combat': combat_request}
         return True
+
+    def _route_conversation_words(self, command: TurnCommand, player: Player, session_obj: Session) -> None:
+        """Typed words outside a fight that talk to someone, or are said to the person the hero is talking with or
+        names in their room, become a ``talk`` intent: the engine holds the conversation, and the words are never read
+        for a roll (:mod:`aidm_server.game_state.orchestration.speech_acts`)."""
+
+        action_intent = command.action_intent if isinstance(command.action_intent, dict) else {}
+        message = str(command.user_input or '').strip()
+        if (
+            finishing(action_intent)
+            or typed_in_fight(action_intent)
+            or str(action_intent.get('kind') or '').strip().lower() not in {'', 'message'}
+            or not message
+            or command.is_opening
+            or player_message_reports_roll_result(message)
+            or find_legacy_roll_claim(message) is not None
+        ):
+            return
+        talk = conversation_words(
+            combat_snapshot_from_session(session_obj.state_snapshot),
+            actor_id=display_actor_id(player.player_id),
+            player_id=player.player_id,
+            message=message,
+        )
+        if talk is None:
+            return
+        command.action_intent = {
+            'kind': TALK_KIND,
+            'source': TALK_WORDS_SOURCE,
+            'text': message,
+            'talk': talk,
+            **({'client_message_id': action_intent['client_message_id']} if action_intent.get('client_message_id') else {}),
+        }
 
     def _prepare_combat_action(self, command: TurnCommand, player: Player, session_obj: Session) -> bool:
         action_intent = command.action_intent
@@ -2166,6 +2201,7 @@ class TurnEngine:
         self._route_finisher_words(command, player, session_obj)
         if not self._route_fight_words(command, player, session_obj):
             return
+        self._route_conversation_words(command, player, session_obj)
         if not self._prepare_combat_action(command, player, session_obj):
             return
         if not self._conduct_turn_submission(command, session_obj):

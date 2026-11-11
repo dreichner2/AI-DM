@@ -256,6 +256,15 @@
               "clue_road_stone_fragment"
             ]
           },
+          "affects": {
+            "break": [
+              {
+                "npcId": "npc_osric_hale",
+                "disposition": -1,
+                "line": "Osric Hale will remember that."
+              }
+            ]
+          },
           "zoneId": "inn_yard"
         },
         {
@@ -1107,7 +1116,118 @@
       "description": "A practical innkeeper with steady hands, tired eyes, and a memory for every traveler who has passed her door.",
       "personality": "Warm but watchful. She listens before speaking and rarely forgets a face, a debt, or a kindness.",
       "motivation": "Keep the settlement alive and the road open long enough for winter stores to arrive.",
-      "disposition": "cautious_helpful",
+      "disposition": "neutral",
+      "greeting": "\"You'll want something hot. Then you'll want to know what I know.\"",
+      "topics": [
+        {
+          "id": "mara_caravan",
+          "label": "the caravan",
+          "keywords": [
+            "caravan",
+            "wagons",
+            "wenna"
+          ],
+          "line": "\"They were due before sunset. Six of them. Wenna Carrow drove the lead wagon, and she has never once been late to my table.\""
+        },
+        {
+          "id": "mara_horses",
+          "label": "the horses",
+          "keywords": [
+            "horses",
+            "horse"
+          ],
+          "line": "\"Look at them. Calm as a churchyard. Horses that have seen a wolf don't stand like that. Whatever took the drivers, the beasts never feared it.\""
+        },
+        {
+          "id": "mara_strangers",
+          "label": "strangers on the road",
+          "keywords": [
+            "stranger",
+            "strangers",
+            "gloves"
+          ],
+          "line": "\"Two nights back a man with ash-stained gloves took the corner seat and asked about old road-stones. Paid in clean coin. Didn't touch his supper.\""
+        },
+        {
+          "id": "mara_bell",
+          "label": "the bell",
+          "keywords": [
+            "bell"
+          ],
+          "line": "\"That bell hasn't rung by itself in thirty years. My mother said it rang the night the old wardens stopped riding.\""
+        },
+        {
+          "id": "mara_who_she_lost",
+          "label": "who she lost",
+          "keywords": [
+            "husband",
+            "lost",
+            "lose"
+          ],
+          "requires": {
+            "dispositionAtLeast": 1
+          },
+          "line": "\"My husband walked that road nine winters ago and didn't walk back. I followed a pale light into the fog once. I heard him call my name from past the milestone — and I ran. If you see those lights, don't answer. Whatever they say.\"",
+          "effects": {
+            "setsFlags": {
+              "mara_trusts_party": true
+            },
+            "disposition": 1
+          }
+        },
+        {
+          "id": "mara_promise",
+          "label": "Promise to bring word of the drivers",
+          "kind": "say",
+          "line": "\"Don't promise me that unless you mean it.\" She holds your eye a moment longer. \"…All right. I'll hold you to it.\"",
+          "effects": {
+            "disposition": 1,
+            "promise": "promised_mara_word"
+          }
+        },
+        {
+          "id": "mara_tell_drivers",
+          "label": "Tell her what became of the drivers",
+          "kind": "say",
+          "requires": {
+            "anyOf": [
+              {
+                "flags": {
+                  "ward_renewed": true
+                }
+              },
+              {
+                "flags": {
+                  "ward_broken": true
+                }
+              },
+              {
+                "flags": {
+                  "ward_hidden": true
+                }
+              },
+              {
+                "flags": {
+                  "ward_claimed": true
+                }
+              },
+              {
+                "flags": {
+                  "drivers_fate_known": true
+                }
+              }
+            ]
+          },
+          "line": "She listens to all of it with her hands flat on the counter. When you finish she nods once, and sets a place at the table that she does not explain.",
+          "effects": {
+            "keepsPromise": "promised_mara_word"
+          }
+        }
+      ],
+      "caresAbout": [
+        "silver_drivers_button",
+        "clue_erased_caravan_ledger"
+      ],
       "questIds": [
         "quest_road_unremembered_kings"
       ],
@@ -1139,7 +1259,153 @@
       "description": "A nervous young stablehand with muddy sleeves, quick words, and guilt written plainly across his face.",
       "personality": "Eager, frightened, observant, and prone to panic when accused.",
       "motivation": "Prove he is not lying and avoid being blamed for the caravan's condition.",
-      "disposition": "anxious_cooperative_if_kind",
+      "disposition": "neutral",
+      "greeting": "\"I didn't— I mean. Yes. What?\"",
+      "topics": [
+        {
+          "id": "tovin_wheels",
+          "label": "the wheels",
+          "keywords": [
+            "wheels",
+            "wheel",
+            "mud"
+          ],
+          "line": "\"That mud's wrong. Cold grey stuff, packed in hard. There's no track like that between here and the ford. I'd know. I walk it.\""
+        },
+        {
+          "id": "tovin_horses",
+          "label": "the horses",
+          "keywords": [
+            "horses",
+            "horse",
+            "handprint"
+          ],
+          "line": "\"The off-leader's got a handprint on her neck. White dust, five fingers. Like somebody patted her and told her to stand.\""
+        },
+        {
+          "id": "tovin_bench",
+          "label": "under the bench",
+          "keywords": [
+            "bench",
+            "cloth"
+          ],
+          "line": "\"There's something wedged under the driver's bench, wrapped in waxed cloth. I saw it. I didn't touch it. I swear I didn't touch that.\""
+        },
+        {
+          "id": "tovin_bell",
+          "label": "the bell",
+          "keywords": [
+            "bell"
+          ],
+          "line": "\"It rang three times before they stopped. Not a rattle. Rung. Like someone was announcing them.\""
+        },
+        {
+          "id": "tovin_gently",
+          "label": "Ask gently what he is hiding",
+          "kind": "say",
+          "requires": {
+            "flags": {
+              "tovin_button_revealed": false
+            }
+          },
+          "check": {
+            "skill": "persuasion",
+            "ability": "charisma",
+            "dc": 11,
+            "failLine": "\"It's nothing! It's— it's nothing.\""
+          },
+          "line": "He opens his fist. A silver button, stamped with a wheel. \"It was on the floor of the second wagon. I thought nobody'd miss it. It's Wenna's. I know it's Wenna's.\"",
+          "effects": {
+            "givesItems": [
+              {
+                "id": "silver_drivers_button",
+                "name": "Silver Driver's Button",
+                "type": "quest",
+                "quantity": 1
+              }
+            ],
+            "setsFlags": {
+              "tovin_button_revealed": true
+            },
+            "disposition": 1,
+            "affects": [
+              {
+                "npcId": "npc_mara_reedwake",
+                "disposition": 1,
+                "line": "Mara Reedwake saw how you spoke to the boy."
+              }
+            ]
+          }
+        },
+        {
+          "id": "tovin_lean",
+          "label": "Lean on him until he talks",
+          "kind": "say",
+          "requires": {
+            "flags": {
+              "tovin_button_revealed": false
+            }
+          },
+          "check": {
+            "skill": "intimidation",
+            "ability": "charisma",
+            "dc": 9,
+            "failLine": "He bolts for the stable and will not look at you.",
+            "failEffects": {
+              "disposition": -1
+            }
+          },
+          "line": "\"All right! All right.\" He throws a silver button at your feet. \"Take it. It was Wenna's. Just take it.\"",
+          "effects": {
+            "givesItems": [
+              {
+                "id": "silver_drivers_button",
+                "name": "Silver Driver's Button",
+                "type": "quest",
+                "quantity": 1
+              }
+            ],
+            "setsFlags": {
+              "tovin_button_revealed": true
+            },
+            "disposition": -1,
+            "affects": [
+              {
+                "npcId": "npc_mara_reedwake",
+                "disposition": -1,
+                "line": "Mara Reedwake will remember how you spoke to the boy."
+              }
+            ]
+          }
+        }
+      ],
+      "callbacks": [
+        {
+          "id": "tovin_stood_over_me",
+          "when": {
+            "remembers": "protected",
+            "on": "fight_end",
+            "flags": {
+              "tovin_button_revealed": false
+            }
+          },
+          "text": "Tovin crawls out from under the wagon and presses something into your hand before anyone else can see. \"It was Wenna's,\" he says. \"I took it. You can have it. You stood over me.\"",
+          "effects": {
+            "givesItems": [
+              {
+                "id": "silver_drivers_button",
+                "name": "Silver Driver's Button",
+                "type": "quest",
+                "quantity": 1
+              }
+            ],
+            "setsFlags": {
+              "tovin_button_revealed": true
+            },
+            "disposition": 1
+          }
+        }
+      ],
       "questIds": [
         "quest_road_unremembered_kings"
       ],
@@ -1170,7 +1436,239 @@
       "description": "A stern settlement leader in a rain-dark cloak, carrying too much responsibility and too little trust.",
       "personality": "Suspicious, defensive, controlled, and afraid of losing order.",
       "motivation": "Prevent panic and protect the settlement, even if that means closing the road and abandoning the missing.",
-      "disposition": "guarded_authoritarian",
+      "disposition": "wary",
+      "greeting": "\"Say it quickly.\"",
+      "topics": [
+        {
+          "id": "osric_missing",
+          "label": "the missing",
+          "keywords": [
+            "missing",
+            "vanished"
+          ],
+          "line": "\"Eleven, since midsummer. I have told the town four. You will keep that between us.\""
+        },
+        {
+          "id": "osric_came_back",
+          "label": "the one who came back",
+          "keywords": [
+            "garrett",
+            "survivor",
+            "came back"
+          ],
+          "line": "\"Old Garrett walked in off that road in the spring. Won't say where he was. Won't say his own name unless you say it first.\""
+        },
+        {
+          "id": "osric_stores",
+          "label": "the stores",
+          "keywords": [
+            "stores",
+            "supplies",
+            "flour"
+          ],
+          "line": "\"If that road stays shut we have three weeks of flour. Then I start choosing who eats.\""
+        },
+        {
+          "id": "osric_letter",
+          "label": "the letter",
+          "keywords": [
+            "letter"
+          ],
+          "requires": {
+            "dispositionAtLeast": 0
+          },
+          "line": "\"A letter came. Unsigned, sealed in grey wax. 'Keep your people off the road and the Lantern Post will be passed over.' I haven't answered it. I haven't burned it either.\""
+        },
+        {
+          "id": "osric_show",
+          "label": "Show him what you found",
+          "kind": "say",
+          "requires": {
+            "anyOf": [
+              {
+                "clueIds": [
+                  "clue_road_stone_fragment"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_erased_caravan_ledger"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_pale_lantern_bell"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_ash_marks"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_tovin_silver_button"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_scratched_memorial_names"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_original_road_oath"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_cinder_scribe_true_name"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_final_valley_map"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_binding_quill"
+                ]
+              },
+              {
+                "clueIds": [
+                  "clue_false_refuge"
+                ]
+              }
+            ]
+          },
+          "line": "He turns the thing over twice. \"…So it's not just weather and wolves. Hm.\"",
+          "effects": {
+            "disposition": 1
+          }
+        },
+        {
+          "id": "osric_stand",
+          "label": "Ask him to stand with you",
+          "kind": "say",
+          "requires": {
+            "topicIds": [
+              "osric_letter"
+            ]
+          },
+          "check": {
+            "skill": "persuasion",
+            "ability": "charisma",
+            "dc": 13,
+            "dcWhen": [
+              {
+                "flags": {
+                  "mara_trusts_party": true
+                },
+                "dc": 10
+              }
+            ],
+            "failLine": "\"I have a town to feed. Ask me when you've shown me something.\""
+          },
+          "line": "\"Then take what's in my stores that you can carry, and two of my watch as far as the milestone. Bring them back.\"",
+          "effects": {
+            "setsFlags": {
+              "osric_supports_party": true
+            },
+            "givesItems": [
+              {
+                "id": "osric_store_potion_of_healing",
+                "name": "Potion of Healing",
+                "type": "potion",
+                "quantity": 2
+              }
+            ],
+            "disposition": 1
+          }
+        },
+        {
+          "id": "osric_admit",
+          "label": "Admit you were never sent",
+          "kind": "say",
+          "requires": {
+            "remembers": "claimed_authority"
+          },
+          "line": "Osric says nothing for a long moment. \"…You got further than the ones who were. Sit down. Tell him what you saw.\"",
+          "effects": {
+            "forget": "claimed_authority",
+            "remember": "owned_the_lie",
+            "disposition": 1
+          }
+        },
+        {
+          "id": "osric_keep_claim",
+          "label": "Keep up the claim",
+          "kind": "say",
+          "requires": {
+            "remembers": "claimed_authority"
+          },
+          "check": {
+            "skill": "deception",
+            "ability": "charisma",
+            "dc": 15,
+            "failLine": "The rider closes his book. \"I know every name on that list,\" he says. \"Yours isn't on it.\"",
+            "failEffects": {
+              "disposition": -2,
+              "remember": "caught_lying"
+            }
+          },
+          "line": "The rider nods slowly and writes your name beside a rank you do not hold.",
+          "effects": {
+            "setsFlags": {
+              "named_in_wardens_report": true
+            }
+          }
+        }
+      ],
+      "reacts": [
+        {
+          "act": "claim",
+          "about": "authority",
+          "check": {
+            "skill": "deception",
+            "ability": "charisma",
+            "dc": 13
+          },
+          "line": "Osric looks you up and down, and something in his shoulders eases. \"About time somebody sent somebody. The yard is yours. Don't make me regret it.\"",
+          "effects": {
+            "setsFlags": {
+              "osric_yields_wagons": true
+            },
+            "disposition": 1,
+            "remember": "claimed_authority"
+          },
+          "failLine": "\"Then you'd have a seal, and a name, and you'd have shown either before you opened your mouth.\"",
+          "failEffects": {
+            "disposition": -1,
+            "remember": "caught_lying"
+          }
+        }
+      ],
+      "callbacks": [
+        {
+          "id": "osric_the_rider",
+          "when": {
+            "remembers": "claimed_authority",
+            "on": "arrival",
+            "atLocationId": "loc_lantern_post_inn"
+          },
+          "text": "A rider in road-warden grey is drinking at Mara's counter. Osric brings him straight to you. \"This is the one I told you of,\" he says. \"Sent by the higher ups. They'll want your report.\"",
+          "effects": {
+            "setsFlags": {
+              "rider_expects_report": true
+            }
+          },
+          "offers": [
+            "osric_admit",
+            "osric_keep_claim"
+          ]
+        }
+      ],
       "questIds": [
         "quest_road_unremembered_kings"
       ],
@@ -1202,7 +1700,83 @@
       "description": "A broad Dwarven stonewright with scarred knuckles, slate dust in his beard, and a professional hatred of careless masonry.",
       "personality": "Blunt, dry, skeptical of mysticism, but deeply reverent toward craft and sworn work.",
       "motivation": "Prevent fools from breaking ancient stonework they do not understand.",
-      "disposition": "skeptical_helpful_if_respected",
+      "disposition": "wary",
+      "greeting": "\"If you've come to tell me the stones are haunted, the door is behind you.\"",
+      "topics": [
+        {
+          "id": "brokk_fragment",
+          "label": "the fragment",
+          "keywords": [
+            "fragment"
+          ],
+          "requires": {
+            "itemIds": [
+              "road_stone_fragment"
+            ]
+          },
+          "line": "\"That's off a ward-stone. Old work. Older than this yard.\""
+        },
+        {
+          "id": "brokk_road_stones",
+          "label": "what the road-stones were for",
+          "keywords": [
+            "road-stones",
+            "ward-stones"
+          ],
+          "line": "\"They were cut to guide travelers and to keep them safe. Proper work. Sworn work.\""
+        },
+        {
+          "id": "brokk_cut_marks",
+          "label": "the cut marks",
+          "keywords": [
+            "cuts",
+            "cut marks"
+          ],
+          "line": "\"Those cuts are new, and no mason made them. That's ritual work.\""
+        },
+        {
+          "id": "brokk_missing_names",
+          "label": "the missing names",
+          "keywords": [
+            "names"
+          ],
+          "line": "\"The names are the danger. A ward can't keep anyone it can't remember.\""
+        },
+        {
+          "id": "brokk_ready",
+          "label": "Ask him to ready the last road-stone",
+          "kind": "say",
+          "requires": {
+            "topicIds": [
+              "brokk_missing_names"
+            ]
+          },
+          "check": {
+            "skill": "persuasion",
+            "ability": "charisma",
+            "dc": 12,
+            "dcWhen": [
+              {
+                "itemIds": [
+                  "road_stone_fragment"
+                ],
+                "topicIds": [
+                  "brokk_fragment"
+                ],
+                "noCheck": true
+              }
+            ],
+            "failLine": "\"My clan put those tools down for a reason.\""
+          },
+          "line": "\"…My grandfather cut ward-stones. My father sold the chisels. Give it here. I'll need until morning.\"",
+          "effects": {
+            "setsFlags": {
+              "brokk_helping": true
+            },
+            "disposition": 1
+          }
+        }
+      ],
       "questIds": [
         "quest_road_unremembered_kings"
       ],
@@ -1233,7 +1807,75 @@
       "description": "A weathered ranger with grey eyes, a green-brown cloak, and the patient severity of someone used to being mistrusted.",
       "personality": "Quiet, cautious, testing, and loyal once convinced.",
       "motivation": "Keep the settlements alive while stronger powers are distant or unaware.",
-      "disposition": "guarded_allied",
+      "disposition": "neutral",
+      "greeting": "\"You walk loud. Good. The lights like quiet ones.\"",
+      "topics": [
+        {
+          "id": "radan_ash_marks",
+          "label": "the ash marks",
+          "keywords": [
+            "ash",
+            "signs"
+          ],
+          "line": "\"Someone's marking the road signs with ash. Fresh, and not by any hand I know.\""
+        },
+        {
+          "id": "radan_ahead",
+          "label": "who goes ahead of the vanishings",
+          "keywords": [
+            "spies",
+            "cutthroats",
+            "vanishings"
+          ],
+          "line": "\"Spies. Cutthroats. They move up this road just ahead of every vanishing.\""
+        },
+        {
+          "id": "radan_lanterns",
+          "label": "the pale lanterns",
+          "keywords": [
+            "lanterns",
+            "lantern",
+            "lights"
+          ],
+          "line": "\"First come the pale lanterns. Then the travelers are gone.\""
+        },
+        {
+          "id": "radan_valley",
+          "label": "the old valley",
+          "keywords": [
+            "valley"
+          ],
+          "line": "\"There's an old valley out there where the forgotten roads meet.\""
+        },
+        {
+          "id": "radan_brother",
+          "label": "his brother",
+          "keywords": [
+            "brother"
+          ],
+          "requires": {
+            "dispositionAtLeast": 1
+          },
+          "line": "\"My brother rode this road six years back with a message for the coast. His horse came home. I've been reading milestones ever since.\""
+        },
+        {
+          "id": "radan_walk",
+          "label": "Ask him to walk with you",
+          "kind": "say",
+          "requires": {
+            "encounterResolvedIds": [
+              "enc_pale_lantern_detour"
+            ]
+          },
+          "line": "\"You stood when the lights called. I've buried people who didn't. I'll walk with you as far as the valley.\"",
+          "effects": {
+            "setsFlags": {
+              "radan_allied": true
+            },
+            "disposition": 1
+          }
+        }
+      ],
       "questIds": [
         "quest_road_unremembered_kings"
       ],
@@ -1265,7 +1907,88 @@
       "description": "A calm traveler whose old songs carry fragments of fallen kingdoms, road-oaths, and names removed from living memory.",
       "personality": "Distant, gentle, sorrowful, and precise with words.",
       "motivation": "Prevent the old ward from being turned into a tool of domination.",
-      "disposition": "benevolent_but_testing",
+      "disposition": "neutral",
+      "greeting": "\"You have come to a place that is trying to forget itself. Sit.\"",
+      "topics": [
+        {
+          "id": "serenil_ward_made",
+          "label": "why the ward was made",
+          "keywords": [
+            "refugees",
+            "messengers"
+          ],
+          "line": "\"It was raised for refugees, and for the messengers who ran ahead of them. The road was meant to keep them.\""
+        },
+        {
+          "id": "serenil_ward_remembers",
+          "label": "what the ward remembers",
+          "keywords": [
+            "remember",
+            "remembers",
+            "memory"
+          ],
+          "line": "\"It remembers names. Promises. Places. A ward is a long memory that keeps its word.\""
+        },
+        {
+          "id": "serenil_erasing",
+          "label": "what erasing does",
+          "keywords": [
+            "erase",
+            "erased",
+            "erasing",
+            "blind"
+          ],
+          "line": "\"Take its names away and it goes blind. Then it holds on to whatever it can still touch.\""
+        },
+        {
+          "id": "serenil_dead_wardens",
+          "label": "the dead wardens",
+          "keywords": [
+            "dead",
+            "wardens",
+            "roadwardens"
+          ],
+          "line": "\"The dead wardens can still be reached. With respect, with song, and with their names given back.\""
+        },
+        {
+          "id": "serenil_song",
+          "label": "Ask her to teach you the Westward Song",
+          "kind": "say",
+          "requires": {
+            "topicIds": [
+              "serenil_dead_wardens"
+            ]
+          },
+          "line": "She sings it once, low, and makes you give it back to her line by line until the names in it sit right in your mouth.",
+          "effects": {
+            "setsFlags": {
+              "serenil_song_heard": true,
+              "oath_learned": true
+            },
+            "disposition": 1
+          }
+        },
+        {
+          "id": "serenil_first_name",
+          "label": "the first warden's name",
+          "keywords": [
+            "first warden",
+            "caelorn"
+          ],
+          "requires": {
+            "dispositionAtLeast": 1,
+            "flags": {
+              "serenil_song_heard": true
+            }
+          },
+          "line": "\"Caelorn. He held the road while the last of them crossed. Say it to him, when he asks who goes. Say it as if it weighs something.\"",
+          "effects": {
+            "setsFlags": {
+              "roadwardens_name_known": true
+            }
+          }
+        }
+      ],
       "questIds": [
         "quest_road_unremembered_kings"
       ],
@@ -1297,7 +2020,81 @@
       "description": "A sharp-eyed peddler or message-runner with ash under her fingernails and too many answers prepared in advance.",
       "personality": "Evasive, clever, tired, and redeemable if treated as more than a criminal.",
       "motivation": "Survive and protect her missing brother, even if that means serving the Cinder Scribe.",
-      "disposition": "deceptive_frightened",
+      "disposition": "wary",
+      "greeting": "\"I'm only waiting out the rain.\"",
+      "topics": [
+        {
+          "id": "veyra_scribe",
+          "label": "the Scribe",
+          "keywords": [
+            "scribe"
+          ],
+          "requires": {
+            "dispositionAtLeast": 0
+          },
+          "line": "\"The Scribe is collecting. Names, and chips of the old road-stones.\""
+        },
+        {
+          "id": "veyra_ash_marks",
+          "label": "the ash marks",
+          "keywords": [
+            "ash",
+            "marks"
+          ],
+          "requires": {
+            "dispositionAtLeast": 0
+          },
+          "line": "\"Ash marks muddle the ward. That's what they're for.\""
+        },
+        {
+          "id": "veyra_valley",
+          "label": "the hidden valley",
+          "keywords": [
+            "valley"
+          ],
+          "requires": {
+            "dispositionAtLeast": 0
+          },
+          "line": "\"The last road-stone lies in a hidden valley. You won't find it on a map.\""
+        },
+        {
+          "id": "veyra_missing",
+          "label": "the missing",
+          "keywords": [
+            "missing"
+          ],
+          "requires": {
+            "dispositionAtLeast": 0
+          },
+          "line": "\"Not all of the missing are dead. Remember that, whatever else you hear.\""
+        },
+        {
+          "id": "veyra_brother",
+          "label": "her brother",
+          "keywords": [
+            "brother"
+          ],
+          "requires": {
+            "dispositionAtLeast": 1
+          },
+          "line": "\"My brother's one of them. The missing. I carry the Scribe's marks so he keeps my brother's name on the page. Now you know what I am.\""
+        },
+        {
+          "id": "veyra_afraid",
+          "label": "Tell her you can see she is afraid",
+          "kind": "say",
+          "check": {
+            "skill": "insight",
+            "ability": "wisdom",
+            "dc": 12,
+            "failLine": "\"Afraid? Of rain?\" She laughs, a beat too late."
+          },
+          "line": "Her hands stop moving. \"…He has my name,\" she says. \"You don't know what that means yet.\"",
+          "effects": {
+            "disposition": 1
+          }
+        }
+      ],
       "questIds": [
         "quest_road_unremembered_kings"
       ],
@@ -4446,32 +5243,7 @@
       "style": "hidden"
     }
   ],
-  "storyFlags": [
-    {
-      "key": "mara_trusts_party",
-      "when": "Mara Reedwake decides the party can be trusted with what she saw and what she lost on the road."
-    },
-    {
-      "key": "tovin_button_revealed",
-      "when": "Tovin Bell, reassured rather than accused, hands over the silver button he took from the caravan."
-    },
-    {
-      "key": "osric_supports_party",
-      "when": "Osric Hale, persuaded rather than shamed, puts the settlement's guards, records or stores behind the party."
-    },
-    {
-      "key": "radan_allied",
-      "when": "Radan Greycloak finishes testing the party and agrees to guide them along the ranger paths."
-    },
-    {
-      "key": "brokk_helping",
-      "when": "Brokk Stonehand, shown respect for his craft, agrees to help prepare the last road-stone."
-    },
-    {
-      "key": "serenil_song_heard",
-      "when": "Serenil teaches the party the Westward Song and the names it keeps."
-    }
-  ],
+  "storyFlags": [],
   "merchants": [
     {
       "id": "merchant_mara_counter",

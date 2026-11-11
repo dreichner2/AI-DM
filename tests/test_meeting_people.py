@@ -22,7 +22,7 @@ from aidm_server.services.campaign_pack_visibility import filter_session_snapsho
 from tests import test_flagship_adventure as flagship
 from tests import test_play_now_release_smoke as smoke
 
-KNOWS = {npc['id']: npc['knows'] for npc in flagship.PACK['npcs']}
+TOPIC_LINES = {npc['id']: {topic['id']: topic['line'] for topic in npc.get('topics') or []} for npc in flagship.PACK['npcs']}
 UNREACHABLE_STATUSES = {'dead', 'deceased', 'destroyed'}
 
 WREN_KNOWS = 'The lamp in the loft burns all night for someone who never comes home.'
@@ -30,6 +30,10 @@ ILSABET_KNOWS = 'The wheel turns backwards when the drowned are listening.'
 ILSABET_SECRET = 'Ilsabet opened the sluice the night the river ran red.'
 CORRAN_KNOWS = 'Three crates under the mill floor are not flour.'
 CORRAN_SECRET = 'Corran pays the reeve to look away from the lower landing.'
+# What Hesk will not say yet, would take, or would believe: none of it may reach a player.
+HESK_SLUICE = 'The sluice was opened from the inside.'
+HESK_REACTS = 'Hesk spits. "Liar."'
+HESK_UNSAID = [HESK_SLUICE, HESK_REACTS, 'coin:500', 'reeve_seal', 'Hesk remembers who held the lamp.']
 HELD_BACK = {
     'npc_ilsabet': ['Ilsabet Thornquill', ILSABET_KNOWS, ILSABET_SECRET],
     'npc_corran': ['Corran Vey', CORRAN_KNOWS, CORRAN_SECRET],
@@ -68,7 +72,12 @@ def _mill_pack() -> dict:
         ],
         'npcs': [
             {'id': 'npc_hesk', 'name': 'Hesk the Miller', 'locationId': 'loc_mill',
-             'knows': ['The wheel stopped the night the river ran red.']},
+             'knows': ['The wheel stopped the night the river ran red.'],
+             'topics': [{'id': 'hesk_sluice', 'label': 'the sluice', 'line': HESK_SLUICE, 'requires': {'dispositionAtLeast': 2}}],
+             'reacts': [{'act': 'claim', 'line': HESK_REACTS}],
+             'callbacks': [{'id': 'hesk_lamp', 'when': {'remembers': 'held_lamp', 'on': 'rest'}, 'text': 'Hesk remembers who held the lamp.'}],
+             'wants': ['coin:500'],
+             'believes': [{'claim': 'authority', 'ifFlags': {'reeve_seal': True}}]},
             # equals defaults to true.
             {'id': 'npc_wren', 'name': 'Wren Lampwick', 'locationId': 'loc_mill',
              'hiddenUntil': {'flagKey': 'lamp_lit'}, 'knows': [WREN_KNOWS]},
@@ -196,9 +205,18 @@ def _people(snapshot: dict) -> list[str]:
     return [person['name'] for person in _view(snapshot)['journal']['people']]
 
 
-def _talk(table: flagship.Table, first_name: str) -> str:
+def _talk(table: flagship.Table, first_name: str, npc_id: str) -> tuple[str, str]:
+    """Talk to someone by name, then ask the first thing the conversation offers: ``(topic id, its narration)``."""
+
     table.send(f'I talk to {first_name}', {'kind': 'message'})
-    return table.narration()
+    topic = _view(table.last)['currentScene']['conversation']['actions'][0]
+    table.send(topic['label'], {'kind': 'talk', 'talk': {'action': 'topic', 'npc_id': npc_id, 'topic_id': topic['id']}})
+    return topic['id'], table.narration()
+
+
+def _tells_first_topic(table: flagship.Table, first_name: str, npc_id: str) -> bool:
+    topic_id, narration = _talk(table, first_name, npc_id)
+    return TOPIC_LINES[npc_id][topic_id] in narration
 
 
 def test_the_people_of_the_road_are_met_on_arrival_and_can_be_talked_to(road):
@@ -219,12 +237,12 @@ def test_the_people_of_the_road_are_met_on_arrival_and_can_be_talked_to(road):
     after_fight = table.end_combat('all_enemies_defeated')
     assert _talk_offers(after_fight.snapshot) == ['Talk to Radan Greycloak', 'Talk to Veyra Ashcap']
     assert {'Radan Greycloak', 'Veyra Ashcap'} <= set(_people(after_fight.snapshot))
-    assert KNOWS['npc_radan_greycloak'][0].rstrip('.') in _talk(table, 'Radan')
+    assert _tells_first_topic(table, 'Radan', 'npc_radan_greycloak')
 
     table.travel('loc_waystation_scratched_names', 'Waystation of Scratched Names')
     assert _met_by(table, 'scene.move_location') == ['npc_serenil_westward_song']
     assert _talk_offers(table.last) == ['Talk to Serenil of the Westward Song']
-    assert KNOWS['npc_serenil_westward_song'][0].rstrip('.') in _talk(table, 'Serenil')
+    assert _tells_first_topic(table, 'Serenil', 'npc_serenil_westward_song')
     # The ambush there reveals the hidden valley.
     assert table.act('ws_memorial_wall', 'search', 'Memorial Wall').encounter == 'enc_waystation_ambush'
     assert table.end_combat('all_enemies_defeated').places == {'loc_valley_last_road_stone': 'discovered'}
@@ -232,7 +250,7 @@ def test_the_people_of_the_road_are_met_on_arrival_and_can_be_talked_to(road):
     table.travel('loc_old_masons_yard', "Old Mason's Yard")
     assert _met_by(table, 'scene.move_location') == ['npc_brokk_stonehand']
     assert _talk_offers(table.last) == ['Talk to Brokk Stonehand']
-    assert KNOWS['npc_brokk_stonehand'][0].rstrip('.') in _talk(table, 'Brokk')
+    assert _tells_first_topic(table, 'Brokk', 'npc_brokk_stonehand')
 
     # Caelorn and the Cinder Scribe are listed at no place: arriving at theirs meets nobody.
     table.travel('loc_cairns_roadwardens', 'Cairns of the Roadwardens')
@@ -275,7 +293,7 @@ def test_hidden_and_hidden_until_hold_people_back_and_nothing_about_them_reaches
     assert table.last['currentScene']['activeNpcIds'] == ['npc_hesk', 'npc_wren']
     assert _talk_offers(table.last) == ['Talk to Hesk the Miller', 'Talk to Wren Lampwick']
     assert {npc['id']: npc['status'] for npc in table.last['knownNpcs']} == {'npc_hesk': 'met', 'npc_wren': 'met'}
-    assert WREN_KNOWS.rstrip('.') in _talk(table, 'Wren')
+    assert WREN_KNOWS.rstrip('.') in _talk(table, 'Wren', 'npc_wren')[1]
     assert _leaked(_player_texts(table, events), 'npc_ilsabet', 'npc_corran') == []
 
     # Turning the wheel sets the flag while the party stands there: Ilsabet is met then and joins the scene.
@@ -285,9 +303,13 @@ def test_hidden_and_hidden_until_hold_people_back_and_nothing_about_them_reaches
     assert {'kind': 'met', 'text': 'Met — Ilsabet Thornquill', 'refId': 'npc_ilsabet'} in table.pipeline_beats()
     assert table.last['currentScene']['activeNpcIds'] == ['npc_hesk', 'npc_wren', 'npc_ilsabet']
     assert 'Talk to Ilsabet Thornquill' in _talk_offers(table.last)
-    assert ILSABET_KNOWS.rstrip('.') in _talk(table, 'Ilsabet')
+    assert ILSABET_KNOWS.rstrip('.') in _talk(table, 'Ilsabet', 'npc_ilsabet')[1]
     # Met, she reaches the player like anyone known; her secret never does.
     assert _leaked(_player_texts(table, events), 'npc_ilsabet') == ['Ilsabet Thornquill', ILSABET_KNOWS]
+    # Talking with Hesk shows his topics' labels; an untold line, his reactions, wants and beliefs never.
+    table.send('I talk to Hesk', {'kind': 'message'})
+    assert [action['label'] for action in _view(table.last)['currentScene']['conversation']['actions']] == ['Say something else', 'Leave it there']
+    assert [text for text in HESK_UNSAID if text in _player_texts(table, events)] == []
 
     # Corran stays hidden whatever happens there, and away from the lane and back.
     table.travel('loc_lane', 'Mill Lane')

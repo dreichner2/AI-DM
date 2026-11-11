@@ -440,7 +440,7 @@ def test_the_narrating_model_is_given_the_thread_to_tell_and_the_heros_desire_an
 
 def test_long_in_character_speech_earns_no_inspiration(ai_table):
     ai_table.send(
-        '"Mara, I swear on my sister\'s name that I will find whoever emptied these wagons and bring them back to face you."',
+        '"Mara, these wagons trouble me more than I can say, and I have walked a great many roads in a great many seasons."',
         'Mara Reedwake nods slowly.',
     )
 

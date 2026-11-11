@@ -238,6 +238,30 @@ export function zoneMoveSubmission(zone: { id: string; name: string; moveLabel?:
   }
 }
 
+/** A conversation's topic, sent as its label ("Ask about the caravan."). */
+export function talkTopicSubmission(npcId: string, topicId: string, label: string): ActionSubmission {
+  const message = phraseLine(label)
+  return {
+    message,
+    intent: {
+      kind: 'talk',
+      source: 'scene_panel',
+      text: message,
+      client_message_id: createClientMessageId(),
+      talk: { action: 'topic', npc_id: npcId, topic_id: topicId },
+    },
+  }
+}
+
+/** Ending a conversation: `Leave it there.` */
+export function leaveConversationSubmission(npcId: string, label: string): ActionSubmission {
+  const message = phraseLine(label)
+  return {
+    message,
+    intent: { kind: 'talk', source: 'scene_panel', text: message, client_message_id: createClientMessageId(), talk: { action: 'leave', npc_id: npcId } },
+  }
+}
+
 /** The label of Take heart: spending Inspiration, free, for advantage on the hero's next d20 roll. */
 export const TAKE_HEART_LABEL = 'Take heart (Inspiration)'
 

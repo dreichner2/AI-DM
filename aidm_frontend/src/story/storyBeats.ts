@@ -177,6 +177,8 @@ const TURN_BEAT_STYLES: Record<string, TurnBeatStyle> = {
   ending: { tone: 'success', glyph: 'scroll', target: null },
   thread: { tone: 'arcane', glyph: 'scroll', target: 'journal' },
   inspiration: { tone: 'gold', glyph: 'spark', target: null },
+  bond: { tone: 'default', glyph: 'person', target: 'journal' },
+  promise: { tone: 'default', glyph: 'scroll', target: 'journal' },
 }
 
 /** The raw engine wording a client-built line may carry; such lines are never shown. */
@@ -204,7 +206,9 @@ function turnBeat(value: JsonRecord): StoryTurnBeat | null {
   }
   const style = TURN_BEAT_STYLES[kind]
   if (!style) return { kind, text, refId, look: 'plain', tone: 'default', glyph: null, target: null }
-  return { kind, text, refId, look: 'chip', ...style, tone: turnBeatTone(kind, text, style.tone) }
+  // Someone cooling towards the party reads in the quiet danger tone.
+  const tone = kind === 'bond' && value.down === true ? 'fail' : turnBeatTone(kind, text, style.tone)
+  return { kind, text, refId, look: 'chip', ...style, tone }
 }
 
 /** The server's `storyBeats` on an entry; null when the entry carries none (an older server). */

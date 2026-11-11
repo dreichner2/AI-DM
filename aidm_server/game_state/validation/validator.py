@@ -43,6 +43,7 @@ from aidm_server.combat.vitality import DEATH_SAVE_SOURCE
 from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normalize_combat_state, normalize_participant, player_combat_participant
 from aidm_server.spell_effects import active_repeat_attack, cannot_cast_reason, resolve_targeted_spell, spell_target_legality
 from aidm_server.game_state.campaign_pack_encounters import combat_is_active, materialize_campaign_pack_combat_start, story_flag_allows
+from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, TALK_DECLARED, talk_change_problem, validate_talk
 from aidm_server.game_state.orchestration.hero_threads import (
     HERO_CHANGE_TYPES,
     TAKE_HEART_DECLARED,
@@ -1896,6 +1897,11 @@ def _validate_take_heart(action: dict[str, Any], state: dict[str, Any], *, curre
     return _valid(action, 'Takes heart: the next d20 roll is made with advantage.', immediate_changes=[change])
 
 
+def _validate_talk(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+    valid, reason, changes = validate_talk(state, action, turn_id=current_turn)
+    return _valid(action, reason, immediate_changes=changes) if valid else _invalid(action, reason)
+
+
 def _shop_transaction(state: dict[str, Any], actor: dict[str, Any], *, buy: bool, merchant_id: Any, reference: Any, quantity: Any) -> dict[str, Any]:
     if buy:
         return resolve_purchase(state, actor, merchant_id=merchant_id, stock_id=reference, quantity=quantity)
@@ -2174,6 +2180,8 @@ def validate_declared_actions(
             )
         elif action_type == TAKE_HEART_DECLARED:
             result = _validate_take_heart(action, state, current_turn=current_turn)
+        elif action_type == TALK_DECLARED:
+            result = _validate_talk(action, state, current_turn=current_turn)
         else:
             result = _pending(action, action.get('summary') or 'Player intent needs DM narration.')
         if result.get('status') == 'needs_clarification' and isinstance(result.get('clarificationRequest'), dict):
@@ -4634,6 +4642,9 @@ def validate_state_changes(
         elif change_type in HERO_CHANGE_TYPES:
             problem = hero_change_problem(state, change)
             status, reason, normalized = ('rejected', problem, None) if problem else ('accepted', 'The engine moves Inspiration and tells threads.', None)
+        elif change_type == TALK_CHANGE:
+            problem = talk_change_problem(state, change)
+            status, reason, normalized = ('rejected', problem, None) if problem else ('accepted', 'The engine holds the conversation.', None)
         elif change_type in COMBAT_STATE_CHANGE_TYPES:
             status, reason, normalized = _normalize_combat_change(change, state)
             if status == 'accepted' and normalized:

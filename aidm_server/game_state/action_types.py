@@ -20,6 +20,7 @@ PRE_DM_ACTION_TYPES = {
     'race_ability.use',
     'combat.attack',
     'inspiration.take_heart',
+    'npc.talk',
     'generic.intent',
 }
 

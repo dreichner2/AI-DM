@@ -239,15 +239,18 @@ def test_turns_the_engine_resolved_make_no_second_call_and_do_what_safe_mode_doe
     assert results == [expected for _turn, expected in ENGINE_RESOLVED_TURNS]
 
 
-def test_talk_and_an_improvised_action_have_their_narration_read_once(table, calls):
+def test_talk_is_never_read_and_an_improvised_action_is_read_once(table, calls):
     talk = calls.made_by(lambda: table.reply('I ask Mara about the caravan.'))
     talk_read = _post_dm_read(table)
+    leave = {'kind': 'talk', 'source': 'scene_panel', 'text': 'Leave it there.', 'talk': {'action': 'leave', 'npc_id': 'npc_mara_reedwake'}}
+    left = calls.made_by(lambda: table.send('Leave it there.', action_intent=leave))
     # Climbing needs a roll: the narration is read once, after the roll that answers it.
     climb = calls.made_by(lambda: table.reply('I climb onto the inn roof.'))
     roll = calls.made_by(lambda: table.send('I roll.', client_message_id='roll-1', action_intent=_roll_for(table)))
 
-    assert (talk, climb, roll) == ((1, 1), (0, 0), (1, 1))
-    assert talk_read[:2] == ('heuristic', None)
+    # The engine holds a conversation: what the words did is applied before narration, which is never read.
+    assert (talk, left, climb, roll) == ((0, 0), (0, 0), (0, 0), (1, 1))
+    assert talk_read[:2] == ('skipped', 'engine_resolved')
     assert _post_dm_read(table)[:2] == ('heuristic', None)
 
 

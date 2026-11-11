@@ -213,13 +213,18 @@ def test_searching_the_strongbox_from_the_common_room_steps_out_to_the_yard_firs
     assert solo.snapshot()['combat']['status'] == 'active'
 
 
-def test_calling_out_to_the_next_room_is_answered_in_one_line(solo):
-    solo.send('Arden Vale', '"Mara, is there a room free tonight?"')
+def test_a_mention_of_someone_next_door_is_a_call_and_words_said_to_them_walk_in(solo):
+    solo.send('Arden Vale', '"Is Mara in there? We have need of her."')
 
     told = solo.last()
     assert told['narration'] == '"Come through if there is more to say," Mara Reedwake calls from the common room.'
     assert solo.zone('Arden Vale') == 'inn_yard'
     assert 'talk' not in told['pipeline']['dmContextPacket']['narration']
+
+    # Spoken to her by name, the words are hers to answer: the hero goes in, as any action aimed next door does.
+    solo.send('Arden Vale', '"Mara, is there a room free tonight?"')
+    assert solo.zone('Arden Vale') == 'inn_common_room'
+    assert solo.snapshot()['conversations']['player_1']['npcId'] == 'npc_mara_reedwake'
 
 
 def test_resting_happens_only_in_the_common_room(solo):
@@ -424,17 +429,22 @@ def test_the_brief_says_where_everyone_stands_and_the_rule(ai):
     assert NO_SPACE_RULE in ai.narrator.prompts[-1]
 
 
-def test_talking_next_door_with_an_ai_narrator_tells_the_step_in_the_brief(ai):
-    ai.narrator.replies.append('Mara looks up from the counter.')
+def test_acting_next_door_with_an_ai_narrator_tells_the_step_in_the_brief(ai):
     before = len(ai.narrator.prompts)
-
+    # Talking to Mara next door is her written greeting after the engine's own arrival line: no model is asked.
     ai.send('Arden Vale', 'I talk to Mara.')
+    assert len(ai.narrator.prompts) == before
+    assert ai.zone('Arden Vale') == 'inn_common_room'
+    assert COMMON_ROOM_LINE in ai.last()['narration']
+
+    # Reading the ledger back in the yard is the narrator's to tell, and the brief says the hero stepped out first.
+    ai.narrator.replies.append('The pages are swollen with rain.')
+    ai.act('Arden Vale', 'inn_caravan_ledger', 'inspect')
 
     assert len(ai.narrator.prompts) == before + 1
     did = next(line for line in _brief(ai).splitlines() if line.startswith('Did: '))
-    assert 'Stepped into the common room (Mara Reedwake here).' in did
-    assert f'What it is like there: "{COMMON_ROOM_LINE}"' in did
-    assert ai.zone('Arden Vale') == 'inn_common_room'
+    assert 'Stepped into the yard' in did
+    assert ai.zone('Arden Vale') == 'inn_yard'
 
 
 def test_the_brief_gives_fight_positions(ai):

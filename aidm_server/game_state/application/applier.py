@@ -61,6 +61,7 @@ from aidm_server.game_state.models import (
     stats_with_currency,
 )
 from aidm_server.game_state.leveling import sync_actor_level_for_xp, sync_stats_for_level
+from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, apply_talk_change, talk_followup_changes
 from aidm_server.game_state.orchestration.hero_threads import HERO_CHANGE_TYPES, apply_hero_change
 from aidm_server.game_state.quest_engine import derive_quest_changes
 from aidm_server.game_state.validation.validator import supported_scene_type
@@ -1981,6 +1982,9 @@ def _merge_npc(state: dict[str, Any], payload: dict[str, Any], *, party: bool | 
     for key in ('name', 'race', 'role', 'disposition', 'locationId', 'status', 'faction', 'firstMetTurn', 'lastSeenTurn'):
         if key == 'firstMetTurn' and record.get(key):
             continue
+        # A pack person's disposition is the engine's (conversations change it), never narration's.
+        if key == 'disposition' and _text(record.get('source')) == 'campaign_pack':
+            continue
         if key == 'name' and payload.get('name') == payload.get('id') and record.get('name'):
             continue
         _set_if_present(record, key, payload.get(key))
@@ -3333,6 +3337,12 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 skipped.append({'change': change, 'reason': 'The thread or Inspiration no longer applies.'})
                 continue
             applied_change.update(told)
+        elif change_type == TALK_CHANGE:
+            talked = apply_talk_change(next_state, change)
+            if talked is None:
+                skipped.append({'change': change, 'reason': 'The conversation no longer allows it.'})
+                continue
+            applied_change.update(talked)
         else:
             skipped.append({'change': change, 'reason': 'Unsupported change or actor missing during application.'})
             continue
@@ -3350,6 +3360,7 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
         if change_type == 'scene.interactable.action' and isinstance(applied_change.get('event'), dict):
             pending_changes.extend(derive_quest_changes(next_state, applied_change['event']))
         pending_changes.extend(interactable_followup_changes(next_state, applied_change))
+        pending_changes.extend(talk_followup_changes(next_state, applied_change))
         pending_changes.extend(
             campaign_pack_followup_changes(
                 next_state,

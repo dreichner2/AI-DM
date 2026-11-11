@@ -9,9 +9,15 @@ the turn, campaign progress included, has landed.
 
 Kinds, in this order: check, hp, condition, death_save, combat_end,
 item_gained / item_lost, coins, clue, objective_complete / objective_new,
-place, place_within, met, thread, inspiration, xp, level, defeat, ending, then hint (once per
-session, for words the scripted narrator could not map to an action). Beats
-name people and creatures by their display names, never by participant ids.
+place, place_within, met, promise, bond, thread, inspiration, xp, level, defeat, ending, then hint (once per
+session, for words the scripted narrator could not map to an action, or said to someone who has nothing to say to
+them). Beats name people and creatures by their display names, never by participant ids.
+
+A conversation's check reads as an object's (``Persuasion check: 15 — success``). A promise made reads ``A promise
+made — Promise to bring word of the drivers`` (an authored one, by its topic's label) or ``A promise made — "I will
+find them"`` (the hero's own words). A person's disposition moving is a ``bond`` beat with the line the pack wrote,
+else ``Mara Reedwake warms to you.`` (``… warms to the party.`` in party play) or ``Mara Reedwake will remember
+that.``; a beat for a fall carries ``down``.
 
 A tie line told for a hero is ``A thread of your own — Edda Vale`` (a seeking
 line; any other reads ``A thread of your own``), and Inspiration granted is
@@ -60,6 +66,7 @@ from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY
 from aidm_server.game_state.leveling import proficiency_bonus_for_level
 from aidm_server.game_state.models import parse_actor_player_id
+from aidm_server.game_state.orchestration.conversations import TALK_CHANGE
 from aidm_server.game_state.orchestration.hero_threads import INSPIRATION_CHANGE, THREAD_CHANGE
 from aidm_server.game_state.zones import ZONE_MOVE_CHANGE
 from aidm_server.models import DmTurn, Session, SessionLogEntry, TurnEvent, safe_json_dumps, safe_json_loads
@@ -233,6 +240,34 @@ def object_check_text(change: dict[str, Any], state_before: dict[str, Any]) -> s
         return None
     beat = _check_beat(event['check'], show_dc=_shows_dc(state_before, change))
     return beat['text'] if beat else None
+
+
+def talk_check_text(change: dict[str, Any]) -> str | None:
+    """``Persuasion check: 15 — success`` for the check a conversation's topic or speech act rolled."""
+
+    if change.get('type') != TALK_CHANGE or not isinstance(change.get('check'), dict):
+        return None
+    beat = _check_beat(change['check'], show_dc=False)
+    return beat['text'] if beat else None
+
+
+def _talk_beats(applied_changes: list[dict[str, Any]], *, party: bool) -> list[dict[str, Any]]:
+    """The promises made and the dispositions moved this turn (see the module docstring)."""
+
+    beats = []
+    for change in applied_changes:
+        if change.get('type') != TALK_CHANGE:
+            continue
+        made = change.get('promiseMade') if isinstance(change.get('promiseMade'), dict) else {}
+        if _text(made.get('text')):
+            words = _text(made['text']) if made.get('authored') else f'"{_text(made["text"])}"'
+            beats.append({'kind': 'promise', 'text': f'A promise made — {words}', 'refId': _text(change.get('npcId'))})
+        for bond in _dicts(change.get('bonds')):
+            up = _int(bond.get('delta')) > 0
+            name = _text(bond.get('name')) or 'Someone'
+            text = _text(bond.get('line')) or (f"{name} warms to {'the party' if party else 'you'}." if up else f'{name} will remember that.')
+            beats.append({'kind': 'bond', 'text': text, 'refId': _text(bond.get('npcId')), **({} if up else {'down': True})})
+    return beats
 
 
 def _shows_dc(state: dict[str, Any], change: dict[str, Any]) -> bool:
@@ -434,7 +469,7 @@ def story_beats(
     party = len(heroes_after) > 1
     acting_name = (heroes_after.get(actor_id) or {}).get('name') or 'Someone'
     beats: list[dict[str, Any]] = []
-    checks = [text for change in applied_changes if (text := object_check_text(change, state_before))]
+    checks = [text for change in applied_changes if (text := object_check_text(change, state_before) or talk_check_text(change))]
     if isinstance(authoritative_roll, dict) and (beat := _roll_beat(authoritative_roll)):
         checks.append(beat['text'])
     if isinstance(combat_action, dict) and (beat := _fight_check_beat(combat_action)):
@@ -539,6 +574,7 @@ def story_beats(
     people = {_text(npc.get('id')): _text(npc.get('name')) for npc in _dicts(catalog.get('npcs'))}
     met = dict.fromkeys(_text(npc_id) for change in applied_changes for npc_id in change.get('metNpcIds') or [])
     beats.extend({'kind': 'met', 'text': f'Met — {people[npc_id]}', 'refId': npc_id} for npc_id in met if people.get(npc_id))
+    beats.extend(_talk_beats(applied_changes, party=party))
     beats.extend(_hero_beats(applied_changes, heroes_after, party=party))
     xp = {hero_id: max(0, new['xp'] - old['xp']) for hero_id, old, new in heroes_told}
     beats.extend(_shared_gains('xp', xp, heroes_after, lambda amount: f'+{amount} XP', party=party))

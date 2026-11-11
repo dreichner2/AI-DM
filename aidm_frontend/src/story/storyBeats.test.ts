@@ -446,6 +446,27 @@ describe('server story beats', () => {
     ])
   })
 
+  it('shows a person warming or cooling with the people glyph, a fall in the quiet danger tone, and a promise made', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', '"…All right. I\'ll hold you to it."', {
+        turn_id: 9,
+        storyBeats: [
+          { kind: 'promise', text: 'A promise made — Promise to bring word of the drivers', refId: 'npc_mara' },
+          { kind: 'bond', text: 'Mara Reedwake warms to you.', refId: 'npc_mara' },
+          { kind: 'bond', text: 'Mara Reedwake will remember how you spoke to the boy.', refId: 'npc_mara', down: true },
+        ],
+      }),
+    ])
+
+    const turn = beats.find((beat) => beat.kind === 'turnBeats')
+    if (turn?.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ kind, look, glyph, target, tone }) => ({ kind, look, glyph, target, tone }))).toEqual([
+      { kind: 'promise', look: 'chip', glyph: 'scroll', target: 'journal', tone: 'default' },
+      { kind: 'bond', look: 'chip', glyph: 'person', target: 'journal', tone: 'default' },
+      { kind: 'bond', look: 'chip', glyph: 'person', target: 'journal', tone: 'fail' },
+    ])
+  })
+
   it('shows how a fight ended as a chip, a victory in the success tone', () => {
     const [, turn] = buildStoryBeats([
       entry('log-1', 'dm', 'DM', 'The last cutthroat falls.', {

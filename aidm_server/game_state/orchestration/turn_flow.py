@@ -6,7 +6,7 @@ every fight turn that holds an attack, a spell, a manoeuvre, an improvised actio
 finishing blow, an enemy phase, a fight starting or ending, or a roll. Any other fight action resolves with nothing to
 tell beyond its own result (End turn, Dodge, Disengage, Advance, Fall back, Dash, Help, Hide, Stabilize, a class
 feature, a potion, Take heart): the scripted narrator's sentences tell it and no model is called (``scripted``), as
-they tell Take heart out of a fight. When those sentences are only the engine's turn line (an End turn with a hero
+they tell Take heart out of a fight and ``Leave it there`` in a conversation. When those sentences are only the engine's turn line (an End turn with a hero
 next and nobody acting between), the turn has no narration at all (``turn_line``): no reply is streamed and the log
 gains the turn line alone. A step into another room of a place (``zone_move``) is told by the scripted narrator too.
 
@@ -35,6 +35,7 @@ from aidm_server.combat.maneuvers import IMPROVISE_TYPE, MANEUVER_TYPES
 from aidm_server.combat.positioning import participant_by_id
 from aidm_server.combat.state import combat_turn_economy, default_turn_economy
 from aidm_server.game_state.models import find_actor
+from aidm_server.game_state.orchestration.conversations import TALK_KIND, leaving
 from aidm_server.game_state.orchestration.zone_turns import zone_move_only
 from aidm_server.item_effects import ITEM_EFFECTS
 from aidm_server.models import Player, safe_json_loads
@@ -90,13 +91,32 @@ def _combat_action(action_intent: dict[str, Any] | None) -> dict[str, Any] | Non
     return _dict(intent.get('combat')) if intent.get('kind') == 'combat' else None
 
 
+def _written_words_told(talk: dict[str, Any]) -> bool:
+    """The conversation turn tells words a person was written to say: a greeting, a topic's line, a reaction.
+
+    Those are told as written, at once, by the engine. A model asked to "convey" such a line has dropped it and
+    invented a gift and a lead instead. Words with no written answer (``free``), and a person with nothing written
+    for the moment (no greeting, in an adventure without a pack), go to the narrator, who speaks as that person.
+    """
+
+    if not talk or talk.get('free') is True:
+        return False
+    return bool(
+        _text(_dict(talk.get('topic')).get('line'))
+        or _dict(talk.get('reaction'))
+        or (talk.get('opened') is True and _text(talk.get('greeting')))
+    )
+
+
 def _told_quietly(rules_hint: dict[str, Any], action_intent: dict[str, Any] | None) -> bool:
     """A fight action whose turn holds nothing a model tells, or Take heart out of a fight (see the module docstring)."""
 
-    if _text(_dict(action_intent).get('kind')) == 'inspiration':
+    if _text(_dict(action_intent).get('kind')) == 'inspiration' or leaving(action_intent):
         return True
     if zone_move_only(rules_hint.get('state_pipeline')):
         # Stepping into another room: its description and arrival line are the engine's own words.
+        return True
+    if _written_words_told(_dict(_dict(_dict(rules_hint.get('state_pipeline')).get('narration')).get('conversation'))):
         return True
     combat_action = _combat_action(action_intent)
     if combat_action is None or _text(combat_action.get('action_type')) in NARRATED_FIGHT_ACTIONS:
@@ -260,6 +280,8 @@ def turn_kind(metadata: dict[str, Any]) -> str:
     action_intent = _dict(metadata.get('action_intent'))
     if _dicts(combat_state.get('enemyResolvedActions')):
         return 'enemy_phase'
+    if _text(action_intent.get('kind')) == TALK_KIND:
+        return 'talk'
     if _text(_dict(_combat_action(action_intent)).get('action_type')) == 'end_turn':
         return 'end_turn'
     if combat_state:

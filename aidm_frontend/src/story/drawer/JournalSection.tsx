@@ -100,6 +100,11 @@ function npcRole(role: string) {
   return role === UNKNOWN_NPC_ROLE ? '' : humanizedRole(role)
 }
 
+/** What a person remembers of the viewer's heroes: `Remembers: you gave your word…`, then `…: you threatened them`. */
+function rememberedLines(remembers: string[]) {
+  return remembers.map((line, index) => `${index ? '…' : 'Remembers'}: ${line}.`)
+}
+
 /**
  * The Journal tab: from the server's player-safe journal when it sends one,
  * otherwise derived from the world state (objective titles, plain roles, no
@@ -118,7 +123,8 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
   const papers = [...(world.handouts ?? []), ...(world.lore ?? [])]
   const people = journal
     ? journal.people
-    : world.knownNpcs.map((npc) => ({ id: npc.id, name: npc.name, role: npcRole(npc.role), summary: '' }))
+    : world.knownNpcs.map((npc) => ({ id: npc.id, name: npc.name, role: npcRole(npc.role), summary: '', disposition: '', remembers: [] }))
+  const yourWord = journal?.yourWord ?? []
   const places = journal
     ? journal.places.map((place) => ({ id: place.id, name: place.name, detail: place.state }))
     : world.knownLocations.map((location) => ({
@@ -130,7 +136,7 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
   const threads = journal?.threads ?? []
   const hasQuest = Boolean(journal?.quest) || activeQuests.length > 0
   const empty =
-    !hasQuest && !finishedQuests.length && !threads.length && !clues.length && !papers.length &&
+    !hasQuest && !finishedQuests.length && !threads.length && !yourWord.length && !clues.length && !papers.length &&
     !people.length && !places.length && !memory.length
 
   return (
@@ -191,6 +197,23 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
         </section>
       ) : null}
 
+      {yourWord.length ? (
+        <section aria-labelledby="story-journal-word">
+          <h3 id="story-journal-word" className="story-label">Your word</h3>
+          <ul className="story-journal-list">
+            {yourWord.map((promise) => (
+              <li key={promise.id}>
+                <span className="story-journal-name">{promise.text}</span>
+                <span className="story-journal-detail">
+                  {promise.to ? ` — to ${promise.to}` : ''}
+                  {promise.status && promise.status !== 'open' ? ` · ${promise.status}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {clues.length ? (
         <section aria-labelledby="story-journal-clues">
           <h3 id="story-journal-clues" className="story-label">Clues</h3>
@@ -222,7 +245,11 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
               <li key={person.id || person.name}>
                 <span className="story-journal-name">{person.name}</span>
                 {person.role ? <span className="story-journal-detail"> — {person.role}</span> : null}
+                {person.disposition ? <span className="story-journal-detail"> · {person.disposition}</span> : null}
                 {person.summary ? <span className="story-journal-summary">{person.summary}</span> : null}
+                {rememberedLines(person.remembers).map((line) => (
+                  <span key={line} className="story-journal-summary">{line}</span>
+                ))}
               </li>
             ))}
           </ul>

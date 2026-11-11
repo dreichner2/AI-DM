@@ -13,8 +13,10 @@ from aidm_server.interactables import INTERACTABLE_ACTIONS
 
 VALID_ACTION_KINDS = {
     'message', 'roll', 'ability', 'capability', 'spell', 'item', 'object', 'interact', 'travel', 'zone_move', 'rest', 'shop',
-    'combat', 'inspiration', 'emote', 'ooc', 'admin',
+    'combat', 'inspiration', 'talk', 'emote', 'ooc', 'admin',
 }
+# A conversation: open it, choose a topic, leave it, or the hero's own words to the person.
+VALID_TALK_ACTIONS = {'open', 'topic', 'leave', 'words'}
 VALID_SHOP_ACTIONS = {'buy', 'sell'}
 MAX_HIT_DICE_REQUEST = 20
 VALID_DICE = {'d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100'}
@@ -414,6 +416,21 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
             return None, 'zone.id is required for a zone move and may contain only supported ID characters.'
         normalized['zone'] = {'id': zone_id, 'name': _clean_text(zone.get('name'), max_length=ACTION_NAME_MAX_LENGTH)}
 
+    if kind == 'talk':
+        talk = value.get('talk')
+        if not isinstance(talk, dict):
+            return None, 'talk action metadata must include a talk object.'
+        talk_action = _clean_text(talk.get('action'), max_length=16).lower()
+        if talk_action not in VALID_TALK_ACTIONS:
+            return None, f'talk.action must be one of {sorted(VALID_TALK_ACTIONS)}.'
+        npc_id = _clean_text(talk.get('npc_id') or talk.get('npcId'), max_length=ACTION_ID_MAX_LENGTH)
+        if not npc_id or not ACTION_ID_RE.fullmatch(npc_id):
+            return None, 'talk.npc_id is required and may contain only supported ID characters.'
+        topic_id = _clean_text(talk.get('topic_id') or talk.get('topicId'), max_length=ACTION_ID_MAX_LENGTH)
+        if talk_action == 'topic' and (not topic_id or not ACTION_ID_RE.fullmatch(topic_id)):
+            return None, 'talk.topic_id is required for a topic and may contain only supported ID characters.'
+        normalized['talk'] = {'action': talk_action, 'npc_id': npc_id, **({'topic_id': topic_id} if talk_action == 'topic' else {})}
+
     if kind == 'rest':
         rest_type = _clean_text(value.get('rest_type', value.get('restType')), max_length=24).lower().replace('-', '_').replace(' ', '_')
         if rest_type not in {'short', 'short_rest', 'long', 'long_rest'}:
@@ -507,7 +524,7 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
         return hint
 
     # A typed object action rolls the object's own check on the server.
-    if kind in {'ooc', 'emote', 'item', 'object', 'travel', 'rest', 'shop', 'inspiration', 'admin'}:
+    if kind in {'ooc', 'emote', 'item', 'object', 'travel', 'rest', 'shop', 'inspiration', 'talk', 'admin'}:
         hint.requires_roll = False
         hint.roll_type = None
         hint.dc_hint = None
