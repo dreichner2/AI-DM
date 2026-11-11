@@ -296,6 +296,8 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
         'object_action',
         'expectedRevision',
         'expected_revision',
+        'takeTime',
+        'take_time',
         'intendedUse',
         'intended_use',
         'targetName',
