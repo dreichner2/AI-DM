@@ -231,8 +231,17 @@ def _turn_recap_beat(turn: DmTurn) -> str:
     character = character or text(turn.player.name if turn.player else '') or 'The party'
     action_without_punctuation = action.rstrip('.!?')
     lowered_action = action_without_punctuation.lower()
+    if lowered_action.endswith(' ends their turn'):
+        # Passing the turn is not a beat of the story.
+        return ''
     if lowered_action.startswith('please narrate the opening scene for this campaign'):
         action_summary = 'The adventure began'
+    elif lowered_action.startswith('i roll a d'):
+        # A roll's own line says nothing; its outcome does.
+        action_summary = ''
+    elif lowered_action.startswith((f'{character.lower()} ', 'the party ')):
+        # A button's action is already a sentence about the hero ("Arden Vale searches the cart").
+        action_summary = action_without_punctuation
     elif lowered_action in {'what can i see', 'what do i see', 'what can we see', 'what do we see'}:
         action_summary = f'{character} surveyed the scene'
     elif lowered_action.startswith('i '):

@@ -82,6 +82,39 @@ def test_session_recap_get_builds_player_facing_recap_from_recent_completed_turn
     assert 'pending door' not in payload['recap']
 
 
+def test_session_recap_reads_button_actions_as_sentences_and_skips_passed_turns(client, app):
+    ids = seed_world_campaign_player_session(app)
+    turns = [
+        ('Seraphina searches the abandoned handcart.', 'Under the tarp lies a dented lantern.'),
+        ('Seraphina ends their turn.', 'The pale lantern drifts closer.'),
+        ('I roll a d20 for attack.\nI roll a d20+4 for attack: 11 = 15', 'The blade bites and the lantern gutters.'),
+        ('The party travels to Waystation of Scratched Names.', 'A roofless waystation waits in the rain.'),
+    ]
+    with app.app_context():
+        for player_input, dm_output in turns:
+            db.session.add(
+                DmTurn(
+                    session_id=ids['session_id'],
+                    campaign_id=ids['campaign_id'],
+                    player_id=ids['player_id'],
+                    player_input=player_input,
+                    dm_output=dm_output,
+                    status='completed',
+                    outcome_status='resolved',
+                )
+            )
+        db.session.commit()
+
+    recap = client.get(f"/api/sessions/{ids['session_id']}/recap").get_json()['recap']
+
+    assert 'chose to' not in recap
+    assert 'ends their turn' not in recap
+    assert 'pale lantern drifts' not in recap
+    assert 'roll a d20' not in recap
+    assert 'The blade bites and the lantern gutters.' in recap
+    assert 'The party travels to Waystation of Scratched Names. A roofless waystation waits in the rain.' in recap
+
+
 def test_session_recap_get_returns_empty_instead_of_internal_rolling_summary(client, app):
     ids = seed_world_campaign_player_session(app)
     with app.app_context():
