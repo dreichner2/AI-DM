@@ -4,7 +4,9 @@ When a combat ends with every present player character down (``objective_failed`
 the clock advances one phase, every hero wakes with 1 HP (no longer dying,
 stable, out of the fight, unconscious or prone; death saves reset), the enemies
 leave the scene, and the pack encounter is re-armed so its trigger can fire
-again. The encounter's ``defeat`` outcome is recorded (and pays nothing) by the
+again. An encounter's ``onDefeat`` (W9-SCENE) replaces the re-arm: the party wakes
+in its ``wakeZoneId``, its ``text`` is told, its ``setsFlags`` and ``stakes`` apply,
+and the encounter is complete and does not happen again. The encounter's ``defeat`` outcome is recorded (and pays nothing) by the
 ordinary combat-end reward transaction, which does not use up the encounter's
 once-only success rewards. ``lethalDefeat`` on the combat or its encounter
 changes none of this: it only lets the defeat fail the checkpoint that names
@@ -27,7 +29,7 @@ from typing import Any
 from aidm_server.combat.state import participant_is_present
 from aidm_server.combat.vitality import hit_points, is_down, is_out_of_fight, is_player_character, revive
 from aidm_server.game_clock import advance_state_clock
-from aidm_server.game_state.campaign_pack_encounters import TRIGGERED_ENCOUNTERS_FLAG, catalog_record
+from aidm_server.game_state.campaign_pack_encounters import COMPLETED_ENCOUNTERS_FLAG, TRIGGERED_ENCOUNTERS_FLAG, catalog_record
 from aidm_server.game_state.models import append_change_ledger, stable_change_id
 
 DEFEAT_RECOVERY_CHANGE = 'combat.defeat_recovery'
@@ -156,8 +158,11 @@ def party_defeat_recovery(state: dict[str, Any], *, turn_id: Any) -> dict[str, A
     ]
     clock = deepcopy(advance_state_clock(state, 1))
     state_flags = state.setdefault('flags', {})
+    authored = _on_defeat(state, encounter_id)
     triggered = state_flags.get(TRIGGERED_ENCOUNTERS_FLAG)
-    if encounter_id and isinstance(triggered, list):
+    if authored is not None:
+        _apply_on_defeat(state, encounter_id, authored)
+    elif encounter_id and isinstance(triggered, list):
         state_flags[TRIGGERED_ENCOUNTERS_FLAG] = [value for value in triggered if _text(value) != encounter_id]
     flags['defeatRecovery'] = {'turnId': turn_id, 'wokenActorIds': woken}
     change = {
@@ -173,8 +178,34 @@ def party_defeat_recovery(state: dict[str, Any], *, turn_id: Any) -> dict[str, A
         'reason': f"The party was beaten and wakes later with 1 HP; {departed} {'are' if several else 'is'} gone.",
         'visible': True,
     }
+    if authored is not None:
+        change['onDefeat'] = {key: deepcopy(authored[key]) for key in ('text', 'wakeZoneId') if authored.get(key)}
     append_change_ledger(state, change)
     return change
+
+
+def _on_defeat(state: dict[str, Any], encounter_id: str) -> dict[str, Any] | None:
+    from aidm_server.game_state.orchestration.fight_stakes import on_defeat
+
+    return on_defeat(catalog_record(state, 'encounters', encounter_id)) if encounter_id else None
+
+
+def _apply_on_defeat(state: dict[str, Any], encounter_id: str, authored: dict[str, Any]) -> None:
+    """The encounter's ``onDefeat``: complete for good, its flags and stake states, the party woken in its zone."""
+
+    from aidm_server.game_state.zones import gather_in_zone
+
+    state_flags = state.setdefault('flags', {})
+    completed = [value for value in state_flags.get(COMPLETED_ENCOUNTERS_FLAG) or [] if _text(value)]
+    state_flags[COMPLETED_ENCOUNTERS_FLAG] = list(dict.fromkeys([*completed, encounter_id]))
+    for key, value in (authored.get('setsFlags') or {}).items() if isinstance(authored.get('setsFlags'), dict) else []:
+        state_flags[_text(key)] = deepcopy(value)
+    if isinstance(authored.get('stakes'), dict) and authored['stakes']:
+        stored = state.get('stakes') if isinstance(state.get('stakes'), dict) else {}
+        stored[encounter_id] = {**(stored.get(encounter_id) or {}), **{_text(key): _text(value) for key, value in authored['stakes'].items()}}
+        state['stakes'] = stored
+    if _text(authored.get('wakeZoneId')):
+        gather_in_zone(state, _text(authored['wakeZoneId']))
 
 
 def _present_actors(state: dict[str, Any]) -> list[dict[str, Any]]:

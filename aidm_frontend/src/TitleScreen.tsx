@@ -1,8 +1,12 @@
-import { useCallback, useId, useState, type CSSProperties } from 'react'
+import { Suspense, useCallback, useId, useState, type CSSProperties } from 'react'
+import type { ChronicleAdventure } from './apiContract.generated'
+import { lazyModule } from './lazyModule'
 import { EmberMark } from './story/glyphs'
 import { StoryAtmosphere } from './story/StoryAtmosphere'
 import { accountSheetChunk } from './story/storyChunks'
 import { TitleHeroes, type TitleHero, type TitleHeroesStatus } from './story/TitleHeroes'
+
+const Chronicle = lazyModule(() => import('./ChronicleScreen')).component((module) => module.ChronicleScreen)
 
 /** The most recently played adventure, for the "Continue your adventure" block. */
 export type TitleResume = {
@@ -33,6 +37,8 @@ export type TitleScreenProps = {
   onOpenAdventures: () => void
   onLogIn: () => void
   onCreateAccount: () => void
+  /** The finished adventures of this account (or table); `Your chronicle` is offered once there is one. */
+  chronicle?: ChronicleAdventure[]
 }
 
 // The server's default ready-made hero; named when the hero list cannot be loaded.
@@ -88,10 +94,12 @@ export function TitleScreen({
   onOpenAdventures,
   onLogIn,
   onCreateAccount,
+  chronicle = [],
 }: TitleScreenProps) {
   const idPrefix = useId()
   const [now] = useState(Date.now)
   const [readyMadeOpen, setReadyMadeOpen] = useState(false)
+  const [chronicleOpen, setChronicleOpen] = useState(false)
   const returning = resume !== null
   const showReadyMade = !returning || readyMadeOpen
   const readyMadeId = `${idPrefix}-ready-made`
@@ -138,7 +146,13 @@ export function TitleScreen({
             </p>
           </header>
 
-          {resume ? (
+          {chronicleOpen ? (
+            <Suspense fallback={null}>
+              <Chronicle adventures={chronicle} onClose={() => setChronicleOpen(false)} />
+            </Suspense>
+          ) : null}
+
+          {resume && !chronicleOpen ? (
             <section className="story-title-block" aria-labelledby={`${idPrefix}-continue`}>
               <h2 id={`${idPrefix}-continue`} className="story-label story-title-rise" style={continueStep()}>
                 Continue your adventure
@@ -184,7 +198,7 @@ export function TitleScreen({
             </section>
           ) : null}
 
-          {showReadyMade ? (
+          {showReadyMade && !chronicleOpen ? (
             <section
               ref={returning ? revealReadyMade : undefined}
               id={readyMadeId}
@@ -258,6 +272,14 @@ export function TitleScreen({
                 </div>
               )}
             </section>
+          ) : null}
+
+          {chronicle.length && !chronicleOpen ? (
+            <div className="story-title-links">
+              <button type="button" className="story-link" onClick={() => setChronicleOpen(true)}>
+                Your chronicle
+              </button>
+            </div>
           ) : null}
         </div>
 

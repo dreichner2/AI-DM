@@ -294,6 +294,8 @@ export type CombatLegalAction = {
   capabilityEffect?: string
   /** A weapon attack that first spends the move to close on a target out of reach. */
   requiresMove?: boolean
+  /** An authored plan (`plan.<object>.<affordance>`) the server puts forward as a suggestion. */
+  suggested?: boolean
 }
 
 export type CombatLegalActionBundle = {
@@ -358,7 +360,11 @@ export type CombatStatePanel = {
   activeActorId?: string
   /** A finishing blow waiting to be told, during the fight or just after it. */
   pendingFinisher?: CombatPendingFinisher
+  /** What the fight is about (`combat.stakes`): each stake and where it stands, in words. */
+  stakes?: CombatStake[]
 }
+
+export type CombatStake = { id: string; name: string; state: string; words: string }
 
 /** An enemy a fight left captured or yielded, held in the scene, with what may be said to it. */
 export type WorldCaptiveSummary = {
@@ -447,6 +453,8 @@ export type WorldStatePanel = {
   zones?: WorldZoneSummary[]
   /** The viewer's hero is talking with someone. */
   conversation?: WorldConversation
+  /** What plans and fights changed in this place (`currentScene.facts`): the Scene tab's `What has changed`. */
+  sceneFacts?: string[]
   /** Completed and failed quests. */
   finishedQuests?: WorldQuestSummary[]
   clues?: WorldRecordSummary[]
@@ -762,6 +770,7 @@ function combatLegalAction(action: JsonRecord): CombatLegalAction | null {
     cost: combatActionCost(action, economy),
     capabilityEffect: isRecord(action.capability) ? stringValue(action.capability.effectType) : '',
     ...(action.requiresMove === true ? { requiresMove: true } : {}),
+    ...(action.suggested === true ? { suggested: true } : {}),
   }
 }
 
@@ -830,6 +839,9 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
   const allies = participants.filter((participant) => participant.team !== 'enemy')
   const telegraphs = enemies.map((enemy) => enemy.telegraph).filter(Boolean).slice(0, 4)
   const pendingFinisher = pendingFinisherFromCombat(combat)
+  const stakes = recordArray(combat.stakes)
+    .map((stake) => ({ id: stringValue(stake.id), name: stringValue(stake.name), state: stringValue(stake.state), words: stringValue(stake.words) }))
+    .filter((stake) => stake.id && stake.name)
   return {
     active: ACTIVE_COMBAT_STATUSES.includes(status) && enemies.length > 0,
     status,
@@ -872,6 +884,7 @@ function combatStateFromSnapshot(snapshot: JsonRecord): CombatStatePanel {
       .filter((entry) => Boolean(entry.id)),
     ...(activeActorId ? { activeActorId } : {}),
     ...(pendingFinisher ? { pendingFinisher } : {}),
+    ...(stakes.length ? { stakes } : {}),
   }
 }
 
@@ -1788,6 +1801,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
       : [],
   )
 
+  const sceneFacts = Array.isArray(scene.facts) ? scene.facts.map((fact) => stringValue(fact)).filter(Boolean) : []
   return {
     sceneName: stringValue(scene.name, UNRECORDED_SCENE_NAME),
     sceneDescription: stringValue(scene.description),
@@ -1818,6 +1832,7 @@ export function worldStateFromSnapshot(snapshot: unknown): WorldStatePanel {
     ...(captives.length ? { captives } : {}),
     ...(zones.length ? { zones } : {}),
     ...(conversation ? { conversation } : {}),
+    ...(sceneFacts.length ? { sceneFacts } : {}),
     finishedQuests: quests.filter(finished).map(questSummary),
     clues: discoveredRecords(root.clues),
     handouts: discoveredRecords(root.handouts),

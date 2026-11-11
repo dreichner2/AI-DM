@@ -13,8 +13,11 @@ from aidm_server.interactables import INTERACTABLE_ACTIONS
 
 VALID_ACTION_KINDS = {
     'message', 'roll', 'ability', 'capability', 'spell', 'item', 'object', 'interact', 'travel', 'zone_move', 'rest', 'shop',
-    'combat', 'inspiration', 'talk', 'emote', 'ooc', 'admin',
+    'combat', 'inspiration', 'talk', 'plan', 'emote', 'ooc', 'admin',
 }
+# A plan's things (W9-SCENE): an object's affordance, or an effect on what is in reach.
+PLAN_ID_FIELDS = (('objectId', 'object_id'), ('affordanceId', 'affordance_id'), ('subjectId', 'subject_id'))
+PLAN_SUBJECT_KINDS = {'item', 'person', 'enemy', 'hero'}
 # A conversation: open it, choose a topic, leave it, or the hero's own words to the person.
 VALID_TALK_ACTIONS = {'open', 'topic', 'leave', 'words'}
 VALID_SHOP_ACTIONS = {'buy', 'sell'}
@@ -416,6 +419,29 @@ def validate_action_intent(value: Any) -> tuple[dict[str, Any] | None, str | Non
             return None, 'zone.id is required for a zone move and may contain only supported ID characters.'
         normalized['zone'] = {'id': zone_id, 'name': _clean_text(zone.get('name'), max_length=ACTION_NAME_MAX_LENGTH)}
 
+    if kind == 'plan':
+        plan = value.get('plan')
+        if not isinstance(plan, dict):
+            return None, 'plan action metadata must include a plan object.'
+        from aidm_server.game_state.orchestration.scene_plans import EFFECTS
+
+        normalized_plan: dict[str, Any] = {}
+        for key, alias in PLAN_ID_FIELDS:
+            plan_id = _clean_text(plan.get(key) or plan.get(alias), max_length=ACTION_ID_MAX_LENGTH)
+            if plan_id and not ACTION_ID_RE.fullmatch(plan_id):
+                return None, f'plan.{key} contains unsupported characters.'
+            if plan_id:
+                normalized_plan[key] = plan_id
+        effect = _clean_text(plan.get('effect'), max_length=16).lower()
+        if effect and effect not in EFFECTS:
+            return None, f'plan.effect must be one of {list(EFFECTS)}.'
+        subject_kind = _clean_text(plan.get('subjectKind') or plan.get('subject_kind'), max_length=16).lower()
+        if subject_kind and subject_kind not in PLAN_SUBJECT_KINDS:
+            return None, f'plan.subjectKind must be one of {sorted(PLAN_SUBJECT_KINDS)}.'
+        if not effect and not (normalized_plan.get('objectId') and normalized_plan.get('affordanceId')):
+            return None, 'plan needs an effect, or an object and its affordance.'
+        normalized['plan'] = {**normalized_plan, **({'effect': effect} if effect else {}), **({'subjectKind': subject_kind} if subject_kind else {})}
+
     if kind == 'talk':
         talk = value.get('talk')
         if not isinstance(talk, dict):
@@ -524,7 +550,7 @@ def apply_action_intent_to_rule_hint(intent: dict[str, Any] | None, hint: RuleHi
         return hint
 
     # A typed object action rolls the object's own check on the server.
-    if kind in {'ooc', 'emote', 'item', 'object', 'travel', 'rest', 'shop', 'inspiration', 'talk', 'admin'}:
+    if kind in {'ooc', 'emote', 'item', 'object', 'travel', 'rest', 'shop', 'inspiration', 'talk', 'plan', 'admin'}:
         hint.requires_roll = False
         hint.roll_type = None
         hint.dc_hint = None

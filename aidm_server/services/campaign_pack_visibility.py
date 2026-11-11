@@ -6,7 +6,14 @@ from typing import Any
 from aidm_server.combat.positioning import REACH_LABELS, reach_kind
 from aidm_server.combat.state import combat_turn_order, normalize_battlefield, normalize_position
 from aidm_server.game_state.campaign_pack_encounters import flag_condition_holds
-from aidm_server.game_state.orchestration.conversations import conversation_view, journal_person, journal_promises, shown_disposition
+from aidm_server.game_state.orchestration.conversations import (
+    conversation_view,
+    epilogue_lines,
+    journal_person,
+    journal_promises,
+    shown_disposition,
+    word_lines,
+)
 from aidm_server.game_state.zones import (
     captive_zone_id,
     fight_running,
@@ -22,8 +29,11 @@ from aidm_server.game_state.zones import (
 from aidm_server.commerce import open_merchant_projections
 from aidm_server.game_clock import public_clock, scene_rest_policy
 from aidm_server.interactables import offered_scene_actions, project_scene_interactables, take_label
+from aidm_server.game_state.orchestration.fight_stakes import leads_of, stakes_view
+from aidm_server.game_state.orchestration.scene_plans import affordance_offers, scene_facts
 from aidm_server.services.campaign_pack_graph import hidden_to_players, is_terminal_checkpoint
 from aidm_server.services.campaign_pack_snapshot import migrate_campaign_pack_snapshot
+from aidm_server.services.session_return import plans_for_view
 from aidm_server.services.tie_lines import THREADS_KEY, ending_lines
 from aidm_server.world_map import project_world_map
 
@@ -371,6 +381,13 @@ def filter_session_snapshot_for_player(
     visible_combat_npc_ids: set[str] = set()
     if combat is not None:
         _filter_combat_for_player(combat, owned_player_ids, scene=raw_scene, viewer_id=viewer_id)
+        # What the fight is about, in words (W9-SCENE); which enemy runs with it is the engine's to know.
+        stakes = stakes_view(migrated)
+        if stakes:
+            combat['stakes'] = stakes
+        if isinstance(combat.get('flags'), dict):
+            for key in ('stakes', 'enemyGoal', 'secondaryGoal', 'runnerId'):
+                combat['flags'].pop(key, None)
         filtered['combat'] = combat
         visible_combat_npc_ids = {
             _record_id(record)
@@ -394,9 +411,12 @@ def filter_session_snapshot_for_player(
             project_scene_interactables(migrated, {'isGm': False})
         )
         offers = offered_scene_actions(migrated, viewer)
+        # An object's authored affordances (W9-SCENE) are offered with its actions.
+        plans = affordance_offers(migrated, viewer)
         for collection in ('interactables', 'hazards'):
             for entry in filtered['currentScene'][collection]:
-                entry['offeredActions'] = offers.get(_text(entry.get('id')), [])
+                entry['offeredActions'] = [*offers.get(_text(entry.get('id')), []), *plans.get(_text(entry.get('id')), [])]
+        filtered['currentScene']['facts'] = scene_facts(migrated)
         # Trade and rest: only open merchants, and the rest policy in effect here.
         filtered['currentScene']['merchants'] = open_merchant_projections(migrated)
         filtered['currentScene']['restPolicy'] = scene_rest_policy(raw_scene)
@@ -408,6 +428,15 @@ def filter_session_snapshot_for_player(
     filtered['clock'] = public_clock(migrated.get('clock'))
     if pack:
         filtered['journal'] = _journal(migrated, filtered, owned_player_ids)
+        if isinstance((filtered.get('campaignPack') or {}).get('ending'), dict):
+            # The ending card's last sections: what became of the people the party met, how each hero's word stood at
+            # the end, and the ready-made adventure a new one can start again from (``Play it again``).
+            replay = _text((migrated.get('playNow') or {}).get('examplePackId')) if isinstance(migrated.get('playNow'), dict) else ''
+            filtered['campaignPack']['afterword'] = {
+                'becameOfThem': epilogue_lines(migrated),
+                'yourWord': word_lines(migrated, {f'player_{player_id}' for player_id in owned_player_ids}),
+                **({'replay': replay} if replay else {}),
+            }
     return filtered if enemy_hit_points else hide_enemy_hit_points(filtered)
 
 
@@ -1437,7 +1466,9 @@ def _journal(snapshot: dict, filtered: dict, owned_player_ids: frozenset[int]) -
     each person with their disposition word and up to two lines of what they
     remember of the viewer's heroes; threads are the tie lines told for the
     viewer's own heroes, and ``yourWord`` their promises (open ones; once the
-    story has ended, all of them, an open one ``left open``).
+    story has ended, all of them, an open one ``left open``); ``plans`` are the
+    players' own notes of what they mean to do; ``leads`` what a fight's
+    outcome left the party to follow (W9-SCENE).
     """
 
     pack = snapshot['campaignPack']
@@ -1543,6 +1574,8 @@ def _journal(snapshot: dict, filtered: dict, owned_player_ids: frozenset[int]) -
             if isinstance(record, dict) and _record_player_id({'id': record.get('heroId')}) in owned_player_ids
         ],
         'yourWord': journal_promises(snapshot, owned_hero_ids, ended=bool((filtered.get('campaignPack') or {}).get('ending'))),
+        'leads': leads_of(snapshot),
+        'plans': plans_for_view(snapshot),
     }
 
 

@@ -55,8 +55,9 @@ TIMINGS_KEY = 'timings'
 AUTO_END_TURN_REQUEST_KEY = 'auto_end_turn'
 # The state pipeline's mark on a turn the engine ended for the hero.
 AUTO_END_TURN_KEY = 'autoEndTurn'
-# The fight actions a model narrates; every other fight action is told by its own result.
-NARRATED_FIGHT_ACTIONS = frozenset({'attack', *MANEUVER_TYPES, IMPROVISE_TYPE})
+# The fight actions a model narrates; every other fight action is told by its own result. A plan (W9-SCENE) is the
+# narrator's to tell from "Did" unless its authored text is the whole turn (:func:`_plan_told_by_engine`).
+NARRATED_FIGHT_ACTIONS = frozenset({'attack', *MANEUVER_TYPES, IMPROVISE_TYPE, 'plan'})
 # What a hero may still do and have their turn end anyway: move, end it, tell a finishing blow (free, any time) or
 # take heart (free: holding Inspiration never keeps a turn open).
 LEAVES_ONLY = frozenset({'advance', 'reposition', 'end_turn', 'finisher', 'take_heart'})
@@ -108,15 +109,39 @@ def _written_words_told(talk: dict[str, Any]) -> bool:
     )
 
 
+def _plan_told_by_engine(rules_hint: dict[str, Any]) -> bool:
+    """The turn is a plan whose authored text tells all of it (W9-SCENE amendment 9): no enemy acted, no blow was
+    struck, no fight started or ended and no roll waits. The engine tells it as written; no model is called."""
+
+    pipeline = _dict(rules_hint.get('state_pipeline'))
+    facts = _dict(pipeline.get('narration'))
+    effects = _dicts(facts.get('effects'))
+    if not effects or not all(_text(effect.get('text')) for effect in effects):
+        return False
+    if rules_hint.get('requires_roll') is True or isinstance(rules_hint.get('authoritative_roll'), dict):
+        return False
+    combat_state = _dict(pipeline.get('combatState'))
+    if isinstance(combat_state.get('playerResolvedAction'), dict) or _dicts(combat_state.get('trustedDamageEvents')) or _dicts(combat_state.get('enemyResolvedActions')):
+        return False
+    return not any(facts.get(key) for key in ('fightStart', 'fightEnds', 'partyDefeat', 'finishingBlow', 'finisher'))
+
+
 def _told_quietly(rules_hint: dict[str, Any], action_intent: dict[str, Any] | None) -> bool:
     """A fight action whose turn holds nothing a model tells, or Take heart out of a fight (see the module docstring)."""
 
     if _text(_dict(action_intent).get('kind')) == 'inspiration' or leaving(action_intent):
         return True
+    if _plan_told_by_engine(rules_hint):
+        return True
     if zone_move_only(rules_hint.get('state_pipeline')):
         # Stepping into another room: its description and arrival line are the engine's own words.
         return True
-    if _written_words_told(_dict(_dict(_dict(rules_hint.get('state_pipeline')).get('narration')).get('conversation'))):
+    facts = _dict(_dict(rules_hint.get('state_pipeline')).get('narration'))
+    if _written_words_told(_dict(facts.get('conversation'))):
+        return True
+    if _text(_dict(facts.get('unseen')).get('line')):
+        # Words that name nothing in sight: the engine's own line (``You see no strongbox here.``) and no more.
+        # A model given this turn had a bystander deny that the thing existed.
         return True
     combat_action = _combat_action(action_intent)
     if combat_action is None or _text(combat_action.get('action_type')) in NARRATED_FIGHT_ACTIONS:

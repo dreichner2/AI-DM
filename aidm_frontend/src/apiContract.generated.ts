@@ -398,7 +398,7 @@ export type StoryRoll = {
   die?: string
   parts?: StoryRollPart[]
   total?: number | null
-  against?: { kind: 'AC' | 'DC'; value: number } | null
+  against?: { kind: 'AC' | 'DC' | 'Athletics'; value: number } | null
   outcome?: 'hit' | 'miss' | 'success' | 'failure' | null
   natural?: 'twenty' | 'one' | null
   damage?: StoryRollDamage
@@ -439,11 +439,21 @@ export type StoryBeatLevel = {
   more?: number
 }
 
+export type StoryChapterEnd = {
+  number: number
+  title: string
+  checkpointId?: string
+  decided: string[]
+  open: string[]
+  teaser?: string
+}
+
 export type StoryBeatRecord = {
   kind: string
   text: string
   refId?: string
   level?: StoryBeatLevel
+  chapterEnd?: StoryChapterEnd
 }
 
 export type SessionLogEntryMetadata = JsonRecord & { storyRolls?: StoryRoll[]; storyBeats?: StoryBeatRecord[] }
@@ -798,4 +808,41 @@ export type CampaignSegment = {
   is_triggered: boolean
   created_at: string | null
   updated_at: string | null
+}
+
+export type SessionPlan = {
+  id: string
+  text: string
+  playerId?: number
+  createdAt: string
+}
+
+export type SessionPlansResponse = {
+  session_id: number
+  plans: SessionPlan[]
+  plan?: { id: string; text: string }
+  removed?: boolean
+}
+
+export type ComingBackBlock = {
+  where: string
+  people: string[]
+  plans: string[]
+}
+
+export type ComingBackResponse = {
+  session_id: number
+  comingBack: ComingBackBlock | null
+}
+
+export type ChronicleAdventure = {
+  packId: string
+  title: string
+  endings: string[]
+  timesCompleted: number
+  neverFound: number
+}
+
+export type ChronicleResponse = {
+  adventures: ChronicleAdventure[]
 }

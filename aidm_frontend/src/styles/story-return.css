@@ -1,0 +1,104 @@
+/*
+ * The end of a chapter, coming back, the ending's last sections and the question asked on leaving: label lines and
+ * quiet text, no boxes. Loaded with them (StoryReturn.tsx), never at start-up.
+ */
+
+.story-shell .story-chapter-end,
+.story-shell .story-ending-sections {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+.story-shell .story-chapter-end {
+  margin: var(--story-gap-6) 0 var(--story-gap-5);
+  animation: story-rise var(--story-slow) var(--story-ease) backwards;
+}
+.story-shell .story-chapter-end-title {
+  margin: 12px 0 0;
+  letter-spacing: 0.28em;
+  color: var(--story-ink-soft);
+}
+.story-shell .story-ending-sections { margin-top: 26px; }
+.story-shell .story-return-label {
+  margin: 22px 0 0;
+  color: var(--story-muted);
+}
+.story-shell .story-return-lines {
+  display: grid;
+  gap: 4px;
+  max-width: 32em;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--story-prose);
+  font-size: 1.02rem;
+  line-height: 1.5;
+  color: var(--story-ink-soft);
+  text-wrap: pretty;
+}
+.story-shell .story-return-teaser {
+  max-width: 32em;
+  margin: 22px 0 0;
+  font-family: var(--story-prose);
+  font-style: italic;
+  line-height: 1.55;
+  color: var(--story-ink);
+}
+
+/* Coming back: a quiet block left-aligned above the action box. */
+.story-shell .story-coming-back {
+  margin: 0 0 12px;
+  text-align: left;
+}
+.story-shell .story-coming-back .story-return-label:first-child { margin-top: 0; }
+.story-shell .story-coming-back .story-return-lines { margin-top: 4px; font-size: 0.98rem; }
+
+/* Leaving: the question takes the action box's place. */
+.story-shell .story-leaving {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0 8px;
+}
+.story-shell .story-leaving .story-return-label { margin: 0; }
+.story-shell .story-leaving-input {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--story-hairline-strong);
+  background: transparent;
+  font-family: var(--story-prose);
+  font-size: 1.05rem;
+  color: var(--story-ink);
+}
+.story-shell .story-leaving-input:focus-visible { outline: none; border-bottom-color: var(--story-ember-soft); }
+.story-shell .story-leaving-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  font-family: var(--story-ui);
+  font-size: 0.9rem;
+}
+
+/* Your chronicle, on the title screen. */
+.story-shell .story-chronicle-list {
+  display: grid;
+  gap: 18px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.story-shell .story-chronicle-title {
+  margin: 0;
+  font-family: var(--story-prose);
+  font-size: 1.3rem;
+  line-height: 1.25;
+  color: var(--story-ink);
+}
+.story-shell .story-chronicle-line {
+  margin: 4px 0 0;
+  font-family: var(--story-ui);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--story-ink-soft);
+}

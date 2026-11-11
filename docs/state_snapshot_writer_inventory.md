@@ -52,8 +52,9 @@ A continued chapter copies only `schemaVersion`, `campaignId`, `currentScene`
 (with combat state, positions and zones reset), `locations`,
 `locationSceneStates`, `knownNpcs`, `partyNpcs`, `quests`, `flags`, `clues`,
 `factions`, `maps`, `handouts`, `lore`, `campaignPack`, `clock`, `merchants`,
-`contentSettings`, `playNow` and the four gameplay ledgers, and starts with an
-empty `combat`.
+`contentSettings`, `playNow`, the four gameplay ledgers, the heroes' `promises`,
+the players' `plans` and the director's `clocks` and `director` record, and
+starts with an empty `combat`.
 
 ## Inventory
 
@@ -61,6 +62,7 @@ empty `combat`.
 | --- | --- | ---: | --- | --- | --- | --- |
 | `aidm_server/game_state/application/applier.py` | `persist_state_to_database` | 1 | `central_runtime_persistence` | Shared persistence helper called after state-change validation/application. | Player rows and session snapshot are persisted together. | Keep as the preferred runtime persistence boundary. |
 | `aidm_server/game_state/orchestration/turn_pipeline.py` | `pre_dm_pipeline` | 1 | `turn_pipeline_serialized` | Active turn pipeline path; gameplay turns are serialized before this stage. | Used only when no immediate/combat changes require `persist_state_to_database`. | Keep documented; consider routing no-change writes through a named helper later. |
+| `aidm_server/game_state/orchestration/turn_pipeline.py` | `_with_director_note` | 1 | `turn_pipeline_serialized` | Active turn pipeline path, inside `pre_dm_pipeline` after its own write; gameplay turns are serialized before this stage. | Rewrites the same snapshot dict when the director used a nudge or noted a plan the helper read. | Keep documented. |
 | `aidm_server/game_state/orchestration/turn_pipeline.py` | `post_dm_pipeline` | 2 | `turn_pipeline_serialized` | Active turn pipeline path; gameplay turns are serialized before this stage. | Used when post-DM extraction is skipped or no post-DM changes apply. | Keep documented; consider routing no-change writes through a named helper later. |
 | `aidm_server/services/campaign_pack_progress.py` | `_update_campaign_pack_progress_locked` | 2 | `campaign_pack_serialized` | Standalone updates discover and acquire the complete shared-progress session group in sorted order, discard clean pre-wait identities, revalidate membership from fresh rows, then keep every lease through commit or rollback. Transaction-joining callers may use `commit=False` only while already holding that complete lock set. | Records `session_state_mutation_audits` for migration/progress writes and progress events when changed; membership changes force a pre-mutation reacquire instead of a partial commit. | Keep behind the shared-progress coordination boundary; do not call the locked helper directly. |
 | `aidm_server/services/campaign_pack_progress.py` | `_control_campaign_pack_progress_locked` | 1 | `campaign_pack_serialized` | Operator controls use the same fresh acquire/revalidate boundary and retain all shared-session leases through the durable commit. Transaction-joining callers fail closed if any group lease is missing. | Records `session_state_mutation_audits` and progress events for operator control changes. | Keep behind the shared-progress coordination boundary; do not call the locked helper directly. |

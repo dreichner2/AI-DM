@@ -1738,6 +1738,10 @@ def plan_enemy_intents(combat_state: dict[str, Any]) -> dict[str, Any]:
         if enemy.get('id'):
             candidate_debug[str(enemy['id'])] = candidates
             fact_debug[str(enemy['id'])] = _combat_fact_debug_payload(facts)
+    # An encounter's goals (take the item and run, silence a witness) are the engine's, laid over these.
+    from aidm_server.game_state.orchestration.fight_stakes import goal_intents
+
+    intents = goal_intents(combat, intents)
     summary_parts = []
     for intent in intents:
         enemy = next((participant for participant in combat.get('participants') or [] if participant.get('id') == intent.get('enemyId')), {})

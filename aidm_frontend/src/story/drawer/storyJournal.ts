@@ -6,8 +6,9 @@ import type { JsonRecord } from '../../types'
  * its current stage, the objectives the party has completed or is working on
  * (never later ones), only the clues, people and places the party knows (each
  * person with their disposition word and what they remember of the viewer's
- * heroes), the threads of the viewer's own hero the adventure has told, and
- * their word given (`yourWord`).
+ * heroes), the threads of the viewer's own hero the adventure has told,
+ * their word given (`yourWord`), the party's own plans (`plans`) and the
+ * leads a fight's outcome left them (`leads`).
  */
 export type StoryJournal = {
   quest: {
@@ -24,6 +25,8 @@ export type StoryJournal = {
   places: Array<{ id: string; name: string; state: string }>
   threads: Array<{ id: string; title: string; text: string }>
   yourWord: Array<{ id: string; text: string; to: string; status: string }>
+  plans: Array<{ id: string; text: string }>
+  leads: Array<{ text: string; followed: boolean }>
 }
 
 function records(value: unknown): JsonRecord[] {
@@ -87,5 +90,11 @@ export function storyJournalFromSnapshot(snapshot: unknown): StoryJournal | null
         status: stringValue(promise.status),
       }))
       .filter((promise) => promise.text),
+    plans: records(journal.plans)
+      .map((plan) => ({ id: stringValue(plan.id), text: stringValue(plan.text) }))
+      .filter((plan) => plan.id && plan.text),
+    leads: records(journal.leads)
+      .map((lead) => ({ text: stringValue(lead.text), followed: lead.followed === true }))
+      .filter((lead) => lead.text),
   }
 }

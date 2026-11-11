@@ -163,5 +163,24 @@ describe('JournalSection', () => {
     rerender(<JournalSection board={withSnapshot({ journal: { ...journal, threads: [] } })} inspector={testInspector()} />)
     expect(screen.queryByRole('heading', { name: 'Your threads' })).not.toBeInTheDocument()
   })
+
+  it('keeps the leads a fight left under Leads, a followed one marked, before the clues', () => {
+    const leads = [
+      { text: 'The bound cutthroat names a buyer at the mill.' },
+      { text: 'The fragment went north with the cutthroat.', followed: true },
+    ]
+    const { rerender } = render(<JournalSection board={withSnapshot({ journal: { ...journal, leads } })} inspector={testInspector()} />)
+
+    const section = screen.getByRole('heading', { name: 'Leads' }).parentElement as HTMLElement
+    expect(within(section).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'The bound cutthroat names a buyer at the mill.',
+      'The fragment went north with the cutthroat. · followed',
+    ])
+    const headings = screen.getAllByRole('heading').map((heading) => heading.textContent)
+    expect(headings.indexOf('Leads')).toBe(headings.indexOf('Clues') - 1)
+
+    rerender(<JournalSection board={withSnapshot({ journal })} inspector={testInspector()} />)
+    expect(screen.queryByRole('heading', { name: 'Leads' })).not.toBeInTheDocument()
+  })
 })
 

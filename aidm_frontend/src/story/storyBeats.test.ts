@@ -467,6 +467,25 @@ describe('server story beats', () => {
     ])
   })
 
+  it('shows a lead as a chip into the journal and what a plan changed as a quiet line', () => {
+    const beats = buildStoryBeats([
+      entry('log-1', 'dm', 'DM', 'Hoofbeats fade up the lane.', {
+        turn_id: 14,
+        storyBeats: [
+          { kind: 'change', text: 'The yard gate is barred.' },
+          { kind: 'lead', text: 'A lead — The fragment went north with the cutthroat.' },
+        ],
+      }),
+    ])
+
+    const turn = beats.find((beat) => beat.kind === 'turnBeats')
+    if (turn?.kind !== 'turnBeats') throw new Error('expected the turn beats')
+    expect(turn.beats.map(({ kind, text, look, glyph, target }) => ({ kind, text, look, glyph, target }))).toEqual([
+      { kind: 'change', text: 'The yard gate is barred.', look: 'plain', glyph: null, target: null },
+      { kind: 'lead', text: 'A lead — The fragment went north with the cutthroat.', look: 'chip', glyph: 'scroll', target: 'journal' },
+    ])
+  })
+
   it('shows how a fight ended as a chip, a victory in the success tone', () => {
     const [, turn] = buildStoryBeats([
       entry('log-1', 'dm', 'DM', 'The last cutthroat falls.', {

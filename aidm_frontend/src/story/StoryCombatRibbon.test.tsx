@@ -446,6 +446,66 @@ describe('StoryCombatRibbon', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Actions are unavailable while the current turn resolves.')
   })
 
+  it('says what the fight is about in one quiet line above the turn order, a stake that changed in the accent', () => {
+    const stakes = (fragment: string, words: string) =>
+      worldStateFromSnapshot({
+        combat: {
+          status: 'active',
+          stakes: [
+            { id: 'fragment', name: 'the road-stone fragment', kind: 'item', state: fragment, words },
+            { id: 'witness', name: 'Tovin Bell', kind: 'person', state: 'safe', words: 'safe' },
+            { id: 'way_out', name: 'the yard gate', kind: 'route', state: 'open', words: 'open' },
+          ],
+        },
+      }).combat.stakes
+    const combat = { ...testCombat(), stakes: stakes('in_place', 'where it lies') }
+    const props = {
+      playerId: VIEWER_ID,
+      activePlayers: [],
+      controls: testControls({ inCombat: true, spells: [], interactables: [] }),
+      recentSpellNames: [],
+      disabled: false,
+      submitAction: () => true,
+      onOpenTray: () => undefined,
+    }
+    const { container, rerender } = render(<StoryCombatRibbon combat={combat} {...props} />)
+
+    const line = container.querySelector('.story-ribbon-stakes') as HTMLElement
+    expect(line).toHaveTextContent('At stake — the road-stone fragment (where it lies) · Tovin Bell (safe) · the yard gate (open)')
+    expect(line.nextElementSibling).toHaveClass('story-ribbon-roster')
+    expect(line.querySelector('[data-changed]')).toBeNull()
+
+    rerender(<StoryCombatRibbon combat={{ ...combat, stakes: stakes('held_by_enemy', 'the cutthroat has it') }} {...props} />)
+    expect([...line.querySelectorAll('[data-changed]')].map((stake) => stake.textContent)).toEqual(['the road-stone fragment (the cutthroat has it)'])
+
+    // The next turn, nothing changed: the accent goes.
+    const next = { ...combat, stakes: stakes('held_by_enemy', 'the cutthroat has it'), activeActorId: 'goblin_1' }
+    rerender(<StoryCombatRibbon combat={next} {...props} />)
+    expect(container.querySelector('.story-ribbon-stakes [data-changed]')).toBeNull()
+
+    rerender(<StoryCombatRibbon combat={testCombat()} {...props} />)
+    expect(container.querySelector('.story-ribbon-stakes')).toBeNull()
+  })
+
+  it('offers the plans the server suggests beside the other choices, at most two', () => {
+    const combat = testCombat()
+    const plan = (id: string, label: string, suggested: boolean) =>
+      action(`plan.${id}`, 'plan', label, { cost: { ...NO_COST, action: 1 }, ...(suggested ? { suggested } : {}) })
+    combat.legalActionBundles[0].actions = [
+      ...combat.legalActionBundles[0].actions,
+      plan('yard_gate.bar_gate', 'Shut and bar the yard gate', true),
+      plan('tethered_horse.slap_horse', 'Slash the tether and slap the horse', true),
+      plan('yard_lantern.smash', 'Smash the lantern', false),
+    ]
+    const { submitAction } = renderRibbon(combat)
+
+    expect(choiceTexts()).toContain('Shut and bar the yard gateA')
+    expect(choiceTexts()).toContain('Slash the tether and slap the horseA')
+    expect(choiceTexts().some((text) => text?.startsWith('Smash'))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: /Shut and bar the yard gate/ }))
+    expect(submitAction.mock.calls[0][1]).toMatchObject({ kind: 'combat', combat: { action_id: 'plan.yard_gate.bar_gate' } })
+  })
+
   it('says who is acting when it is not the viewer’s turn, and shows at most two telegraphs', () => {
     renderRibbon(testCombat({ current: false }))
 

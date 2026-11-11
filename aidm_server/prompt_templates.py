@@ -45,6 +45,13 @@ DICE_SHOWN_RULE = (
     'or damage numbers.'
 )
 STORY_ROLLS_KEY = 'storyRolls'
+# Added on turns that resolve a plan (W9-SCENE: an ``Effect —`` line under "Did") or an improvised attempt.
+PLAN_RULE = '19. Tell what the plan changed in the scene, as "Did" states it. Do not undo it, and do not add a different consequence.'
+IMPROVISED_RULE = (
+    '20. An improvised attempt is told as effort and what the hero senses. It never finds, opens, takes, breaks, unlocks '
+    'or reveals a thing, never names a thing that is not under "Here", and leaves the hero in the area "Where" names. '
+    'On a success the hero learns or achieves only what the words asked for that needs no change to the scene.'
+)
 
 
 def rolls_shown(rules_hint: dict | None) -> bool:
@@ -385,7 +392,10 @@ def render_engine_brief(rules_hint: dict) -> str | None:
     far everyone is from the acting hero. In a conversation ``Conversation:`` names the person, their personality
     and disposition, then the lines they have told, what they remember of the hero (with the rule that they speak
     from it) and ``May tell if asked:``. On a turn whose rolls are shown as cards the dice rule
-    (:data:`DICE_SHOWN_RULE`) follows.
+    (:data:`DICE_SHOWN_RULE`) follows, and on a turn that resolves a plan or an improvised attempt (W9-SCENE) its
+    rule (:data:`PLAN_RULE`, :data:`IMPROVISED_RULE`); ``Now true here:`` gives the place's scene facts and, in a fight
+    about something, ``At stake:`` its stakes. The director's authored note, which the engine tells itself, follows ``Did`` as
+    ``Already told this turn (do not repeat or contradict):``; an instruction note as ``Director — {kind}: …``.
     """
 
     state_pipeline = rules_hint.get('state_pipeline') if isinstance(rules_hint.get('state_pipeline'), dict) else {}
@@ -437,6 +447,8 @@ def render_engine_brief(rules_hint: dict) -> str | None:
             'ENGINE THIS TURN',
             *header,
             f"Did: {' '.join(did) if did else 'nothing'}",
+            *([f"Already told this turn (do not repeat or contradict): {' | '.join(str(text) for text in brief['alreadyTold'])}"] if brief.get('alreadyTold') else []),
+            *([f"Director — {director['kind']}: {director['note']}"] if isinstance(director := brief.get('director'), dict) else []),
             f"Not done: {'; '.join(not_done) if not_done else 'nothing'}",
             'Here (only the engine decides these): '
             f"objects {' | '.join(objects) if objects else 'none'}; "
@@ -447,10 +459,14 @@ def render_engine_brief(rules_hint: dict) -> str | None:
             f"The party is at {brief.get('place') or 'an unnamed place'}.",
             *([f"Where: {brief['where']}"] if str(brief.get('where') or '').strip() else []),
             *([f"Positions: {brief['positions']}"] if str(brief.get('positions') or '').strip() else []),
+            *([f"Now true here: {' '.join(str(fact) for fact in brief['facts'])}"] if brief.get('facts') else []),
+            *([f"At stake: {brief['atStake']}"] if str(brief.get('atStake') or '').strip() else []),
             *conversation,
             '',
             PARTY_ENGINE_BRIEF_RULES if party else ENGINE_BRIEF_RULES,
             *([DICE_SHOWN_RULE] if rolls_shown(rules_hint) else []),
+            *([PLAN_RULE] if any(line.startswith('Effect — ') for line in did) else []),
+            *([IMPROVISED_RULE] if any(line.startswith('Improvised — ') for line in did) else []),
         ]
     )
 

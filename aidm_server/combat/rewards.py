@@ -65,6 +65,9 @@ END_REASON_OUTCOMES = {
     'negotiation': 'negotiation',
     'objective_completed': 'objective_completion',
     'objective_completion': 'objective_completion',
+    # The enemies took what the fight was about and got away (W9-SCENE): the encounter's flee reward, else half XP.
+    'enemy_goal_met': 'flee',
+    'flee': 'flee',
 }
 
 SUPPORTED_OUTCOMES = frozenset(END_REASON_OUTCOMES.values())
@@ -96,6 +99,7 @@ OUTCOME_HOOKS = {
     'surrender': 'onSurrender',
     'negotiation': 'onNegotiation',
     'objective_completion': 'onObjectiveCompletion',
+    'flee': 'onFlee',
 }
 
 
@@ -363,6 +367,11 @@ def _reward_sources(
         mapped = _mapping_value(encounter.get('outcome_rewards'), outcome, raw_end_reason)
     if mapped is not None:
         sources.append(mapped)
+    if outcome == 'flee' and not sources:
+        base = encounter.get('rewards', encounter.get('reward'))
+        xp = base.get('xp', base.get('experience')) if isinstance(base, dict) else None
+        if isinstance(xp, int) and not isinstance(xp, bool) and xp > 0:
+            sources.append({'xp': xp // 2})
     return sources
 
 

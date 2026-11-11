@@ -86,7 +86,8 @@ export type GameplayObjectCheck = {
 }
 
 export type GameplayObjectAction = {
-  id: SceneObjectAction
+  /** `plan`: one of the object's authored affordances (`planId`), a plan that changes the scene. */
+  id: SceneObjectAction | 'plan'
   label: string
   available: boolean
   reason: string
@@ -104,6 +105,10 @@ export type GameplayObjectAction = {
   /** One of the object's choices (the pack's `choiceActions`): the choices are offered together. */
   choice?: boolean
   check?: GameplayObjectCheck
+  /** The affordance a `plan` action takes. */
+  planId?: string
+  /** A plan the server puts forward as a suggestion (at most two at a time). */
+  suggested?: boolean
 }
 
 export type GameplayInteractableControl = {
@@ -894,12 +899,13 @@ function offeredObjectActions(entry: JsonRecord): GameplayObjectAction[] | null 
   return records(entry.offeredActions).flatMap((offer): GameplayObjectAction[] => {
     const id = stringValue(offer.action)
     const label = stringValue(offer.label)
-    if (!SCENE_OBJECT_ACTIONS.has(id) || !label) return []
+    const planId = id === 'plan' ? stringValue(offer.planId) : ''
+    if (!(SCENE_OBJECT_ACTIONS.has(id) || planId) || !label) return []
     const done = offer.done === true
     const legal = offer.legal === true
     const check = objectCheck(offer.check)
     return [{
-      id: id as SceneObjectAction,
+      id: planId ? 'plan' : id as SceneObjectAction,
       label,
       available: legal && !done,
       reason: legal ? '' : stringValue(offer.reason),
@@ -909,6 +915,8 @@ function offeredObjectActions(entry: JsonRecord): GameplayObjectAction[] | null 
       ...(offer.retry === true ? { retry: true } : {}),
       ...(offer.choice === true ? { choice: true } : {}),
       ...(check ? { check } : {}),
+      ...(planId ? { planId } : {}),
+      ...(offer.suggested === true ? { suggested: true } : {}),
     }]
   })
 }

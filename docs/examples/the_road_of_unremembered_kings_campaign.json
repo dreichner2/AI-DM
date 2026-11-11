@@ -1109,6 +1109,19 @@
   "npcs": [
     {
       "id": "npc_mara_reedwake",
+      "epilogues": [
+        {
+          "when": {
+            "flags": {
+              "mara_trusts_party": true
+            }
+          },
+          "text": "Mara Reedwake keeps a lamp in the north window now, and is no longer afraid of what might answer it."
+        },
+        {
+          "text": "Mara Reedwake still watches the north road at dusk, and does not say what for."
+        }
+      ],
       "name": "Mara Reedwake",
       "role": "innkeeper_and_local_witness",
       "locationId": "loc_lantern_post_inn",
@@ -1182,7 +1195,12 @@
           "line": "\"Don't promise me that unless you mean it.\" She holds your eye a moment longer. \"…All right. I'll hold you to it.\"",
           "effects": {
             "disposition": 1,
-            "promise": "promised_mara_word"
+            "promise": {
+              "id": "promised_mara_word",
+              "keptText": "You kept your word to Mara Reedwake.",
+              "brokenText": "You never did bring Mara Reedwake word.",
+              "openText": "Mara Reedwake is still waiting for word."
+            }
           }
         },
         {
@@ -1252,6 +1270,28 @@
     },
     {
       "id": "npc_tovin_bell",
+      "epilogues": [
+        {
+          "when": {
+            "flags": {
+              "tovin_button_revealed": true
+            },
+            "dispositionAtLeast": 1
+          },
+          "text": "Tovin Bell carried Wenna's button to her himself, and came back standing straighter."
+        },
+        {
+          "when": {
+            "flags": {
+              "tovin_button_revealed": true
+            }
+          },
+          "text": "Tovin Bell flinches now when travellers raise their voices. He never did before."
+        },
+        {
+          "text": "Tovin Bell still has something in his pocket he cannot bring himself to throw away."
+        }
+      ],
       "name": "Tovin Bell",
       "role": "stablehand_and_accidental_witness",
       "locationId": "loc_lantern_post_inn",
@@ -1429,6 +1469,19 @@
     },
     {
       "id": "npc_osric_hale",
+      "epilogues": [
+        {
+          "when": {
+            "flags": {
+              "osric_supports_party": true
+            }
+          },
+          "text": "Osric Hale burned a letter in the yard where everyone could watch. He did not say whose it was."
+        },
+        {
+          "text": "Osric Hale kept the letter. Some nights he takes it out and reads it again."
+        }
+      ],
       "name": "Osric Hale",
       "role": "local_reeve",
       "locationId": "loc_lantern_post_inn",
@@ -1693,6 +1746,19 @@
     },
     {
       "id": "npc_brokk_stonehand",
+      "epilogues": [
+        {
+          "when": {
+            "flags": {
+              "brokk_helping": true
+            }
+          },
+          "text": "Brokk Stonehand took up his grandfather's chisels. The new milestones are the best work on the road."
+        },
+        {
+          "text": "Brokk Stonehand dresses doorsteps and says nothing about wards."
+        }
+      ],
       "name": "Brokk Stonehand",
       "role": "dwarven_stonewright",
       "locationId": "loc_old_masons_yard",
@@ -1800,6 +1866,16 @@
     },
     {
       "id": "npc_radan_greycloak",
+      "epilogues": [
+        {
+          "when": {
+            "companion": true
+          }
+        },
+        {
+          "text": "Radan Greycloak is still reading milestones, somewhere north."
+        }
+      ],
       "name": "Radan Greycloak",
       "role": "ranger_scout",
       "locationId": "loc_old_north_road",
@@ -1900,6 +1976,19 @@
     },
     {
       "id": "npc_serenil_westward_song",
+      "epilogues": [
+        {
+          "when": {
+            "flags": {
+              "serenil_song_heard": true
+            }
+          },
+          "text": "Serenil sang the wall its names again, one each evening, until the stone held them."
+        },
+        {
+          "text": "Serenil left the waystation before the first frost. The wall is still blank."
+        }
+      ],
       "name": "Serenil of the Westward Song",
       "role": "elven_lorekeeper",
       "locationId": "loc_waystation_scratched_names",
@@ -2013,6 +2102,17 @@
     },
     {
       "id": "npc_veyra_ashcap",
+      "epilogues": [
+        {
+          "when": {
+            "dispositionAtLeast": 1
+          },
+          "text": "Veyra Ashcap washed the ash from her hands at the inn trough and asked Mara for work."
+        },
+        {
+          "text": "Veyra Ashcap was gone by morning, and so was a good horse."
+        }
+      ],
       "name": "Veyra Ashcap",
       "role": "reluctant_agent",
       "locationId": "loc_old_north_road",
@@ -4405,6 +4505,7 @@
   "checkpoints": [
     {
       "id": "cp_01_empty_caravan",
+      "teaser": "Next: the old north road, where the lights are waiting.",
       "title": "The Caravan Without Names",
       "playerTitle": "The Empty Caravan",
       "summary": "The party investigates the empty caravan at the Lantern Post and discovers erased names, strange wagon signs, and the road-stone fragment.",
@@ -4463,6 +4564,7 @@
     },
     {
       "id": "cp_02_moving_road",
+      "teaser": "Next: a waystation whose wall has been made to forget.",
       "title": "The Road That Moves",
       "playerTitle": "The Changing Road",
       "summary": "The party follows the old road and experiences moving milestones, pale lanterns, false shortcuts, and wardbound beasts.",
@@ -4516,6 +4618,7 @@
     },
     {
       "id": "cp_03_scratched_names",
+      "teaser": "Next: the cairns, and the dead who still ask who goes.",
       "title": "The Waystation of Scratched Names",
       "playerTitle": "The Names That Were Cut Away",
       "summary": "The party discovers a ruined waystation where memorial names have been erased, revealing that memory is central to the ward's corruption.",
@@ -4568,6 +4671,7 @@
     },
     {
       "id": "cp_04_roadwarden_cairns",
+      "teaser": "Next: a Dwarf who knows what the stone can become.",
       "title": "Judgment of the Roadwardens",
       "playerTitle": "The Cairns of the Forgotten Guard",
       "summary": "The party confronts, appeases, restores, fights, or bypasses the Name-Eaten Roadwardens and Caelorn the Erased.",
@@ -4617,6 +4721,7 @@
     },
     {
       "id": "cp_05_stonewright_warning",
+      "teaser": "Next: the valley where every forgotten road ends.",
       "title": "The Stonewright's Warning",
       "playerTitle": "What the Stone Can Become",
       "summary": "The party learns the final road-stone can be renewed, broken, hidden, claimed, or corrupted, and may prepare a ritual path.",
@@ -4672,6 +4777,7 @@
     },
     {
       "id": "cp_06_final_valley",
+      "teaser": "Next: the last stone, and the hand that means to hold it.",
       "title": "The Binding of the Last Road-Stone",
       "playerTitle": "The Valley Where Roads End",
       "summary": "The party reaches the hidden valley, finds the missing travelers, confronts the Cinder Scribe, and chooses the road ward's fate.",

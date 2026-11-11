@@ -584,6 +584,29 @@ describe('gameplayControlsFromSnapshot offered actions', () => {
     })
   })
 
+  it('takes an authored affordance as a plan with its id, suggested or waiting for a fight', () => {
+    const [gate] = gameplayControlsFromSnapshot(offeredSnapshot('none', [
+      { action: 'plan', planId: 'bar_gate', label: 'Shut and bar the yard gate', legal: true, done: false, authored: true, effect: 'obstruct', check: { skill: 'athletics' }, suggested: true },
+      { action: 'plan', planId: 'slap_horse', label: 'Slash the tether and slap the horse', legal: false, done: false, authored: true, effect: 'separate', reason: 'Only in a fight.' },
+      { action: 'plan', label: 'A plan without an id', legal: true, done: false },
+    ]), 30).interactables
+    expect(gate.actions).toEqual([
+      {
+        id: 'plan',
+        planId: 'bar_gate',
+        label: 'Shut and bar the yard gate',
+        available: true,
+        reason: '',
+        phrase: true,
+        authored: true,
+        done: false,
+        check: { skill: 'athletics', ability: '' },
+        suggested: true,
+      },
+      { id: 'plan', planId: 'slap_horse', label: 'Slash the tether and slap the horse', available: false, reason: 'Only in a fight.', phrase: true, authored: true, done: false },
+    ])
+  })
+
   it('marks a failed check the server lets the hero retry by taking time', () => {
     const [strongbox] = gameplayControlsFromSnapshot(offeredSnapshot('none', [
       { action: 'search', label: 'Search the strongbox', legal: true, done: false, retry: true },

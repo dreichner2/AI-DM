@@ -44,6 +44,7 @@ from aidm_server.combat.state import RANGE_BANDS, normalize_battlefield, normali
 from aidm_server.spell_effects import active_repeat_attack, cannot_cast_reason, resolve_targeted_spell, spell_target_legality
 from aidm_server.game_state.campaign_pack_encounters import combat_is_active, materialize_campaign_pack_combat_start, story_flag_allows
 from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, TALK_DECLARED, talk_change_problem, validate_talk
+from aidm_server.game_state.orchestration.fight_stakes import STAKE_CHANGE, stake_change_problem
 from aidm_server.game_state.orchestration.hero_threads import (
     HERO_CHANGE_TYPES,
     TAKE_HEART_DECLARED,
@@ -1897,6 +1898,21 @@ def _validate_take_heart(action: dict[str, Any], state: dict[str, Any], *, curre
     return _valid(action, 'Takes heart: the next d20 roll is made with advantage.', immediate_changes=[change])
 
 
+def _validate_plan(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
+    """A plan (W9-SCENE) the hero chose or named: resolved by the engine, or refused with its reason."""
+
+    from aidm_server.game_state.orchestration.scene_plans import resolve_plan
+
+    actor = find_actor(state, _action_value(action, 'actorId', 'actor_id'))
+    if not actor:
+        return _invalid(action, 'Actor not found.')
+    plan = action.get('scenePlan') if isinstance(action.get('scenePlan'), dict) else {}
+    resolved = resolve_plan(state, actor_id=_text(actor.get('id')), plan=plan, turn_id=current_turn)
+    if not resolved['ok']:
+        return _invalid(action, resolved['reason'])
+    return _valid(action, resolved['result']['did'], immediate_changes=resolved['changes'])
+
+
 def _validate_talk(action: dict[str, Any], state: dict[str, Any], *, current_turn: int) -> dict[str, Any]:
     valid, reason, changes = validate_talk(state, action, turn_id=current_turn)
     return _valid(action, reason, immediate_changes=changes) if valid else _invalid(action, reason)
@@ -2182,6 +2198,8 @@ def validate_declared_actions(
             result = _validate_take_heart(action, state, current_turn=current_turn)
         elif action_type == TALK_DECLARED:
             result = _validate_talk(action, state, current_turn=current_turn)
+        elif action_type == 'scene.effect':
+            result = _validate_plan(action, state, current_turn=current_turn)
         else:
             result = _pending(action, action.get('summary') or 'Player intent needs DM narration.')
         if result.get('status') == 'needs_clarification' and isinstance(result.get('clarificationRequest'), dict):
@@ -4645,6 +4663,14 @@ def validate_state_changes(
         elif change_type == TALK_CHANGE:
             problem = talk_change_problem(state, change)
             status, reason, normalized = ('rejected', problem, None) if problem else ('accepted', 'The engine holds the conversation.', None)
+        elif change_type == 'scene.effect':
+            from aidm_server.game_state.orchestration.scene_plans import effect_change_problem
+
+            problem = effect_change_problem(state, change)
+            status, reason, normalized = ('rejected', problem, None) if problem else ('accepted', 'The engine resolved the plan.', None)
+        elif change_type == STAKE_CHANGE:
+            problem = stake_change_problem(state, change)
+            status, reason, normalized = ('rejected', problem, None) if problem else ('accepted', 'The engine moves what the fight is about.', None)
         elif change_type in COMBAT_STATE_CHANGE_TYPES:
             status, reason, normalized = _normalize_combat_change(change, state)
             if status == 'accepted' and normalized:

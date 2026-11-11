@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
   ArrowUp,
   Backpack,
@@ -33,6 +33,7 @@ import { StoryCombatRibbon } from './StoryCombatRibbon'
 import { recentSpellNames } from './recentSpells'
 import { PressedRollCard } from './PressedRollCard'
 import { StoryRollPrompt } from './StoryRollPrompt'
+import { returnChunk } from './storyChunks'
 import { useEndingDismissed } from './storyEnding'
 import { MORE_SUGGESTION, storySuggestions, type StorySuggestion } from './storySuggestions'
 import type { StoryComposerProps } from './types'
@@ -76,6 +77,9 @@ const SUGGESTION_ICONS: Partial<Record<StorySuggestion['kind'], LucideIcon>> = {
   topic: MessageCircle,
   say_free: Quote,
 }
+
+const ComingBack = returnChunk.component((module) => module.ComingBack)
+const LeavingQuestion = returnChunk.component((module) => module.LeavingQuestion)
 
 const DOWN_STATUS = 'You are down. Your companions can still reach you.'
 const DOWN_PLACEHOLDER = 'You are down.'
@@ -219,6 +223,8 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
   const [traySection, setTraySection] = useState<TraySection>('scene')
   const [traySpellId, setTraySpellId] = useState<string | undefined>(undefined)
   const [sentCount, setSentCount] = useState(readSentCount)
+  // The coming-back block stays above the action box until the viewer's first action in this chapter.
+  const [actedIn, setActedIn] = useState<number | null>(null)
   const [tradeMerchantId, setTradeMerchantId] = useState('')
   const stage = useStagedComposerAction(composer)
   const endingDismissed = useEndingDismissed(board.sessionId)
@@ -298,6 +304,7 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
 
   // Reads storage rather than state: staged submits call this from an older render.
   const recordSent = () => {
+    setActedIn(board.sessionId)
     const next = readSentCount() + 1
     writeSentCount(next)
     setSentCount(next)
@@ -532,9 +539,25 @@ export function StoryComposer({ board, chrome }: StoryComposerProps) {
 
   const ModeIcon = MODE_ICONS[composerMode] ?? Plus
   const showHint = sentCount < HINT_SEND_LIMIT
+  const storyReturn = board.storyReturn
+
+  if (storyReturn?.leaving) {
+    return (
+      <div className="story-dock">
+        <Suspense fallback={null}>
+          <LeavingQuestion onNote={storyReturn.leaving.note} onSkip={storyReturn.leaving.skip} />
+        </Suspense>
+      </div>
+    )
+  }
 
   return (
     <div className="story-dock" data-tray-open={trayOpen || undefined}>
+      {storyReturn && board.sessionId !== null && actedIn !== board.sessionId ? (
+        <Suspense fallback={null}>
+          <ComingBack key={board.sessionId} load={storyReturn.loadComingBack} />
+        </Suspense>
+      ) : null}
       {renderStatus()}
 
       {composer.diceRoll ? (

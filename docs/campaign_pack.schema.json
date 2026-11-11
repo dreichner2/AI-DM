@@ -174,7 +174,20 @@
       "type": "array",
       "maxItems": 250,
       "items": {
-        "$ref": "#/$defs/packRecord"
+        "allOf": [
+          {
+            "$ref": "#/$defs/packRecord"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "secret": {
+                "description": "Counts among the adventure's secrets (found when discovered); the chronicle tells how many were never found.",
+                "type": "boolean"
+              }
+            }
+          }
+        ]
       }
     },
     "factions": {
@@ -421,7 +434,15 @@
           }
         },
         "promise": {
-          "$ref": "#/$defs/id"
+          "description": "The promise this records, by its id, or with the lines the end of the story reads for it: keptText once its keeping act has happened, brokenText once broken (by its breaking act or when brokenWhen's flags hold), openText while it is still open.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "$ref": "#/$defs/promiseSpec"
+            }
+          ]
         },
         "keepsPromise": {
           "$ref": "#/$defs/id"
@@ -433,6 +454,159 @@
           "$ref": "#/$defs/id"
         },
         "forget": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "promiseSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "keptText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "brokenText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "openText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "brokenWhen": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["flags"],
+          "properties": {
+            "flags": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean"]
+                }
+              }
+          }
+        }
+      }
+    },
+    "clock": {
+      "description": "Pressure with a cause. A clock of the place the party is at (its location's, or an encounter's there that has not begun) starts once startWhen holds (at once without it) or an affordance starts it; it then moves one step for each of its causes: each listed flag the first time it is set, each listed object action the first time it succeeds, and every everyTurnsAfterStart turns taken there outside a fight. A step's text is told by the engine as written, the turn's one director note; its effects apply. It never moves without a cause.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "advanceOn", "steps"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "advanceOn": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "flags": {
+              "$ref": "#/$defs/idList"
+            },
+            "objectActions": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9_]+:[a-z_]+$"
+              }
+            },
+            "everyTurnsAfterStart": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          }
+        },
+        "steps": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text"],
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "effects": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "setsFlags": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": ["string", "number", "boolean"]
+                      }
+                    },
+                  "discoversLocationIds": {
+                    "$ref": "#/$defs/idList"
+                  },
+                  "startsEncounterId": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "affects": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "$ref": "#/$defs/talkAffect"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "startWhen": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "flags": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean"]
+                }
+              },
+            "encounterResolvedIds": {
+              "$ref": "#/$defs/idList"
+            }
+          }
+        }
+      }
+    },
+    "clockList": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/clock"
+      }
+    },
+    "nudge": {
+      "description": "A one-line pointer the director tells, as written, when four turns at the place have brought nothing but hints (once): \"Tovin keeps glancing at the stable.\"",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "rememberedKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["npcId", "key"],
+      "properties": {
+        "npcId": {
+          "$ref": "#/$defs/id"
+        },
+        "key": {
           "$ref": "#/$defs/id"
         }
       }
@@ -590,6 +764,9 @@
         },
         "private": {
           "type": "boolean"
+        },
+        "nudge": {
+          "$ref": "#/$defs/nudge"
         }
       }
     },
@@ -818,6 +995,9 @@
             }
           }
         },
+        "nudge": {
+          "$ref": "#/$defs/nudge"
+        },
         "inspires": {
           "description": "Inspiration for the hero who does the action, with its reason, for example {\"search\": \"a secret uncovered\"}. The linter warns about an action the object does not support.",
           "type": "object",
@@ -910,6 +1090,40 @@
         "zoneId": {
           "description": "The zone of its location it stands in; without it, the location's startZoneId.",
           "$ref": "#/$defs/id"
+        },
+        "tags": {
+          "description": "What plans can do with the object (W9-SCENE effects): exit, barrier, light, fire, cover, heavy, fragile, rope, animal, crowd, vehicle, container, noise, high_ground.",
+          "type": "array",
+          "maxItems": 14,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["exit", "barrier", "light", "fire", "cover", "heavy", "fragile", "rope", "animal", "crowd", "vehicle", "container", "noise", "high_ground"]
+          }
+        },
+        "guards": {
+          "description": "The way (another object's id) a heavy or vehicle object blocks when it is used to obstruct.",
+          "$ref": "#/$defs/id"
+        },
+        "exposedBy": {
+          "description": "Hidden until an expose effect in its zone reveals it.",
+          "type": "string",
+          "enum": ["expose"]
+        },
+        "affordances": {
+          "description": "Authored plans on the object, offered like other actions (at most two as suggestions) and chosen by typed words holding their keywords.",
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/affordance"
+          }
+        },
+        "onFail": {
+          "description": "Failing forward, by action: a failed check applies this instead of coming up empty; with noRetry the slow retry is not offered.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/onFail"
+          }
         },
         "usableInCombat": {
           "description": "The actions a hero can take on this object during a fight, on their own turn while their action is unspent; taking one spends the action. Every other action is refused in a fight with \"Not while the fight is on.\".",
@@ -1237,6 +1451,9 @@
             "startZoneId": {
               "description": "The zone every hero stands in on arrival; required when the location has zones.",
               "$ref": "#/$defs/id"
+            },
+            "clocks": {
+              "$ref": "#/$defs/clockList"
             }
           }
         }
@@ -1340,6 +1557,41 @@
             "caresAbout": {
               "description": "Item or clue ids that move the person when shown.",
               "$ref": "#/$defs/idList"
+            },
+            "epilogues": {
+              "description": "What became of the person, told at the end of the story when the party met them: the first entry whose when holds (flags, dispositionAtLeast, companion: they walk with the party); an entry without when is the default, one without text gives no line.",
+              "type": "array",
+              "maxItems": 10,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "when": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "flags": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": ["string", "number", "boolean"]
+                          }
+                        },
+                      "dispositionAtLeast": {
+                        "type": "integer",
+                        "minimum": -2,
+                        "maximum": 2
+                      },
+                      "companion": {
+                        "type": "boolean"
+                      }
+                    }
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 600
+                  }
+                }
+              }
             },
             "wants": {
               "description": "What an offer must meet: item ids or coin:<gold pieces>. Never shown to players.",
@@ -1687,6 +1939,10 @@
           "type": "string",
           "maxLength": 4000
         },
+        "clocks": {
+          "description": "Clocks live while the party is at one of the encounter's locations and the encounter has not begun.",
+          "$ref": "#/$defs/clockList"
+        },
         "locationIds": {
           "$ref": "#/$defs/idList"
         },
@@ -1707,7 +1963,67 @@
           "description": "Read-aloud text told when the encounter's fight starts, before the first blows and before any adjustment line. It is not part of the player snapshot."
         },
         "stakes": {
-          "description": "Stored in the operator catalog only; never shown to players."
+          "description": "A note for the operator (a string, never shown to players), or what the fight is about (W9-SCENE): a list of item, person and route stakes.",
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 4000
+            },
+            {
+              "type": "array",
+              "maxItems": 6,
+              "items": {
+                "$ref": "#/$defs/stake"
+              }
+            }
+          ]
+        },
+        "enemyGoal": {
+          "description": "What the enemies try to do: take_and_flee makes the first enemy the runner, who takes the item stake and escapes by the route stake.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "stakeId"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["take_and_flee"]
+            },
+            "stakeId": {
+              "$ref": "#/$defs/id"
+            },
+            "routeStakeId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "secondaryGoal": {
+          "description": "silence: one enemy that is not the runner goes for the person stake each turn it is not engaged.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "stakeId"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["silence"]
+            },
+            "stakeId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        "results": {
+          "description": "Applied in order when the fight ends, each whose when holds: flags, a scene fact, dispositions, a lead and its text, told as written.",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/encounterResult"
+          }
+        },
+        "minEnemies": {
+          "description": "For a party under four: the scaled encounter never has fewer enemies (the first group regains them).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
         },
         "gmNotes": {
           "description": "Stored in the operator catalog only; never shown to players.",
@@ -1782,7 +2098,37 @@
           "$ref": "#/$defs/encounterConsequenceList"
         },
         "onDefeat": {
-          "$ref": "#/$defs/encounterConsequenceList"
+          "description": "A list of consequences of a defeat, or (W9-SCENE) what a beaten party wakes to instead of the encounter re-arming: the zone they wake in, its text, flags and stake states; the encounter is then complete.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/encounterConsequenceList"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "wakeZoneId": {
+                  "$ref": "#/$defs/id"
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 4000
+                },
+                "setsFlags": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": ["string", "number", "boolean"]
+                  }
+                },
+                "stakes": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
         },
         "onRetreat": {
           "$ref": "#/$defs/encounterConsequenceList"
@@ -1840,6 +2186,11 @@
                 "type": "string",
                 "enum": ["melee", "near", "far"],
                 "default": "near"
+              },
+              "minHp": {
+                "description": "For a party under four: no enemy of the group has less maximum HP than this after scaling.",
+                "type": "integer",
+                "minimum": 1
               }
             }
           }
@@ -1966,6 +2317,65 @@
         "terminal": {
           "type": "boolean",
           "default": false
+        },
+        "teaser": {
+          "description": "One line about what lies ahead, told when the chapter this checkpoint closes ends.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "chapterBreak": {
+          "description": "When this checkpoint completes the chapter ends: the story gains its chapter-end entry (what the players decided, what is still open, the teaser) and the next action begins the next chapter.",
+          "type": "boolean"
+        },
+        "decisionLines": {
+          "description": "WHAT YOU DECIDED at the chapter's end: every line whose when holds, at most five shown. when may test flags, stakes ({\"<encounterId>.<stakeId>\": \"<state>\"}) and remembers ({\"npcId\", \"key\"} or a list of them).",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text"],
+            "properties": {
+              "when": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "flags": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": ["string", "number", "boolean"]
+                      }
+                    },
+                  "stakes": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "remembers": {
+                    "oneOf": [
+                      {
+                        "$ref": "#/$defs/rememberedKey"
+                      },
+                      {
+                        "type": "array",
+                        "maxItems": 10,
+                        "items": {
+                          "$ref": "#/$defs/rememberedKey"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              }
+            }
+          }
         },
         "endingVariants": {
           "description": "On a terminal checkpoint: the first variant whose flag holds names the ending and tells it, everywhere the ending is shown; with none, the checkpoint's own title and summary do.",
@@ -2461,6 +2871,297 @@
         "style": {
           "type": "string",
           "enum": ["road", "trail", "hidden"]
+        }
+      }
+    },
+    "affordance": {
+      "description": "An authored plan on a scene object (W9-SCENE): its effect, label, keywords, check and what it changes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "effect", "label"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "effect": {
+          "type": "string",
+          "enum": ["obstruct", "distract", "expose", "conceal", "separate", "restrain", "destroy", "protect", "take"]
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "keywords": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "maxLength": 40
+          }
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "skill": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "ability": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "dc": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            }
+          }
+        },
+        "cost": {
+          "type": "string",
+          "enum": ["action", "bonus_action", "free"]
+        },
+        "inFight": {
+          "type": "boolean"
+        },
+        "outsideFight": {
+          "type": "boolean"
+        },
+        "once": {
+          "type": "boolean"
+        },
+        "requires": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "flags": {
+              "type": "object",
+              "additionalProperties": {
+                "type": ["string", "number", "boolean"]
+              }
+            }
+          }
+        },
+        "target": {
+          "description": "enemy, zone, or stake:<stakeId>.",
+          "type": ["string", "null"],
+          "maxLength": 120
+        },
+        "result": {
+          "$ref": "#/$defs/affordanceResult"
+        },
+        "failResult": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string",
+              "maxLength": 4000
+            },
+            "fact": {
+              "type": ["string", "null"],
+              "maxLength": 400
+            }
+          }
+        },
+        "onFail": {
+          "$ref": "#/$defs/onFail"
+        },
+        "inspires": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "nudge": {
+          "type": "string",
+          "maxLength": 400
+        }
+      }
+    },
+    "affordanceResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fact": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "setsFlags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"]
+          }
+        },
+        "stakes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string",
+            "maxLength": 40
+          }
+        },
+        "affects": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/talkAffect"
+          }
+        },
+        "startsClockId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "onFail": {
+      "description": "What a failed check does instead of coming up empty (W9-SCENE failing forward).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "reveals": {
+          "$ref": "#/$defs/idList"
+        },
+        "setsFlags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"]
+          }
+        },
+        "affects": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/talkAffect"
+          }
+        },
+        "startsEncounterId": {
+          "$ref": "#/$defs/id"
+        },
+        "fact": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "noRetry": {
+          "type": "boolean"
+        }
+      }
+    },
+    "stake": {
+      "description": "What a fight is about: an item (itemId), a person (npcId, optionally only when a flag holds) or a route (objectId).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["item", "person", "route"]
+        },
+        "itemId": {
+          "$ref": "#/$defs/id"
+        },
+        "npcId": {
+          "$ref": "#/$defs/id"
+        },
+        "objectId": {
+          "$ref": "#/$defs/id"
+        },
+        "when": {
+          "$ref": "#/$defs/flagCondition"
+        }
+      }
+    },
+    "encounterResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stakes": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "end": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "maxLength": 60
+                },
+                {
+                  "type": "array",
+                  "maxItems": 10,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 60
+                  }
+                }
+              ]
+            },
+            "flags": {
+              "type": "object",
+              "additionalProperties": {
+                "type": ["string", "number", "boolean"]
+              }
+            },
+            "captives": {
+              "type": "boolean"
+            }
+          }
+        },
+        "setsFlags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"]
+          }
+        },
+        "fact": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "lead": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "affects": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/talkAffect"
+          }
         }
       }
     },

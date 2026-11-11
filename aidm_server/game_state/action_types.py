@@ -21,6 +21,7 @@ PRE_DM_ACTION_TYPES = {
     'combat.attack',
     'inspiration.take_heart',
     'npc.talk',
+    'scene.effect',
     'generic.intent',
 }
 

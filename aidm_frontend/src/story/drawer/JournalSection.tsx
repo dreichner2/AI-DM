@@ -125,6 +125,8 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
     ? journal.people
     : world.knownNpcs.map((npc) => ({ id: npc.id, name: npc.name, role: npcRole(npc.role), summary: '', disposition: '', remembers: [] }))
   const yourWord = journal?.yourWord ?? []
+  const plans = journal?.plans ?? []
+  const leads = journal?.leads ?? []
   const places = journal
     ? journal.places.map((place) => ({ id: place.id, name: place.name, detail: place.state }))
     : world.knownLocations.map((location) => ({
@@ -136,7 +138,7 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
   const threads = journal?.threads ?? []
   const hasQuest = Boolean(journal?.quest) || activeQuests.length > 0
   const empty =
-    !hasQuest && !finishedQuests.length && !threads.length && !yourWord.length && !clues.length && !papers.length &&
+    !hasQuest && !finishedQuests.length && !threads.length && !yourWord.length && !plans.length && !leads.length && !clues.length && !papers.length &&
     !people.length && !places.length && !memory.length
 
   return (
@@ -208,6 +210,43 @@ export function JournalSection({ board, inspector }: JournalSectionProps) {
                   {promise.to ? ` — to ${promise.to}` : ''}
                   {promise.status && promise.status !== 'open' ? ` · ${promise.status}` : ''}
                 </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {plans.length ? (
+        <section aria-labelledby="story-journal-plans">
+          <h3 id="story-journal-plans" className="story-label">Plans</h3>
+          <ul className="story-journal-list">
+            {plans.map((plan) => (
+              <li key={plan.id}>
+                <span className="story-journal-name">{plan.text}</span>
+                {board.storyReturn ? (
+                  <button
+                    type="button"
+                    className="story-link story-journal-detail"
+                    aria-label={`Done: ${plan.text}`}
+                    onClick={() => void board.storyReturn?.removePlan(plan.id)}
+                  >
+                    Done
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {leads.length ? (
+        <section aria-labelledby="story-journal-leads">
+          <h3 id="story-journal-leads" className="story-label">Leads</h3>
+          <ul className="story-journal-list">
+            {leads.map((lead) => (
+              <li key={lead.text} data-followed={lead.followed || undefined}>
+                <span className="story-journal-name">{lead.text}</span>
+                {lead.followed ? <span className="story-journal-detail"> · followed</span> : null}
               </li>
             ))}
           </ul>

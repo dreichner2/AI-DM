@@ -23,8 +23,12 @@ without it. Success or no check tells ``line`` with ``effects``; failure tells t
 
 Effects (topics, reactions, callbacks): ``setsFlags``, ``discoversClueIds``, ``discoversLocationIds``, ``givesItems``
 (to the hero), ``disposition`` (±n), ``affects`` (other people: ``{npcId, disposition, line?, when?}``, each only
-when that person is known and present), ``promise`` (sets that flag and records the promise), ``keepsPromise`` and
-``breaksPromise`` (an authored promise by its id), ``remember`` and ``forget`` (a memory key of this hero).
+when that person is known and present), ``promise`` (sets that flag and records the promise; written as its id or as
+``{"id", "keptText"?, "brokenText"?, "openText"?, "brokenWhen"?: {"flags"}}``), ``keepsPromise`` and ``breaksPromise``
+(an authored promise by its id), ``remember`` and ``forget`` (a memory key of this hero). A promise is ``kept`` only by
+its keeping act, ``broken`` by its breaking act or when its ``brokenWhen`` flags hold, else open; at the story's end
+each reads as its own line (:func:`word_lines`). The people the party met each have their epilogue
+(:func:`epilogue_lines`).
 
 People. Each known person keeps on their record ``disposition`` (−2…2, :data:`DISPOSITION_WORDS`; the pack's word
 until it first changes, anything but one of the five words counting as neutral), ``remembers`` (``{"heroId", "key",
@@ -38,8 +42,8 @@ the thing shown; failing those, the defaults of :func:`default_reaction`.
 
 Callbacks: a person's ``callbacks`` fire once each, when their event happens (``arrival``, at ``atLocationId`` when
 given; ``fight_end``; ``rest``; ``topic:<id>``) while the person is known, present and remembers ``when.remembers``
-of a hero (the hero it is told for) and ``when.flags`` hold; the text opens the narration and the topics it
-``offers`` become available.
+of a hero (the hero it is told for) and ``when.flags`` hold; the topics it ``offers`` become available, and the
+director (:mod:`aidm_server.game_state.orchestration.director`) tells its text, the turn's one note.
 
 Changes are ``npc.talk`` with an ``operation`` (``open``, ``close``, ``topic``, ``act``, ``callback``, ``affect``),
 made only by the engine (source ``conversation``). Applying one changes the conversation and the person; what it
@@ -107,6 +111,10 @@ def _dicts(value: Any) -> list[dict[str, Any]]:
 
 def _strings(value: Any) -> list[str]:
     return [_text(item) for item in value if _text(item)] if isinstance(value, list) else []
+
+
+def _dict_items(value: Any) -> list[tuple[Any, Any]]:
+    return list(value.items()) if isinstance(value, dict) else []
 
 
 # People ---------------------------------------------------------------------------------------------------------------
@@ -203,6 +211,12 @@ def in_room(state: dict[str, Any], hero_id: Any, npc_id: Any) -> bool:
 
 def _others_in_room(state: dict[str, Any], hero_id: Any, npc_id: Any) -> bool:
     return any(_text(npc.get('id')) != _text(npc_id) and in_room(state, hero_id, npc.get('id')) for npc in present_npcs(state))
+
+
+def _cut_off(state: dict[str, Any], npc_id: Any) -> bool:
+    from aidm_server.game_state.orchestration.scene_plans import is_cut_off
+
+    return is_cut_off(state, npc_id)
 
 
 # Conversations --------------------------------------------------------------------------------------------------------
@@ -331,8 +345,8 @@ def available_topics(state: dict[str, Any], hero_id: Any, npc_id: Any) -> list[d
             continue
         if topic_id in told or topic_id in failed or not _offered_by_callback(state, npc_id, topic_id):
             continue
-        # W9-SCENE: a person cut off from the scene (``separate``) may hear a private topic among others.
-        if topic.get('private') is True and _others_in_room(state, hero_id, npc_id):
+        # A private topic needs no one else in the room, or the person cut off from them (W9-SCENE ``separate``).
+        if topic.get('private') is True and _others_in_room(state, hero_id, npc_id) and not _cut_off(state, npc_id):
             continue
         if requirement_holds(state, hero_id, npc_id, topic.get('requires')):
             available.append(topic)
@@ -509,7 +523,7 @@ def topic_for_act(state: dict[str, Any], hero_id: Any, npc_id: Any, act: str, ab
     for topic in available_topics(state, hero_id, npc_id):
         if topic.get('generated'):
             continue
-        if act == 'promise' and _text((topic.get('effects') or {}).get('promise')):
+        if act == 'promise' and promise_id(topic.get('effects')):
             return topic
         if act == 'show' and topic.get('kind') == 'say' and _text(about) in names(topic.get('requires')):
             return topic
@@ -633,13 +647,13 @@ def talk_change_problem(state: dict[str, Any], change: dict[str, Any]) -> str:
     if _text(change.get('source')) != TALK_SOURCE:
         return 'Only the engine holds conversations.'
     operation = _text(change.get('operation'))
-    if operation in {'open', 'close', 'topic', 'act'} and find_actor(state, change.get('actorId')) is None:
+    if operation in {'open', 'close', 'topic', 'act', 'remember'} and find_actor(state, change.get('actorId')) is None:
         return 'Hero not found.'
     if operation != 'close' and person_record(state, change.get('npcId')) is None:
         return 'That person is not known.'
     if operation == 'close' and conversation_of(state, change.get('actorId')) is None:
         return 'There is no conversation to end.'
-    if operation not in {'open', 'close', 'topic', 'act', 'callback', 'affect'}:
+    if operation not in {'open', 'close', 'topic', 'act', 'callback', 'affect', 'remember'}:
         return 'Unknown conversation operation.'
     return ''
 
@@ -675,6 +689,91 @@ def _bond(person: dict[str, Any], delta: int, line: str = '') -> dict[str, Any] 
 
 def promises(state: dict[str, Any]) -> list[dict[str, Any]]:
     return _dicts(state.get(PROMISES_KEY))
+
+
+def promise_id(effects: Any) -> str:
+    """The id of an effects' ``promise``: written as the id, or as ``{"id", "keptText"?, "brokenText"?, "openText"?,
+    "brokenWhen"?}``; ''."""
+
+    promise = effects.get('promise') if isinstance(effects, dict) else None
+    return _text(promise.get('id')) if isinstance(promise, dict) else _text(promise)
+
+
+PROMISE_TEXT_KEYS = ('keptText', 'brokenText', 'openText')
+
+
+def promise_status(state: dict[str, Any], promise: dict[str, Any]) -> str:
+    """``kept`` (only by its authored keeping act), ``broken`` (its breaking act, or its ``brokenWhen`` flags hold),
+    else ``open``."""
+
+    status = _text(promise.get('status'))
+    if status in {'kept', 'broken'}:
+        return status
+    when = promise.get('brokenWhen')
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    if isinstance(when, dict) and _dict_items(when.get('flags')) and all(_flag_holds(flags, _text(key), value) for key, value in _dict_items(when.get('flags'))):
+        return 'broken'
+    return 'open'
+
+
+# How the end of the story says a promise stood, when the pack wrote no line for it.
+PROMISE_LINES = {
+    'kept': 'You kept your word to {name}.',
+    'broken': 'You broke your word to {name}.',
+    'left open': '{name} is still waiting on your word.',
+}
+
+
+def word_lines(state: dict[str, Any], hero_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """The ending's ``YOUR WORD``: each promise of the viewer's heroes as it stood at the end (``kept``, ``broken``,
+    ``left open``) with its own line, the pack's ``keptText`` / ``brokenText`` / ``openText`` else a plain one."""
+
+    owned = set(hero_ids)
+    rows = []
+    for promise in promises(state):
+        if _text(promise.get('heroId')) not in owned:
+            continue
+        status = promise_status(state, promise)
+        shown = 'left open' if status == 'open' else status
+        name = _text((person_record(state, promise.get('npcId')) or {}).get('name')) or 'They'
+        line = _text(promise.get(f'{status}Text')) or PROMISE_LINES[shown].format(name=name)
+        rows.append({'id': _text(promise.get('id')), 'status': shown, 'line': line})
+    return rows
+
+
+EPILOGUE_LIMIT = 6
+
+
+def _epilogue_holds(state: dict[str, Any], npc_id: str, when: Any) -> bool:
+    if not isinstance(when, dict):
+        return True
+    flags = state.get('flags') if isinstance(state.get('flags'), dict) else {}
+    person = person_record(state, npc_id) or {}
+    floor = when.get('dispositionAtLeast')
+    companion = any(_text(npc.get('id')) == npc_id for npc in _dicts(state.get('partyNpcs')))
+    return (
+        all(_flag_holds(flags, _text(key), value) for key, value in _dict_items(when.get('flags')))
+        and (not isinstance(floor, int) or disposition_value(person.get('disposition')) >= floor)
+        and (when.get('companion') is not True or companion)
+    )
+
+
+def epilogue_lines(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ending's ``WHAT BECAME OF THEM``: for each person the party met, in the pack's order, the first of their
+    ``epilogues`` whose ``when`` holds (an entry without one is the default; an empty ``text`` gives no line); at most
+    six."""
+
+    pack = state.get('campaignPack') if isinstance(state.get('campaignPack'), dict) else {}
+    catalog = pack.get('catalog') if isinstance(pack.get('catalog'), dict) else {}
+    rows = []
+    for record in _dicts(catalog.get('npcs')):
+        npc_id = _text(record.get('id'))
+        if person_record(state, npc_id) is None:
+            continue
+        chosen = next((entry for entry in _dicts(record.get('epilogues')) if _epilogue_holds(state, npc_id, entry.get('when'))), None)
+        if chosen is not None and _text(chosen.get('text')):
+            rows.append({'npcId': npc_id, 'name': _text(record.get('name')), 'text': _text(chosen['text'])})
+    return rows[:EPILOGUE_LIMIT]
 
 
 def _affect_holds(state: dict[str, Any], entry: dict[str, Any]) -> bool:
@@ -714,12 +813,23 @@ def _apply_effects(state: dict[str, Any], person: dict[str, Any], change: dict[s
         talk['waived'] = list(dict.fromkeys([*_strings(talk.get('waived')), hero_id]))
     if effects.get('waiveUsed') is True:
         talk['waived'] = [value for value in _strings(talk.get('waived')) if value != hero_id]
-    made = _text(effects.get('promise'))
+    made = promise_id(effects)
     words = _text(effects.get('promiseWords'))
     if made or words:
         text = _text(change.get('label')) if made else words
         first = hero_id not in _strings(talk.get('promisedBy'))
-        record = {'id': made or _text(change.get('id')), 'heroId': hero_id, 'npcId': _text(person.get('id')), 'text': text, 'authored': bool(made), 'status': 'open', 'turn': turn_id}
+        authored_promise = effects.get('promise') if isinstance(effects.get('promise'), dict) else {}
+        record = {
+            'id': made or _text(change.get('id')),
+            'heroId': hero_id,
+            'npcId': _text(person.get('id')),
+            'text': text,
+            'authored': bool(made),
+            'status': 'open',
+            'turn': turn_id,
+            **{key: _text(authored_promise[key]) for key in PROMISE_TEXT_KEYS if _text(authored_promise.get(key))},
+            **({'brokenWhen': deepcopy(authored_promise['brokenWhen'])} if isinstance(authored_promise.get('brokenWhen'), dict) else {}),
+        }
         state[PROMISES_KEY] = [*promises(state), record]
         talk['promisedBy'] = list(dict.fromkeys([*_strings(talk.get('promisedBy')), hero_id]))
         # Inspiration for the word given: an authored promise, or the first a hero gives this person.
@@ -727,9 +837,9 @@ def _apply_effects(state: dict[str, Any], person: dict[str, Any], change: dict[s
         if made:
             _remember(state, person, hero_id, 'promised', words=text, turn_id=turn_id)
     for key, status in (('keepsPromise', 'kept'), ('breaksPromise', 'broken')):
-        promise_id = _text(effects.get(key))
+        named = _text(effects.get(key))
         for promise in promises(state):
-            if promise_id and _text(promise.get('id')) == promise_id and promise.get('status') == 'open':
+            if named and _text(promise.get('id')) == named and promise.get('status') == 'open':
                 promise['status'] = status
                 recorded['promise' + status.capitalize()] = {'text': _text(promise.get('text')), 'heroId': _text(promise.get('heroId'))}
     return recorded
@@ -785,8 +895,8 @@ def _world_changes(state: dict[str, Any], applied: dict[str, Any]) -> list[dict[
     reason = f"{_text(applied.get('npcName')) or 'A conversation'}: {_text(applied.get('label')) or _text(applied.get('act')) or 'talk'}."
     changes: list[dict[str, Any]] = []
     flags = dict(effects.get('setsFlags') or {})
-    if _text(effects.get('promise')):
-        flags[_text(effects['promise'])] = True
+    if promise_id(effects):
+        flags[promise_id(effects)] = True
     for key, value in flags.items():
         changes.append({**base, 'id': stable_change_id(parent, 'flag', key), 'type': 'flag.set', 'flagKey': _text(key), 'flagValue': deepcopy(value), 'visible': False, 'reason': reason})
     for clue_id in _strings(effects.get('discoversClueIds')):
@@ -815,6 +925,23 @@ def _world_changes(state: dict[str, Any], applied: dict[str, Any]) -> list[dict[
     return changes
 
 
+def affect_change(state: dict[str, Any], *, parent: dict[str, Any], entry: dict[str, Any], index: int, hero_id: str) -> dict[str, Any] | None:
+    """An ``affects`` entry of something other than a talk (a plan's result, a fight's result) as its ``affect``
+    change: the person's disposition moves when they are known and present."""
+
+    return _affect_change(state, {**parent, 'actorId': hero_id}, entry, index)
+
+
+def memory_change(state: dict[str, Any], *, hero_id: str, npc_id: Any, key: str, turn_id: Any) -> dict[str, Any] | None:
+    """The change by which a person remembers ``key`` of this hero (a hero who stood over them: ``protected``);
+    None when the person is not known or already remembers it."""
+
+    person = person_record(state, npc_id)
+    if person is None or not _text(hero_id) or remembers(person, hero_id, key):
+        return None
+    return _change(turn_id, 'remember', hero_id, npc_id, key, npcName=_text(person.get('name')), effects={'remember': key})
+
+
 def _affect_change(state: dict[str, Any], parent: dict[str, Any], entry: dict[str, Any], index: int) -> dict[str, Any] | None:
     npc_id = _text(entry.get('npcId'))
     if person_record(state, npc_id) is None or not is_present(state, npc_id) or not _affect_holds(state, entry) or not isinstance(entry.get('disposition'), int):
@@ -825,6 +952,14 @@ def _affect_change(state: dict[str, Any], parent: dict[str, Any], entry: dict[st
         delta=entry['disposition'],
         **({'line': _text(entry['line'])} if _text(entry.get('line')) else {}),
     )
+
+
+def affect_changes(state: dict[str, Any], entries: Iterable[dict[str, Any]], *, turn_id: Any, parent_id: str, hero_id: str) -> list[dict[str, Any]]:
+    """The ``npc.talk`` ``affect`` changes of authored ``affects`` that come from something other than a change (a
+    clock step), each only when that person is known and present."""
+
+    parent = {'id': parent_id, 'turnId': turn_id, 'actorId': hero_id}
+    return [change for index, entry in enumerate(entries) if (change := _affect_change(state, parent, entry, index))]
 
 
 def _scene_object(state: dict[str, Any], target_id: Any) -> dict[str, Any]:
@@ -1077,9 +1212,10 @@ def journal_promises(state: dict[str, Any], hero_ids: Iterable[str], *, ended: b
     owned = set(hero_ids)
     rows = []
     for promise in promises(state):
-        if _text(promise.get('heroId')) not in owned or (promise.get('status') != 'open' and not ended):
+        if _text(promise.get('heroId')) not in owned or (promise_status(state, promise) != 'open' and not ended):
             continue
         person = person_record(state, promise.get('npcId')) or {}
-        status = 'left open' if ended and promise.get('status') == 'open' else _text(promise.get('status'))
+        status = promise_status(state, promise)
+        status = 'left open' if ended and status == 'open' else status
         rows.append({'id': _text(promise.get('id')), 'text': _text(promise.get('text')), 'to': _text(person.get('name')), 'status': status})
     return rows

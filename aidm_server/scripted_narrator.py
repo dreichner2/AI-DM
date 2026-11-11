@@ -46,8 +46,11 @@ A conversation (``conversation``) is told in the people's own authored words: op
 greeting the first time (a greeting that is all speech is given to them: ``"…," Mara says.``), after that
 ``Mara Reedwake turns to you.``; a topic's line or its failure line verbatim, the generated topic's ``knows`` line as
 before; a reaction's authored line, else one plain sentence for what the act did; words that reach nothing read
-``Mara Reedwake has nothing to say to that.``; leaving reads ``You leave it there with Mara Reedwake.``. A person's
-callback (``callbacks``) opens the reply as its own paragraph, word for word.
+``Mara Reedwake has nothing to say to that.``; leaving reads ``You leave it there with Mara Reedwake.``.
+
+The turn's director note (``director``, :mod:`aidm_server.game_state.orchestration.director`): a callback opens the
+reply as its own paragraph, word for word; a clock step or a nudge is its last paragraph (before whose turn it is),
+word for word, as is the clarify note's sentence naming two things on offer; the breathe note adds nothing.
 
 In a place with rooms the people present are those in the hero's own zone
 (``present``). A step into another zone opens the reply (``zoneMove``): ``You
@@ -71,6 +74,7 @@ from typing import Any
 
 from aidm_server.character_state import ROLL_TYPE_BASE_DC, SKILL_ABILITY
 from aidm_server.combat.maneuvers import IMPROVISE_TYPE, MANEUVER_TYPES, pronoun
+from aidm_server.game_state.orchestration import director
 from aidm_server.game_state.orchestration.narration_facts import TAKE_TIME_LINE, filler_enemy_turn
 from aidm_server.prompt_templates import rolls_shown
 from aidm_server.turn_roll_policy import TurnRollPolicy
@@ -719,6 +723,10 @@ def narrate(
     )
     if turn.rules_hint.get('message_kind') == OPENING_MESSAGE_KIND:
         return _narrate_opening(turn)
+    unseen = _dict(turn.facts.get('unseen'))
+    if _text(unseen.get('line')):
+        # Words that name a thing still hidden: nothing is attempted (W9-SCENE amendment 5).
+        return _compose(turn, [[_text(unseen['line'])]])
     invalid_actions = _dicts(turn.pipeline.get('invalidActions'))
     if invalid_actions:
         return _compose(turn, [_refusals(invalid_actions)])
@@ -728,7 +736,7 @@ def narrate(
         return _compose(turn, [[_finisher_line(turn, told)]])
     # The place first, then the hero's own result, then the fight, then what it brought.
     arrival = _text(turn.facts.get('arrival'))
-    blocks: list[list[str]] = [*_callback_blocks(turn), _captives_left_lines(turn)]
+    blocks: list[list[str]] = [*_director_opening(turn), _captives_left_lines(turn)]
     blocks.extend(_arrival_blocks(turn, {'locationName': _the(arrival)}) if arrival else [])
     moved = _zone_move_blocks(turn)
     blocks.extend(moved)
@@ -739,6 +747,7 @@ def narrate(
     own_blocks, aftermath = _change_blocks(turn)
     blocks.append([*_take_heart_lines(turn), *_spell_lines(turn), *_capability_lines(turn)])
     blocks.extend(own_blocks)
+    blocks.extend(_effect_blocks(turn))
     blocks.extend(_fight_start_blocks(turn))
     # A hero's own thread, each its own paragraph: after what was found, or with a fight's setup.
     blocks.extend([_text(thread.get('text'))] for thread in _dicts(turn.facts.get('threads')) if _text(thread.get('text')))
@@ -750,6 +759,10 @@ def narrate(
     roll_paragraphs = _resolved_roll_paragraphs(turn) or _free_roll_paragraphs(turn)
     if roll_paragraphs:
         blocks.extend([[roll_paragraphs[0]], roll_paragraphs[1:]])
+    # An object's failing-forward text and a fight's results, told as written (W9-SCENE); after a defeat they follow
+    # the fall (see _compose).
+    if not _dict(turn.facts.get('partyDefeat')):
+        blocks.extend([text] for text in _string_items(_dict(turn.facts.get('sceneTold')).get('closing')))
     if any(blocks) or turn.facts.get('partyDefeat'):
         return _compose(turn, blocks)
     if turn.rules_hint.get('no_target') is True:
@@ -829,8 +842,11 @@ def _talk_line(turn: NarrationInput, talk: dict) -> str:
     return turn.pick('npc_knows', fact=_speech(fact), first=first)
 
 
-def _callback_blocks(turn: NarrationInput) -> list[list[str]]:
-    return [[_text(callback.get('text'))] for callback in _dicts(turn.facts.get('callbacks')) if _text(callback.get('text'))]
+def _director_opening(turn: NarrationInput) -> list[list[str]]:
+    """The callback the director chose to open the reply with, word for word."""
+
+    opening = director.told_by_engine(turn.facts, director.OPENING)
+    return [[opening]] if opening else []
 
 
 def _given_to(line: str, first: str) -> str:
@@ -1037,6 +1053,8 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
                 lines.append(moving)
         if line:
             lines.append(line)
+        if action.get('wrested') is True or (not _text(action.get('goal')) and _text(action.get('stakeLine'))):
+            lines.append(_text(action['stakeLine']))
         lines.extend(_bark_line(turn, bark) for bark in barks if bark is not taunt)
         conditions = _string_items(action.get('conditionsApplied'))
         if conditions:
@@ -1081,6 +1099,9 @@ def _tactical_line(turn: NarrationInput, action: dict) -> str:
         else:
             who = f'{actor} {verb}s'
         return _sentence(f"{who} {'out toward' if toward else 'in on'} {_target_ref(turn, action.get('targetName'))}")
+    if _key(action.get('actionType')) == 'plan':
+        # A plan in the fight is told with the turn's other plans (``effects``).
+        return ''
     return _sentence(_text(action.get('outcome')))
 
 
@@ -1267,7 +1288,7 @@ def _enemy_movement_line(turn: NarrationInput, action: dict) -> str:
     thirty feet to you.``; ``The hollow marshal comes about thirty feet closer.``; '' when it did not come in."""
 
     steps = _dicts(action.get('movement'))
-    if not steps or _key(action.get('intentType')) in FLEEING_INTENTS:
+    if not steps or _key(action.get('intentType')) in FLEEING_INTENTS or _text(action.get('goal')):
         return ''
     enemy = _capitalized(turn.creature(action.get('enemyName')) or 'the enemy')
     feet = ('thirty', 'sixty', 'ninety')[min(len(steps), 3) - 1]
@@ -1299,6 +1320,9 @@ def _unrolled_enemy_line(turn: NarrationInput, action: dict, enemy: str, *, rout
 
 
 def _enemy_action_line(turn: NarrationInput, action: dict, *, routed: bool = False) -> str | None:
+    if _text(action.get('goal')) and _text(action.get('stakeLine')):
+        # What the fight is about (W9-SCENE): the runner's or the silencer's move, as the engine resolved it.
+        return _text(action['stakeLine'])
     enemy = turn.creature(action.get('enemyName')) or 'The enemy'
     target = _target_ref(turn, action.get('targetName'))
     ability = _text(action.get('abilityName')) or 'an attack'
@@ -1590,6 +1614,22 @@ def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
     return [_safe_sentences(block) for block in blocks], _safe_sentences(lines)
 
 
+def _effect_blocks(turn: NarrationInput) -> list[list[str]]:
+    """Each plan the hero resolved (W9-SCENE): its authored text as written, else what the hero did and what it
+    changed (``You shut and bar the yard gate. The yard gate is barred.``), or that it did not work."""
+
+    from aidm_server.game_state.orchestration.scene_plans import scripted_effect_lines
+
+    def does(phrase: str) -> str:
+        first, joined, rest = phrase.partition(' and ')
+        if turn.party_play and joined and rest[:1].islower():
+            # "shut and bar the gate": both verbs follow the hero's name.
+            return _sentence(f'{turn.actor} {_third_person(first)} and {_third_person(rest)}')
+        return _hero_does(turn, phrase)
+
+    return [_safe_sentences(scripted_effect_lines(effect, hero_does=does)) for effect in _dicts(turn.facts.get('effects'))]
+
+
 def _zone_move_blocks(turn: NarrationInput) -> list[list[str]]:
     """A step into another room or area of the place: ``You step into the common room.``, the zone's description the
     first time, then who is there (``Mara Reedwake is here.``)."""
@@ -1639,6 +1679,9 @@ def _object_blocks(turn: NarrationInput, fact: dict) -> list[list[str]]:
     opening.append(label_sentence if failed else _text(fact.get('actionText')) or label_sentence)
     if failed:
         failed_line = _hero_does(turn, FAILED_CHECK_LINES[action]) if action in FAILED_CHECK_LINES else 'It will not give.'
+        if _text(fact.get('onFailText')):
+            # Failing forward: the attempt alone; the authored failure follows as written (``sceneTold``).
+            return [_safe_sentences([_sentence(line) for line in opening])]
         return [_safe_sentences([*(_sentence(line) for line in opening), failed_line])]
     blocks = [_safe_sentences([_sentence(line) for line in opening])]
     description = _text(fact.get('description'))
@@ -1758,6 +1801,13 @@ def _resolved_roll_paragraphs(turn: NarrationInput) -> list[str]:
         reference_dc = stated_dc or _base_dc(rule_type)
         outcome = '' if reference_dc is None else ('success' if total >= reference_dc else 'failure')
     dc_clause = f' against DC {stated_dc}' if stated_dc is not None else ''
+    improvised = _dict(turn.facts.get('improvised'))
+    if improvised:
+        # An improvised attempt is told, never invented (W9-SCENE amendment 7).
+        from aidm_server.game_state.orchestration.scene_plans import improvised_line
+
+        told = [improvised_line(success=improvised.get('success') is True, hero=turn.actor if turn.party_play else '')]
+        return told if turn.rolls_shown else [f'{label}: {total}{dc_clause} — {outcome}.', *told]
     if turn.rolls_shown:
         # The roll's card shows the numbers; the story tells what came of it.
         return _roll_outcome_lines(turn, rule_type, success=outcome == 'success') if outcome else []
@@ -1941,17 +1991,22 @@ def engine_turn_line(rules_hint: dict[str, Any]) -> str:
 
 
 def _compose(turn: NarrationInput, blocks: list[list[str]]) -> str:
-    """The reply's paragraphs (after a finishing blow let pass), then a defeat, the fight's next actor, the
-    one-action reminder and the finishing blow's question."""
+    """The reply's paragraphs (after a finishing blow let pass) and the director's closing note, then a defeat, the
+    fight's next actor, the one-action reminder and the finishing blow's question."""
 
     # A finishing blow let pass is told before whatever this turn did.
     paragraphs = [block for block in [_lapsed_lines(turn), *blocks] if block]
     facts = turn.facts
+    closing = director.scripted_closing(facts)
+    if closing:
+        paragraphs.append([closing])
     defeat = _dict(facts.get('partyDefeat'))
     if defeat:
         enemies = _text(defeat.get('enemies')) or 'the enemies'
         paragraph = PARTY_DEFEAT_PARAGRAPH if turn.party_play else DEFEAT_PARAGRAPH
         paragraphs.append([paragraph.format(enemies=enemies, be='are' if defeat.get('plural') is not False else 'is')])
+        # An encounter's onDefeat, told as written after the fall (W9-SCENE).
+        paragraphs.extend([text] for text in _string_items(_dict(facts.get('sceneTold')).get('closing')))
     elif _next_actor_line(turn):
         paragraphs.append([_next_actor_line(turn)])
     deferred = _dicts(_dict(facts.get('freeText')).get('deferred'))

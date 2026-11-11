@@ -48,6 +48,7 @@ from aidm_server.interactables import NOT_WHILE_FIGHTING
 from aidm_server.game_state.orchestration.combat_resolution import player_attack_target
 from aidm_server.game_state.orchestration.finishing_blow import DESCRIBE_ACTION_ID, STORY_ACTION_ID, lets_the_story_tell_it, pending_finisher
 from aidm_server.game_state.orchestration.hero_threads import TAKE_HEART_DECLARED
+from aidm_server.game_state.orchestration.scene_plans import PLAN_DECLARED, PLAN_WORDS_ACTION_ID
 from aidm_server.game_state.orchestration.story_beats import SCRIPTED_NARRATOR_PROVIDER, record_turn_story_beats
 from aidm_server.game_state.orchestration.story_rolls import record_turn_story_rolls, turn_story_rolls
 from aidm_server.game_state.orchestration.turn_flow import (
@@ -171,8 +172,8 @@ from aidm_server.turn_segments import SegmentEvaluationRequest, TurnSegmentServi
 logger = logging.getLogger(__name__)
 POST_TURN_PERSIST_FAILED_MESSAGE = 'The DM response could not be fully saved. Please retry.'
 # In a fight these come as fight actions (Take heart included), never as their own intents.
-COMBAT_BLOCKED_ACTION_KINDS = frozenset({'ability', 'item', 'interact', 'travel', 'rest', 'inspiration'})
-AUTHORITATIVE_TYPED_ACTION_KINDS = frozenset({'capability', 'inspiration', 'item', 'object', 'rest', 'shop', 'spell', 'travel'})
+COMBAT_BLOCKED_ACTION_KINDS = frozenset({'ability', 'item', 'interact', 'travel', 'rest', 'inspiration', 'plan'})
+AUTHORITATIVE_TYPED_ACTION_KINDS = frozenset({'capability', 'inspiration', 'item', 'object', 'plan', 'rest', 'shop', 'spell', 'travel'})
 
 
 def _coerce_player_id(value) -> int | None:
@@ -984,6 +985,10 @@ class TurnEngine:
         if words.kind in {'speech', 'look'}:
             command.action_intent = {**routed, 'kind': 'message', **({'fight_words': FIGHT_LOOK} if words.kind == 'look' else {})}
             return True
+        if words.kind == 'plan':
+            # A plan the words named (W9-SCENE): an unlisted fight action carrying the plan.
+            command.action_intent = {**routed, 'kind': 'combat', 'combat': {'action_id': PLAN_WORDS_ACTION_ID, 'plan': words.plan}}
+            return True
         combat_request = {'action_id': words.action_id, **({'target_id': words.target_id} if words.target_id else {})}
         if words.kind == 'improvised':
             combat_request['attempt'] = message
@@ -1065,6 +1070,7 @@ class TurnEngine:
             action_id=requested.get('action_id'),
             target_id=requested.get('target_id'),
             attempt=requested.get('attempt'),
+            payload=requested.get('plan'),
         )
         if resolved is None:
             self.emit(
@@ -1349,6 +1355,7 @@ class TurnEngine:
                 (intent_kind == 'spell' and action_type == 'spell.cast')
                 or (intent_kind == 'capability' and action_type == 'class_feature.use')
                 or (intent_kind == 'object' and action_type == 'scene.interactable.action')
+                or (intent_kind == 'plan' and action_type == PLAN_DECLARED)
                 or (intent_kind == 'rest' and action_type == 'rest.complete')
                 or (intent_kind == 'travel' and action_type == 'world.travel')
                 or (intent_kind == 'shop' and action_type.startswith('shop.'))

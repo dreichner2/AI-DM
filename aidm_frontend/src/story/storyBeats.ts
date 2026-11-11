@@ -52,6 +52,8 @@ export type StoryTurnBeat = {
   tone: StoryChangeTone
   glyph: StoryChangeGlyph | null
   target: StoryTurnBeatTarget | null
+  /** A `chapter_end` beat's entry: what the chapter decided, what is still open, the teaser. */
+  chapterEnd?: JsonRecord
 }
 
 export type StoryRollMode = 'normal' | 'advantage' | 'disadvantage'
@@ -116,6 +118,8 @@ export type RollCardBeat = BeatBase & { kind: 'rollCard'; entry: TimelineEntry; 
 export type ChangesBeat = BeatBase & { kind: 'changes'; entry: TimelineEntry; changes: StoryChange[] }
 export type TurnBeatsBeat = BeatBase & { kind: 'turnBeats'; entry: TimelineEntry; beats: StoryTurnBeat[] }
 export type NoticeBeat = BeatBase & { kind: 'notice'; entry: TimelineEntry; text: string }
+/** Where a chapter ends with the story: told after its turn's beats. */
+export type ChapterEndBeat = BeatBase & { kind: 'chapterEnd'; entry: TimelineEntry; text: string; chapterEnd: JsonRecord }
 
 export type StoryBeat =
   | ChapterBeat
@@ -126,6 +130,7 @@ export type StoryBeat =
   | ChangesBeat
   | TurnBeatsBeat
   | NoticeBeat
+  | ChapterEndBeat
 
 export type BuildStoryBeatsOptions = {
   selectedPlayerName?: string | null
@@ -179,6 +184,8 @@ const TURN_BEAT_STYLES: Record<string, TurnBeatStyle> = {
   inspiration: { tone: 'gold', glyph: 'spark', target: null },
   bond: { tone: 'default', glyph: 'person', target: 'journal' },
   promise: { tone: 'default', glyph: 'scroll', target: 'journal' },
+  plan: { tone: 'default', glyph: 'scroll', target: 'journal' },
+  lead: { tone: 'default', glyph: 'scroll', target: 'journal' },
 }
 
 /** The raw engine wording a client-built line may carry; such lines are never shown. */
@@ -205,6 +212,9 @@ function turnBeat(value: JsonRecord): StoryTurnBeat | null {
     return { kind, text: capitalize(text), refId, look: 'hint', tone: 'default', glyph: null, target: 'settings' }
   }
   const style = TURN_BEAT_STYLES[kind]
+  if (kind === 'chapter_end' && isRecord(value.chapterEnd)) {
+    return { kind, text, refId, look: 'plain', tone: 'default', glyph: null, target: null, chapterEnd: value.chapterEnd }
+  }
   if (!style) return { kind, text, refId, look: 'plain', tone: 'default', glyph: null, target: null }
   // Someone cooling towards the party reads in the quiet danger tone.
   const tone = kind === 'bond' && value.down === true ? 'fail' : turnBeatTone(kind, text, style.tone)
@@ -593,6 +603,8 @@ function gapBefore(beat: PendingBeat, previous: PendingBeat | undefined): StoryG
       return 'speaker'
     case 'rollCard':
       return previous.kind === 'action' || previous.kind === 'roll' || previous.kind === 'rollCard' ? 'tight' : 'speaker'
+    case 'chapterEnd':
+      return 'turn'
     default:
       return 'speaker'
   }
@@ -691,7 +703,11 @@ export function buildStoryBeats(
     const turnBeats = serverBeats.get(turnId)
     if (!turnBeats || emittedTurnBeats.has(turnId)) return
     emittedTurnBeats.add(turnId)
-    if (turnBeats.length) beats.push({ kind: 'turnBeats', key: uniqueKey(`beats-${turnId}`), entry, beats: turnBeats })
+    const shown = turnBeats.filter((beat) => !beat.chapterEnd)
+    if (shown.length) beats.push({ kind: 'turnBeats', key: uniqueKey(`beats-${turnId}`), entry, beats: shown })
+    turnBeats.forEach((beat) => {
+      if (beat.chapterEnd) beats.push({ kind: 'chapterEnd', key: uniqueKey(`end-${turnId}`), entry, text: beat.text, chapterEnd: beat.chapterEnd })
+    })
   }
 
   const visit = (entry: TimelineEntry) => {

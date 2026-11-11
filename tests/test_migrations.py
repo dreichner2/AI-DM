@@ -108,7 +108,7 @@ def test_migration_chain_upgrade_and_downgrade(tmp_path):
         column for column in inspector.get_columns('alembic_version') if column['name'] == 'version_num'
     )
     assert version_column['type'].length >= ALEMBIC_VERSION_COLUMN_LENGTH
-    assert _current_revision(db_uri) == '0031_authored_map_visibility'
+    assert _current_revision(db_uri) == '0032_adventure_records'
     feedback_cols_head = {col['name'] for col in inspector.get_columns('dm_coherence_feedback')}
     assert {'feedback_type', 'category', 'provider', 'model', 'metadata_json'}.issubset(feedback_cols_head)
     campaign_cols_head = {col['name'] for col in inspector.get_columns('campaigns')}
@@ -352,7 +352,7 @@ def test_players_account_fk_migration_preserves_referenced_players(tmp_path):
     engine = create_engine(db_uri)
     try:
         inspector = inspect(engine)
-        assert _current_revision(db_uri) == '0031_authored_map_visibility'
+        assert _current_revision(db_uri) == '0032_adventure_records'
         assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
         with engine.connect() as connection:
             assert connection.execute(text('SELECT count(*) FROM players')).scalar_one() == 1
@@ -376,7 +376,7 @@ def test_players_account_fk_migration_preserves_referenced_players(tmp_path):
 
     _run_flask_db(['upgrade', 'head'], env)
     inspector = _inspect_db(db_uri)
-    assert _current_revision(db_uri) == '0031_authored_map_visibility'
+    assert _current_revision(db_uri) == '0032_adventure_records'
     assert _fk_ondelete(inspector, 'players', 'account_id') == 'SET NULL'
 
 
@@ -481,7 +481,7 @@ def test_authored_map_visibility_migration_preserves_legacy_maps_as_revealed(tmp
     engine = create_engine(db_uri)
     try:
         inspector = inspect(engine)
-        assert _current_revision(db_uri) == '0031_authored_map_visibility'
+        assert _current_revision(db_uri) == '0032_adventure_records'
         assert 'visibility' in {column['name'] for column in inspector.get_columns('maps')}
         with engine.connect() as connection:
             assert connection.execute(text('SELECT visibility FROM maps WHERE map_id = 1')).scalar_one() == 'player'
@@ -497,6 +497,72 @@ def test_authored_map_visibility_migration_preserves_legacy_maps_as_revealed(tmp
             assert connection.execute(text('SELECT title FROM maps WHERE map_id = 1')).scalar_one() == 'Legacy Revealed Map'
     finally:
         engine.dispose()
+
+
+def test_adventure_records_migration_adds_the_table_on_an_existing_database_and_removes_it_again(tmp_path):
+    db_path = tmp_path / 'migration_adventure_records.db'
+    db_uri = f'sqlite:///{db_path}'
+    env = os.environ.copy()
+    env.update(
+        {
+            'FLASK_APP': 'aidm_server.main:create_app',
+            'PYTHONPATH': str(REPO_ROOT),
+            'AIDM_ENV': 'test',
+            'AIDM_DEBUG': 'false',
+            'AIDM_SOCKETIO_ASYNC_MODE': 'threading',
+            'AIDM_AUTO_CREATE_SCHEMA': 'false',
+            'AIDM_DATABASE_URI': db_uri,
+            'AIDM_TELEMETRY_ENABLED': 'false',
+        }
+    )
+
+    _run_flask_db(['upgrade', '0031_authored_map_visibility'], env)
+    engine = create_engine(db_uri)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO worlds (world_id, name) VALUES (1, 'Kept World')"))
+            connection.execute(text("INSERT INTO campaigns (campaign_id, title, world_id) VALUES (1, 'Kept Campaign', 1)"))
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['upgrade', 'head'], env)
+    engine = create_engine(db_uri)
+    try:
+        inspector = inspect(engine)
+        assert _current_revision(db_uri) == '0032_adventure_records'
+        assert {column['name'] for column in inspector.get_columns('adventure_records')} == {
+            'record_id',
+            'owner_key',
+            'pack_id',
+            'pack_title',
+            'endings_json',
+            'secrets_found_json',
+            'secrets_total',
+            'completions_json',
+            'times_completed',
+            'created_at',
+            'updated_at',
+        }
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO adventure_records (owner_key, pack_id) VALUES ('workspace:owner', 'a_pack')"))
+            record = connection.execute(
+                text('SELECT endings_json, secrets_found_json, secrets_total, completions_json, times_completed FROM adventure_records')
+            ).one()
+            assert tuple(record) == ('[]', '[]', 0, '[]', 0)
+            assert connection.execute(text('SELECT title FROM campaigns WHERE campaign_id = 1')).scalar_one() == 'Kept Campaign'
+    finally:
+        engine.dispose()
+
+    _run_flask_db(['downgrade', '0031_authored_map_visibility'], env)
+    engine = create_engine(db_uri)
+    try:
+        assert 'adventure_records' not in set(inspect(engine).get_table_names())
+        with engine.connect() as connection:
+            assert connection.execute(text('SELECT name FROM worlds WHERE world_id = 1')).scalar_one() == 'Kept World'
+    finally:
+        engine.dispose()
+    _run_flask_db(['upgrade', 'head'], env)
+    assert 'adventure_records' in set(_inspect_db(db_uri).get_table_names())
 
 
 def test_migration_chain_downgrade_to_base_and_reupgrade(tmp_path):

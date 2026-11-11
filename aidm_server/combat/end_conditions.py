@@ -15,6 +15,7 @@ COMBAT_END_REASONS = {
     'negotiated_resolution',
     'objective_completed',
     'objective_failed',
+    'enemy_goal_met',
     'interrupted',
 }
 
@@ -69,6 +70,10 @@ def check_combat_end(combat_state: dict[str, Any]) -> str | None:
     status = str(combat_state.get('status') or '')
     if status not in {'starting', 'active'}:
         return None
+    flags = combat_state.get('flags') if isinstance(combat_state.get('flags'), dict) else {}
+    if flags.get('enemyGoalMet') is True:
+        # The enemies got what they came for (W9-SCENE take_and_flee) and withdrew.
+        return 'enemy_goal_met'
     enemies = _team(combat_state, 'enemy')
     players = _team(combat_state, 'player')
     # A participant that has physically left the encounter cannot hold the
@@ -90,7 +95,6 @@ def check_combat_end(combat_state: dict[str, Any]) -> str | None:
         if any(has_fled(player) for player in players):
             return 'players_fled'
         return 'objective_failed'
-    flags = combat_state.get('flags') if isinstance(combat_state.get('flags'), dict) else {}
     objective_status = str(flags.get('objectiveStatus') or flags.get('objective_status') or '').strip().lower()
     if objective_status in {'completed', 'success', 'succeeded'}:
         return 'objective_completed'
@@ -108,6 +112,7 @@ def combat_end_summary(reason: str) -> str:
         'negotiated_resolution': 'Combat ends through negotiation.',
         'objective_completed': 'Combat ends because the encounter objective was completed.',
         'objective_failed': 'Combat ends because the encounter objective failed.',
+        'enemy_goal_met': 'Combat ends because the enemies got what they came for and withdrew.',
         'interrupted': 'Combat was interrupted.',
     }.get(reason, 'Combat ends.')
 

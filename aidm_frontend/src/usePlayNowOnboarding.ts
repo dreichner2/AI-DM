@@ -339,8 +339,9 @@ export function usePlayNowOnboarding({
   // Without the hero list the server's default hero plays, exactly as before heroes were choosable.
   const playNowCharacterId = heroLibrary.status === 'ready' ? selectedHeroId : null
 
-  // `fresh` always starts a new ready-made adventure; the first Play now sends nothing.
-  const playNowFromTitleScreen = useCallback(async ({ fresh = false }: { fresh?: boolean } = {}) => {
+  // `fresh` always starts a new ready-made adventure; the first Play now sends nothing. `examplePackId` names the
+  // ready-made adventure (an ending's Play it again); without it the server's default.
+  const playNowFromTitleScreen = useCallback(async ({ fresh = false, examplePackId }: { fresh?: boolean; examplePackId?: string } = {}) => {
     if (playNowPendingRef.current) return
     const hostedGuestPlayNow = authRequired === true && !hostedAccessReady
     playNowPendingRef.current = true
@@ -355,6 +356,7 @@ export function usePlayNowOnboarding({
           body: JSON.stringify({
             ...(playNowCharacterId ? { character_id: playNowCharacterId } : {}),
             ...(fresh ? { fresh: true } : {}),
+            ...(examplePackId ? { example_pack_id: examplePackId } : {}),
           }),
         },
       )

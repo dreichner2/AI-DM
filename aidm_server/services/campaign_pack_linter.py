@@ -404,6 +404,8 @@ def _engine_contract_issues(pack: dict[str, Any], *, strict: bool) -> list[Campa
     issues.extend(_tie_line_issues(pack, ids))
     issues.extend(_inspires_issues(pack))
     issues.extend(_talk_issues(pack, ids))
+    issues.extend(_scene_plan_issues(pack, ids))
+    issues.extend(_director_issues(pack, ids))
     starting_state = _dict(_first(pack, 'startingState', 'starting_state'))
     if 'campaignFlags' in starting_state or 'campaign_flags' in starting_state:
         issues.append(
@@ -1290,8 +1292,11 @@ def _flag_setters(pack: dict[str, Any]) -> list[tuple[str, str]]:
                     setters.append((stable_slug(flag.get('flagKey') or flag.get('key')), f'{container_path}.flags'))
     for path, effects in _talk_effects(pack):
         setters.extend((stable_slug(key), f'{path}.setsFlags') for key in _dict(effects.get('setsFlags')))
-        if _text(effects.get('promise')):
-            setters.append((stable_slug(effects['promise']), f'{path}.promise'))
+        if _promise_id(effects):
+            setters.append((stable_slug(_promise_id(effects)), f'{path}.promise'))
+    for path, clock in _pack_clocks(pack):
+        for step_index, step in enumerate(_records(clock.get('steps'))):
+            setters.extend((stable_slug(key), f'{path}.steps[{step_index}].effects.setsFlags') for key in _dict(_dict(step.get('effects')).get('setsFlags')))
     return setters
 
 
@@ -1754,7 +1759,7 @@ def _talk_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[Campaig
     """Every id a person's topics, reactions and callbacks name is one the pack has; a topic id is unique per person."""
 
     item_ids = _pack_item_ids(pack)
-    promises = {_text(effects.get('promise')) for _path, effects in _talk_effects(pack) if _text(effects.get('promise'))}
+    promises = {_promise_id(effects) for _path, effects in _talk_effects(pack) if _promise_id(effects)}
     issues: list[CampaignPackLintIssue] = []
 
     def unknown(path: str, kind: str, value: str) -> None:
@@ -1824,6 +1829,71 @@ def _talk_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[Campaig
     return issues
 
 
+def _promise_id(effects: dict[str, Any]) -> str:
+    """An effects' ``promise``, written as its id or as ``{"id", ...}``."""
+
+    promise = effects.get('promise')
+    return _text(promise.get('id')) if isinstance(promise, dict) else _text(promise)
+
+
+def _pack_clocks(pack: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Every clock of the pack's locations and encounters, with its JSON path."""
+
+    return [
+        (f'{collection}[{index}].clocks[{clock_index}]', clock)
+        for collection in ('locations', 'encounters')
+        for index, record in enumerate(_records(pack.get(collection)))
+        for clock_index, clock in enumerate(_records(record.get('clocks')))
+    ]
+
+
+def _director_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    """Clocks, decision lines and epilogues name only what the pack has; a clock has steps and a cause, and its id
+    is unique."""
+
+    issues: list[CampaignPackLintIssue] = []
+
+    def unknown(path: str, kind: str, value: str) -> None:
+        issues.append(_error('director_unknown_reference', path, f'Unknown {kind} "{value}".'))
+
+    clock_ids = [_text(clock.get('id')) for _path, clock in _pack_clocks(pack)]
+    for duplicate in sorted({clock_id for clock_id in clock_ids if clock_ids.count(clock_id) > 1}):
+        issues.append(_error('clock_duplicate_id', 'clocks', f'Clock id "{duplicate}" is used twice.'))
+    for path, clock in _pack_clocks(pack):
+        advance = _dict(clock.get('advanceOn'))
+        if not _records(clock.get('steps')):
+            issues.append(_error('clock_without_steps', f'{path}.steps', 'A clock needs at least one step.'))
+        if not (_string_list(advance.get('flags')) or _string_list(advance.get('objectActions')) or isinstance(advance.get('everyTurnsAfterStart'), int)):
+            issues.append(_error('clock_without_cause', f'{path}.advanceOn', 'A clock moves only for a cause: name flags, objectActions or everyTurnsAfterStart.'))
+        for value in _string_list(advance.get('objectActions')):
+            object_id = value.split(':', 1)[0]
+            if object_id not in ids['interactables']:
+                unknown(f'{path}.advanceOn.objectActions', 'scene object', object_id)
+        for step_index, step in enumerate(_records(clock.get('steps'))):
+            effects = _dict(step.get('effects'))
+            step_path = f'{path}.steps[{step_index}].effects'
+            if _text(effects.get('startsEncounterId')) and _text(effects['startsEncounterId']) not in ids['encounters']:
+                unknown(f'{step_path}.startsEncounterId', 'encounter', _text(effects['startsEncounterId']))
+            for value in _string_list(effects.get('discoversLocationIds')):
+                if value not in ids['locations']:
+                    unknown(f'{step_path}.discoversLocationIds', 'location', value)
+            for entry in _records(effects.get('affects')):
+                if _text(entry.get('npcId')) not in ids['npcs']:
+                    unknown(f'{step_path}.affects.npcId', 'person', _text(entry.get('npcId')))
+    for index, checkpoint in enumerate(_records(pack.get('checkpoints'))):
+        for line_index, line in enumerate(_records(checkpoint.get('decisionLines'))):
+            when = _dict(line.get('when'))
+            path = f'checkpoints[{index}].decisionLines[{line_index}].when'
+            remembers = when.get('remembers')
+            for entry in [remembers] if isinstance(remembers, dict) else _records(remembers):
+                if _text(entry.get('npcId')) not in ids['npcs']:
+                    unknown(f'{path}.remembers.npcId', 'person', _text(entry.get('npcId')))
+            for key in _dict(when.get('stakes')):
+                if _text(key).split('.', 1)[0] not in ids['encounters']:
+                    unknown(f'{path}.stakes', 'encounter', _text(key).split('.', 1)[0])
+    return issues
+
+
 def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         values = value
@@ -1853,3 +1923,136 @@ def _text(value: Any) -> str:
 
 def _status_key(value: Any) -> str:
     return _text(value).lower().replace(' ', '_')
+
+
+# W9-SCENE: tags, affordances and failing forward on scene objects; stakes, goals, results and floors on encounters.
+
+
+def _location_object_ids(pack: dict[str, Any]) -> dict[str, set[str]]:
+    """Each location's scene object ids."""
+
+    found: dict[str, set[str]] = {}
+    for location in _records(pack.get('locations')):
+        scene_state = _dict(location.get('sceneState'))
+        found[_text(location.get('id'))] = {
+            _text(record.get('id'))
+            for source in (location, scene_state)
+            for collection in ('interactables', 'hazards')
+            for record in _records(source.get(collection))
+            if _text(record.get('id'))
+        }
+    return found
+
+
+def _consequence_reference_issues(path: str, spec: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    issues = [
+        _error('unknown_reference', f'{path}.reveals', f'"{object_id}" is not a scene object of the pack.')
+        for object_id in _string_list(spec.get('reveals'))
+        if object_id not in ids['interactables']
+    ]
+    encounter_id = _text(spec.get('startsEncounterId'))
+    if encounter_id and encounter_id not in ids['encounters']:
+        issues.append(_error('unknown_reference', f'{path}.startsEncounterId', f'"{encounter_id}" is not an encounter of the pack.'))
+    issues.extend(
+        _error('unknown_reference', f'{path}.affects[{index}].npcId', f'"{_text(affect.get("npcId"))}" is not a person of the pack.')
+        for index, affect in enumerate(_records(spec.get('affects')))
+        if _text(affect.get('npcId')) not in ids['npcs']
+    )
+    return issues
+
+
+def _scene_plan_issues(pack: dict[str, Any], ids: dict[str, set[str]]) -> list[CampaignPackLintIssue]:
+    from aidm_server.game_state.orchestration.fight_stakes import STATES_BY_KIND, STAKE_KINDS
+    from aidm_server.game_state.orchestration.scene_plans import AFFORDANCE_COSTS, EFFECTS, OBJECT_TAGS
+
+    issues: list[CampaignPackLintIssue] = []
+    stake_ids = {
+        _text(stake.get('id'))
+        for encounter in _records(pack.get('encounters'))
+        for stake in (encounter.get('stakes') if isinstance(encounter.get('stakes'), list) else [])
+        if isinstance(stake, dict) and _text(stake.get('id'))
+    }
+    by_location = _location_object_ids(pack)
+    for path, record in _pack_interactables(pack):
+        location_ids = next((objects for objects in by_location.values() if _text(record.get('id')) in objects), set())
+        for index, tag in enumerate(record.get('tags') or []):
+            if _text(tag) not in OBJECT_TAGS:
+                issues.append(_error('unknown_object_tag', f'{path}.tags[{index}]', f'Tag "{_text(tag)}" is not one of {", ".join(sorted(OBJECT_TAGS))}.'))
+        guarded = _text(record.get('guards'))
+        if guarded and guarded not in location_ids:
+            issues.append(_error('unknown_reference', f'{path}.guards', f'"{guarded}" is not a scene object of the same place.'))
+        seen: set[str] = set()
+        for index, affordance in enumerate(record.get('affordances') or []):
+            at = f'{path}.affordances[{index}]'
+            if not isinstance(affordance, dict) or not _text(affordance.get('id')) or not _text(affordance.get('label')):
+                issues.append(_error('invalid_affordance', at, 'An affordance needs an id and a label.'))
+                continue
+            if _text(affordance['id']) in seen:
+                issues.append(_error('duplicate_affordance_id', f'{at}.id', f'Affordance "{_text(affordance["id"])}" is listed twice on this object.'))
+            seen.add(_text(affordance['id']))
+            if _text(affordance.get('effect')) not in EFFECTS:
+                issues.append(_error('unknown_effect', f'{at}.effect', f'Effect "{_text(affordance.get("effect"))}" is not one of {", ".join(EFFECTS)}.'))
+            if 'cost' in affordance and _text(affordance.get('cost')) not in AFFORDANCE_COSTS:
+                issues.append(_error('invalid_affordance', f'{at}.cost', f'Cost "{_text(affordance.get("cost"))}" is not one of {", ".join(AFFORDANCE_COSTS)}.'))
+            target = _text(affordance.get('target'))
+            if target and target not in {'enemy', 'zone'} and not (target.startswith('stake:') and target[len('stake:'):] in stake_ids):
+                issues.append(_error('unknown_stake', f'{at}.target', f'Target "{target}" is not enemy, zone or stake:<a stake of the pack>.'))
+            result = _dict(affordance.get('result'))
+            for stake_id in _dict(result.get('stakes')):
+                if stake_id not in stake_ids:
+                    issues.append(_error('unknown_stake', f'{at}.result.stakes.{stake_id}', f'"{stake_id}" is not a stake of any encounter.'))
+            issues.extend(_consequence_reference_issues(f'{at}.result', result, ids))
+            issues.extend(_consequence_reference_issues(f'{at}.onFail', _dict(affordance.get('onFail')), ids))
+        for action, spec in _dict(record.get('onFail')).items():
+            issues.extend(_consequence_reference_issues(f'{path}.onFail.{action}', _dict(spec), ids))
+    for index, encounter in enumerate(_records(pack.get('encounters'))):
+        path = f'encounters[{index}]'
+        stakes = {}
+        for stake_index, stake in enumerate(encounter.get('stakes') if isinstance(encounter.get('stakes'), list) else []):
+            at = f'{path}.stakes[{stake_index}]'
+            kind = _text(_dict(stake).get('kind'))
+            if kind not in STAKE_KINDS:
+                issues.append(_error('invalid_stake', f'{at}.kind', f'Stake kind "{kind}" is not one of {", ".join(STAKE_KINDS)}.'))
+                continue
+            stakes[_text(stake.get('id'))] = kind
+            reference, collection = {'item': ('itemId', None), 'person': ('npcId', 'npcs'), 'route': ('objectId', 'interactables')}[kind]
+            value = _text(stake.get(reference))
+            known = _pack_item_ids(pack) if collection is None else ids[collection]
+            if not value or value not in known:
+                issues.append(_error('unknown_reference', f'{at}.{reference}', f'"{value}" is not {"an item" if kind == "item" else "a person" if kind == "person" else "a scene object"} of the pack.'))
+        goals = (('enemyGoal', 'stakeId', 'item'), ('enemyGoal', 'routeStakeId', 'route'), ('secondaryGoal', 'stakeId', 'person'))
+        for key, field, kind in goals:
+            goal = _dict(encounter.get(key))
+            stake_id = _text(goal.get(field))
+            if goal and (stake_id or field == 'stakeId') and stakes.get(stake_id) != kind:
+                issues.append(_error('unknown_stake', f'{path}.{key}.{field}', f'"{stake_id}" is not {"an" if kind == "item" else "a"} {kind} stake of this encounter.'))
+        for result_index, result in enumerate(_records(encounter.get('results'))):
+            at = f'{path}.results[{result_index}]'
+            for stake_id, state in _dict(_dict(result.get('when')).get('stakes')).items():
+                if stake_id not in stakes:
+                    issues.append(_error('unknown_stake', f'{at}.when.stakes.{stake_id}', f'"{stake_id}" is not a stake of this encounter.'))
+                elif _text(state) not in STATES_BY_KIND[stakes[stake_id]]:
+                    issues.append(_error('invalid_stake_state', f'{at}.when.stakes.{stake_id}', f'"{_text(state)}" is not a state of {"an" if stakes[stake_id] == "item" else "a"} {stakes[stake_id]} stake.'))
+            issues.extend(_consequence_reference_issues(at, result, ids))
+        defeat = encounter.get('onDefeat')
+        if isinstance(defeat, dict):
+            zone_id = _text(defeat.get('wakeZoneId'))
+            zones = {
+                _text(zone.get('id'))
+                for location in _records(pack.get('locations'))
+                if _text(location.get('id')) in _string_list(encounter.get('locationIds'))
+                for zone in _records(location.get('zones'))
+            }
+            if zone_id and zone_id not in zones:
+                issues.append(_error('unknown_reference', f'{path}.onDefeat.wakeZoneId', f'"{zone_id}" is not a zone of the encounter\'s place.'))
+            for stake_id in _dict(defeat.get('stakes')):
+                if stake_id not in stakes:
+                    issues.append(_error('unknown_stake', f'{path}.onDefeat.stakes.{stake_id}', f'"{stake_id}" is not a stake of this encounter.'))
+        minimum = encounter.get('minEnemies')
+        if minimum is not None and (not isinstance(minimum, int) or isinstance(minimum, bool) or not 1 <= minimum <= 6):
+            issues.append(_error('invalid_floor', f'{path}.minEnemies', 'minEnemies is a whole number from 1 to 6.'))
+        for group_index, group in enumerate(_records(encounter.get('enemyGroups'))):
+            floor = group.get('minHp')
+            if floor is not None and (not isinstance(floor, int) or isinstance(floor, bool) or floor < 1):
+                issues.append(_error('invalid_floor', f'{path}.enemyGroups[{group_index}].minHp', 'minHp is a whole number of at least 1.'))
+    return issues

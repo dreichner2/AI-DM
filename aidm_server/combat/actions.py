@@ -288,7 +288,9 @@ def _resolve_help(context: dict[str, Any], actor: dict[str, Any], combat: dict[s
 def _resolve_hide(context: dict[str, Any], actor: dict[str, Any], combat: dict[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
     if is_hidden(actor):
         return _blocked('Already hidden.')
-    if range_band(actor) == 'melee' and not has_cover(combat, actor):
+    dark = isinstance(combat.get('flags'), Mapping) and combat['flags'].get('dark') is True
+    if range_band(actor) == 'melee' and not has_cover(combat, actor) and not dark:
+        # In the dark (W9-SCENE: a light put out) hiding needs no cover.
         return _blocked('You cannot hide in melee without cover.')
     watchers = [
         participant
@@ -503,6 +505,12 @@ ACTION_RESOLVERS: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
+def register_action_type_resolver(action_type: str, fn: Callable[..., dict[str, Any]]) -> None:
+    """Another module's fight action type (a plan, W9-SCENE), resolved like those above."""
+
+    ACTION_RESOLVERS[_text(action_type)] = fn
+
+
 def resolve_combat_action(
     *,
     state: Mapping[str, Any],
@@ -539,6 +547,7 @@ def resolve_combat_action(
         'check': combat_action.get('check') if isinstance(combat_action.get('check'), Mapping) else {},
         'escapeDc': combat_action.get('escape_dc'),
         'attempt': _text(combat_action.get('attempt')),
+        'plan': combat_action.get('plan') if isinstance(combat_action.get('plan'), Mapping) else {},
     }
     advanced: dict[str, Any] = {}
     if moves_first and action_type in MANEUVER_TYPES:
@@ -569,7 +578,7 @@ def resolve_combat_action(
     }
     if target is not None:
         result.update({'targetId': context['targetId'], 'targetName': _name(target)})
-    for key in ('movement', 'check', 'reactions', 'attempt', 'targetWeapon'):
+    for key in ('movement', 'check', 'reactions', 'attempt', 'targetWeapon', 'effect'):
         if resolved.get(key):
             result[key] = resolved[key]
     if 'success' in resolved:

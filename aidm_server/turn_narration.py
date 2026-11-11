@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 from aidm_server import scripted_narrator
+from aidm_server.game_state.orchestration import director
+from aidm_server.game_state.orchestration.scene_plans import scene_paragraphs
 from aidm_server.game_state.orchestration.story_beats import SCRIPTED_NARRATOR_PROVIDER
 from aidm_server.llm import CONTEXT_VERSION, EmergencyFallbackChunk
 from aidm_server.llm_context import build_opening_brief
@@ -208,6 +210,15 @@ class TurnNarrationService:
         narration_model: str | None = configured_model
         emergency_fallback: dict[str, Any] | None = None
         reasoning_filter = ReasoningBlockFilter()
+        # The director's authored note is told by the engine around a narrating model's reply, never by the model.
+        engine_opening, engine_closing = (
+            director.engine_paragraphs(request.rules_hint_payload) if configured_provider != SCRIPTED_NARRATOR_PROVIDER else ('', '')
+        )
+        # A plan's, an object's failing-forward and a fight's results texts (W9-SCENE) are told as written too.
+        scene_opening, scene_closing = scene_paragraphs(request.rules_hint_payload) if configured_provider != SCRIPTED_NARRATOR_PROVIDER else ('', '')
+        engine_opening = '\n\n'.join(part for part in (scene_opening, engine_opening) if part)
+        engine_closing = '\n\n'.join(part for part in (scene_closing, engine_closing) if part)
+        opening_sent = False
         provider_started = time.perf_counter()
         first_token_recorded = False
         chunk_count = 0
@@ -264,6 +275,10 @@ class TurnNarrationService:
                 chunk = reasoning_filter.filter(raw_chunk)
                 if not chunk:
                     continue
+                if engine_opening and not opening_sent and emergency_fallback is None:
+                    # The director's authored note opens the reply in the engine's words, before the model's.
+                    emit_chunk(f'{engine_opening}\n\n')
+                    opening_sent = True
                 emit_chunk(chunk)
                 dm_response_text += chunk
 
@@ -300,12 +315,14 @@ class TurnNarrationService:
             cleaned = clean_ai_narration(dm_response_text, request.rules_hint_payload)
             engine_rolls_removed = cleaned.engine_rolls_removed
             # A reply with nothing left once cleaned is told the scripted way, from the same engine results.
-            dm_response_text = cleaned.text or scripted_narrator.narrate(
+            dm_response_text = '\n\n'.join(part for part in (engine_opening, cleaned.text, engine_closing) if part) if cleaned.text else scripted_narrator.narrate(
                 safe_json_loads(context, {}),
                 {**request.rules_hint_payload, **({'requires_roll': False} if engine_rolls_removed else {})},
                 request.model_user_input,
                 request.player_label,
             )
+            if cleaned.text and engine_closing:
+                emit_chunk(f'\n\n{engine_closing}')
             # In a fight the engine, not the model, says whose turn it is.
             turn_line = scripted_narrator.engine_turn_line(request.rules_hint_payload) if cleaned.text else ''
             if turn_line:

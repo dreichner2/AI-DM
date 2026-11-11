@@ -582,6 +582,49 @@ describe('StoryActionTray', () => {
     expect(withoutClientId(storySubmit.mock.calls[0][1])).toEqual(withoutClientId(classicSubmit.mock.calls[0][1]))
   })
 
+  it('lists what has changed in the place first, and sends an affordance as a plan, in a fight as its fight action', () => {
+    const gate = {
+      ...testControls().interactables[0],
+      id: 'yard_gate',
+      name: 'Yard Gate',
+      offered: true,
+      actions: [
+        { id: 'plan' as const, planId: 'bar_gate', label: 'Shut and bar the yard gate', available: true, reason: '', phrase: true, authored: true, suggested: true },
+        { id: 'plan' as const, planId: 'slap_horse', label: 'Slash the tether and slap the horse', available: false, reason: 'Only in a fight.', phrase: true, authored: true },
+      ],
+    }
+    const board = testBoard({
+      worldState: testWorld({ sceneFacts: ['The yard lantern is out; the yard is dark.', 'Wenna Pike is behind Arden Vale.'] }),
+      gameplayControls: testControls({ interactables: [gate] }),
+    })
+    renderDock(board)
+    const tray = openSection('Scene')
+
+    const changed = within(tray).getByRole('group', { name: 'What has changed' })
+    expect(within(changed).getAllByRole('listitem').map((fact) => fact.textContent)).toEqual([
+      'The yard lantern is out; the yard is dark.',
+      'Wenna Pike is behind Arden Vale.',
+    ])
+    expect(within(tray).getAllByRole('group')[0]).toBe(changed)
+    const actions = within(tray).getByRole('group', { name: 'Yard Gate actions' })
+    expect(within(actions).getByRole('button', { name: 'Slash the tether and slap the horse' })).toHaveAttribute('aria-description', 'Only in a fight.')
+    fireEvent.click(within(actions).getByRole('button', { name: 'Shut and bar the yard gate' }))
+    expect(board.actionComposerProps.submitAction).toHaveBeenLastCalledWith('Shut and bar the yard gate.', expect.objectContaining({
+      kind: 'plan',
+      source: 'scene_panel',
+      plan: { objectId: 'yard_gate', affordanceId: 'bar_gate' },
+    }))
+    cleanup()
+
+    const fight = testBoard({ worldState: testWorld({ combat: testCombat() }), gameplayControls: testControls({ inCombat: true, interactables: [gate] }) })
+    renderDock(fight)
+    fireEvent.click(within(openSection('Scene')).getByRole('button', { name: 'Shut and bar the yard gate' }))
+    expect(fight.actionComposerProps.submitAction).toHaveBeenLastCalledWith('Shut and bar the yard gate.', expect.objectContaining({
+      kind: 'combat',
+      combat: { action_id: 'plan.yard_gate.bar_gate' },
+    }))
+  })
+
   it('keeps an object’s choices in the Scene list, one that cannot be made dimmed with its reason', () => {
     const board = testBoard({
       gameplayControls: testControls({

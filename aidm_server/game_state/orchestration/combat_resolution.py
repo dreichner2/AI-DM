@@ -33,6 +33,7 @@ from aidm_server.combat.maneuvers import (
 )
 from aidm_server.combat.modifiers import (
     MODIFIER_ENGINE_SOURCE,
+    active_effects,
     attack_context,
     can_act,
     condition_keys,
@@ -67,6 +68,8 @@ from aidm_server.combat.state import (
 from aidm_server.damage_dice import deterministic_roller, normalize_damage_dice_expression
 from aidm_server.game_state.application.applier import apply_state_changes
 from aidm_server.game_state.models import normalize_item_name, stable_change_id
+from aidm_server.game_state.orchestration.fight_stakes import GOAL_INTENT, resolve_goal_turn, stake_changes, wrest_after_hit
+from aidm_server.game_state.orchestration.scene_plans import RESTRAINED_SOURCE
 from aidm_server.game_state.validation.validator import validate_state_changes, validated_changes_for_application
 
 
@@ -451,6 +454,29 @@ def _held_turn(enemy: dict[str, Any], combat: dict[str, Any], roll: Callable[[in
     }
 
 
+def _restrained_turn(enemy: dict[str, Any], roll: Callable[[int], int]) -> dict[str, Any] | None:
+    """The turn of an enemy a scene object holds (a net, a canvas): it spends its action trying to break free, d20 +
+    its better Strength or Dexterity modifier against the hold's DC, as from a grapple."""
+
+    effect = next((effect for effect in active_effects(enemy) if effect['sourceId'] == RESTRAINED_SOURCE), None)
+    if effect is None:
+        return None
+    natural = bounded_int(roll(20), default=1, minimum=1, maximum=20)
+    modifier = max(ability_mod(enemy, 'strength'), ability_mod(enemy, 'dexterity'))
+    dc = int_or_default(effect.get('escapeDc'), default=12)
+    success = natural + modifier >= dc
+    if success:
+        remove_active_effects(enemy, lambda candidate: candidate['sourceId'] == RESTRAINED_SOURCE)
+    return {
+        'held': True,
+        'restrained': True,
+        'restraintId': effect['id'],
+        'grapplerName': 'what holds it',
+        'intentType': 'break_free',
+        'breakFree': {'roll': natural, 'modifier': modifier, 'total': natural + modifier, 'dc': dc, 'success': success},
+    }
+
+
 def _resolve_enemy_required_actions(
     *,
     state: dict[str, Any],
@@ -565,6 +591,26 @@ def _resolve_enemy_required_actions(
                 continue
             entry['grappleEnded'] = True
             remove_active_effects(enemy, lambda effect: effect['sourceId'] == GRAPPLE_SOURCE)
+        restrained = _restrained_turn(enemy, roll)
+        if restrained is not None:
+            _begin_enemy_turn(enemy)
+            entry.update(restrained)
+            resolved.append(entry)
+            continue
+        if intent_type == GOAL_INTENT:
+            # What the fight is about (W9-SCENE): the runner's or the silencer's move.
+            can_move = _begin_enemy_turn(enemy)
+            entry.update(
+                resolve_goal_turn(
+                    enemy=enemy,
+                    combat=combat,
+                    state=working_state,
+                    roll=roll,
+                    retreat=lambda mover: _retreat(enemy=mover, combat=combat, state=working_state, can_move=can_move, event_id=event_id, turn_id=turn_id),
+                )
+            )
+            resolved.append(entry)
+            continue
 
         if intent_type in {'attack', 'use_ability'}:
             if not isinstance(ability, dict) or not combat_ability_is_available(ability, round_number=combat.get('round')):
@@ -614,6 +660,8 @@ def _resolve_enemy_required_actions(
             if result is None:
                 continue
             entry.update(result)
+            if (enemy.get('currentIntent') or {}).get('wrestStakeId'):
+                wrest_after_hit(enemy=enemy, target=target, combat=combat, state=working_state, result=entry, roll=roll)
         elif intent_type in {'retreat', 'flee'}:
             can_move = _begin_enemy_turn(enemy)
             entry.update(_retreat(enemy=enemy, combat=combat, state=working_state, can_move=can_move, event_id=event_id, turn_id=turn_id))
@@ -778,6 +826,10 @@ def _trusted_enemy_resolved_damage_changes(
             or not participant_can_take_turn(enemy)
         ):
             continue
+        if action.get('restrained') is True:
+            if (action.get('breakFree') or {}).get('success') is True:
+                append(_restraint_released_change(enemy, action, turn_id=turn_id, index=index))
+            continue
         if action.get('grappleEnded') or (action.get('breakFree') or {}).get('success') is True:
             append(_grapple_released_change(enemy, turn_id=turn_id, index=index))
         if intent_type == 'break_free':
@@ -786,7 +838,9 @@ def _trusted_enemy_resolved_damage_changes(
             append(change)
         for change in reaction_changes(action.get('reactions')):
             append(change)
-        if action.get('droppedByReaction') or action.get('moveOnly'):
+        for change in stake_changes(action, turn_id=turn_id, index=index):
+            append(change)
+        if action.get('droppedByReaction') or action.get('moveOnly') or intent_type == GOAL_INTENT:
             continue
 
         outcome_condition = {
@@ -947,6 +1001,19 @@ def _trusted_enemy_resolved_damage_changes(
         changes.append(change)
         already_ids.add(str(change['id']))
     return changes
+
+
+def _restraint_released_change(enemy: dict[str, Any], action: dict[str, Any], *, turn_id: int | None, index: int) -> dict[str, Any]:
+    enemy_id = str(enemy.get('id') or '')
+    return {
+        'id': stable_change_id('trusted_enemy_restraint_released', turn_id, index, enemy_id),
+        'turnId': turn_id,
+        'type': 'combat.effect.consume',
+        'consume': [{'participantId': enemy_id, 'effectId': action.get('restraintId')}],
+        'source': MODIFIER_ENGINE_SOURCE,
+        'reason': f'{_participant_name(enemy, enemy_id)} breaks free.',
+        'visible': True,
+    }
 
 
 def _grapple_released_change(enemy: dict[str, Any], *, turn_id: int | None, index: int) -> dict[str, Any]:

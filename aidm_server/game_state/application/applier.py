@@ -62,7 +62,9 @@ from aidm_server.game_state.models import (
 )
 from aidm_server.game_state.leveling import sync_actor_level_for_xp, sync_stats_for_level
 from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, apply_talk_change, talk_followup_changes
+from aidm_server.game_state.orchestration.fight_stakes import STAKE_CHANGE, apply_stake_change, stake_followup_changes
 from aidm_server.game_state.orchestration.hero_threads import HERO_CHANGE_TYPES, apply_hero_change
+from aidm_server.game_state.orchestration.scene_plans import EFFECT_CHANGE, apply_effect_change, clear_transient_facts, plan_followup_changes
 from aidm_server.game_state.quest_engine import derive_quest_changes
 from aidm_server.game_state.validation.validator import supported_scene_type
 from aidm_server.game_state.zones import (
@@ -1259,8 +1261,9 @@ SCENE_LOCAL_SCALAR_FIELDS = (
     'musicTag',
     'updatedAtTurn',
 )
-SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items', 'interactables', 'hazards', VISITED_ZONES_KEY)
-SCENE_LOCAL_DICT_FIELDS = ('playerPositions', 'playerZones', 'characterPositions', 'characterZones')
+# A place's scene facts and zone conditions (W9-SCENE) are kept with it and restored on return.
+SCENE_LOCAL_LIST_FIELDS = ('activeNpcIds', 'activeQuestIds', 'items', 'interactables', 'hazards', VISITED_ZONES_KEY, 'facts')
+SCENE_LOCAL_DICT_FIELDS = ('playerPositions', 'playerZones', 'characterPositions', 'characterZones', 'factKeys', 'zoneConditions')
 PUBLIC_AUTHORED_LOCATION_FIELDS = (
     'region',
     'playerSummary',
@@ -1606,6 +1609,8 @@ def _meet_people_here(state: dict[str, Any]) -> list[str]:
 def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str, Any]:
     scene = _ensure_scene(state)
     previous_location_id = _text(scene.get('locationId'))
+    # A plan's passing effects (hidden, guarding, distracted, cut off) end when the party leaves (W9-SCENE).
+    clear_transient_facts(scene)
     _save_current_scene_state(state)
     location_payload = _location_payload(change, status='visited')
     location = _merge_location(state, location_payload)
@@ -1628,6 +1633,9 @@ def _apply_scene_move(state: dict[str, Any], change: dict[str, Any]) -> dict[str
             'characterPositions': deepcopy(target_state.get('characterPositions')) if isinstance(target_state.get('characterPositions'), dict) else {},
             'characterZones': deepcopy(target_state.get('characterZones')) if isinstance(target_state.get('characterZones'), dict) else {},
             VISITED_ZONES_KEY: _string_list(target_state.get(VISITED_ZONES_KEY)),
+            'facts': _string_list(target_state.get('facts')),
+            'factKeys': deepcopy(target_state.get('factKeys')) if isinstance(target_state.get('factKeys'), dict) else {},
+            'zoneConditions': deepcopy(target_state.get('zoneConditions')) if isinstance(target_state.get('zoneConditions'), dict) else {},
         }
     )
     for key in ('mood', 'musicTag', 'updatedAtTurn'):
@@ -2999,6 +3007,7 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 'enemies_surrendered',
                 'negotiated_resolution',
                 'objective_completed',
+                'enemy_goal_met',
             }:
                 state_flags = next_state.setdefault('flags', {})
                 if not isinstance(state_flags, dict):
@@ -3343,6 +3352,18 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
                 skipped.append({'change': change, 'reason': 'The conversation no longer allows it.'})
                 continue
             applied_change.update(talked)
+        elif change_type == EFFECT_CHANGE:
+            planned = apply_effect_change(next_state, change)
+            if planned is None:
+                skipped.append({'change': change, 'reason': 'The plan no longer applies.'})
+                continue
+            applied_change.update(planned)
+        elif change_type == STAKE_CHANGE:
+            staked = apply_stake_change(next_state, change)
+            if staked is None:
+                skipped.append({'change': change, 'reason': 'What the fight is about has moved on.'})
+                continue
+            applied_change.update(staked)
         else:
             skipped.append({'change': change, 'reason': 'Unsupported change or actor missing during application.'})
             continue
@@ -3361,6 +3382,8 @@ def apply_state_changes(previous_state: dict[str, Any], changes: list[dict[str, 
             pending_changes.extend(derive_quest_changes(next_state, applied_change['event']))
         pending_changes.extend(interactable_followup_changes(next_state, applied_change))
         pending_changes.extend(talk_followup_changes(next_state, applied_change))
+        pending_changes.extend(plan_followup_changes(next_state, applied_change))
+        pending_changes.extend(stake_followup_changes(next_state, applied_change))
         pending_changes.extend(
             campaign_pack_followup_changes(
                 next_state,

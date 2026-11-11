@@ -163,15 +163,27 @@ export function objectActionLabel(action: GameplayObjectAction) {
 /**
  * A scene object action carrying the object's current revision. An action
  * whose label is a whole phrase is sent as that phrase; a retry takes time.
+ * A plan (an authored affordance) is its own intent, and in a fight the
+ * offered fight action `plan.<object>.<affordance>`.
  */
 export function objectActionSubmission(
   actorName: string,
   object: GameplayInteractableControl,
   action: GameplayObjectAction,
+  inFight = false,
 ): ActionSubmission {
   const message = action.phrase
     ? phraseLine(objectActionLabel(action))
     : `${actorName} attempts to ${action.id} ${object.name}.`
+  if (action.id === 'plan') {
+    const plan = { objectId: object.id, affordanceId: action.planId ?? '' }
+    return {
+      message,
+      intent: inFight
+        ? { kind: 'combat', source: 'combat_hud', text: message, client_message_id: combatClientMessageId(), combat: { action_id: `plan.${plan.objectId}.${plan.affordanceId}` } }
+        : { kind: 'plan', source: 'scene_panel', text: message, client_message_id: createClientMessageId(), plan },
+    }
+  }
   return {
     message,
     intent: {

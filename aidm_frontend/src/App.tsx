@@ -77,7 +77,7 @@ import {
   turnStatusAllowsNextSend,
   worldStateFromSnapshot,
 } from './gameSelectors'
-import { diceRollMessage } from './gameActions'
+import { diceRollMessage, type ActionIntent } from './gameActions'
 import { PRESSED_HOLD_MS } from './story/rollPlayback'
 import { gameplayControlsFromSnapshot } from './gameplayControlState'
 import { whenIdle } from './lazyModule'
@@ -103,6 +103,7 @@ import { StoryView } from './story/StoryView'
 import type { StoryChromeProps, StoryConnection, StoryDrawerTab } from './story/types'
 import type { CreateHeroPayload } from './story/create/createHeroModel'
 import { TitleScreen } from './TitleScreen'
+import { useStoryReturn } from './story/useStoryReturn'
 import { turnControlFromSnapshot, turnControlWithActiveName } from './turnControl'
 import {
   turnRecoveryGateFromSnapshot,
@@ -110,6 +111,7 @@ import {
   type TurnRecoveryResponse,
 } from './turnRecovery'
 import './App.css'
+import type { ChronicleAdventure, ChronicleResponse } from './apiContract.generated'
 import type {
   AccountWorkspace,
   ActorCapabilitiesResponse,
@@ -2854,6 +2856,7 @@ function AIDMApp() {
     returnFocusRef: dialogReturnFocusRef,
   })
   const {
+    playNowFromTitleScreen,
     returnToTitle,
     showTitleScreen,
     titleScreenProps,
@@ -2916,6 +2919,61 @@ function AIDMApp() {
     startAdventure,
     turnRowCount,
   })
+
+  // The finished adventures, for the title screen's `Your chronicle`.
+  const [chronicle, setChronicle] = useState<ChronicleAdventure[]>([])
+  useEffect(() => {
+    if (!showTitleScreen || health?.status !== 'ok') return
+    apiFetch<ChronicleResponse>(baseUrl, '/api/sessions/chronicle', auth).then(
+      (loaded) => setChronicle(loaded.adventures),
+      () => setChronicle([]),
+    )
+  }, [auth, baseUrl, health?.status, showTitleScreen])
+
+  // What brings a party back: plans, coming back, the next chapter after a break, the leaving question.
+  const chapterBroken = useMemo(
+    () =>
+      timeline.some(
+        (entry) => Array.isArray(entry.metadata.storyBeats) && entry.metadata.storyBeats.some((beat) => isRecord(beat) && beat.kind === 'chapter_end'),
+      ),
+    [timeline],
+  )
+  const returnSnapshot = isRecord(sessionState?.state_snapshot) ? sessionState.state_snapshot : {}
+  const { storyReturn, askBeforeLeaving } = useStoryReturn({
+    baseUrl,
+    auth,
+    sessionId: activeSessionId,
+    playerId: selectedPlayerId,
+    ready: socketStatus === 'joined' && sessionHydrated,
+    ended: isRecord(returnSnapshot.campaignPack) && isRecord(returnSnapshot.campaignPack.ending),
+    plans: isRecord(returnSnapshot.journal) ? returnSnapshot.journal.plans : null,
+    reload: loadSessionData,
+    follow: (sessionId) => {
+      setOptimisticEntries([])
+      setStreamingTurn(null)
+      setSelectedSessionId(sessionId)
+      if (selectedCampaignId) void refreshCampaignWorkspace(selectedCampaignId)
+    },
+    submit: (message, intent) => submitAction(message, intent),
+    exitToTitle: returnToTitle,
+    playNow: (options) => void playNowFromTitleScreen(options),
+  })
+  // `/plan <words>` notes a plan; after a chapter break the next action begins the next chapter (once no fight holds it).
+  const storySubmitAction = (message?: string, intent?: ActionIntent) => {
+    const words = (message ?? actionText).trim()
+    const plan = intent ? null : /^\/plan\s+(\S[\s\S]*)$/i.exec(words)
+    if (plan) {
+      void storyReturn.notePlan(plan[1]).then((noted) => noted && message === undefined && setActionText(''))
+      return true
+    }
+    const combat = isRecord(returnSnapshot.combat) ? returnSnapshot.combat.status : null
+    if (chapterBroken && words && combat !== 'active' && combat !== 'starting' && !turnInFlight) {
+      if (message === undefined) setActionText('')
+      storyReturn.beginNextChapter(words, intent)
+      return true
+    }
+    return submitAction(message, intent)
+  }
 
   useEffect(() => {
     if (showTitleScreen && (mobileRailOpen || mobileInspectorOpen)) {
@@ -4095,7 +4153,7 @@ function AIDMApp() {
       ttsLatencyLabel,
       canStopTts,
       stopTtsAudio,
-      submitAction,
+      submitAction: storySubmitAction,
       toggleAdminTools,
       startDiceRoll,
       diceRoll,
@@ -4138,6 +4196,7 @@ function AIDMApp() {
     },
     endedChapter,
     onOpenStoryView: openStoryView,
+    storyReturn,
   }
   const inspectorPanelProps: InspectorPanelProps = {
     inert: compactViewport && (!mobileInspectorOpen || modalOpen),
@@ -4215,7 +4274,7 @@ function AIDMApp() {
     onToggleFullscreen: () => void toggleFullscreen(),
     onOpenConsole: openConsoleView,
     onSwitchAdventure: openCampaignChooserDialog,
-    onExitToTitle: returnToTitle,
+    onExitToTitle: askBeforeLeaving,
     onOpenSettings: openProfileSettingsDialog,
     // Local play without sign-in has no account to show.
     onOpenAccount: runtimeAccount || health?.auth_required === true ? openAccountSheet : undefined,
@@ -4584,7 +4643,7 @@ function AIDMApp() {
         </>
       )}
 
-      {showTitleScreen ? <TitleScreen {...titleScreenProps} /> : null}
+      {showTitleScreen ? <TitleScreen {...titleScreenProps} chronicle={chronicle} /> : null}
 
       {storyView ? (
         // Without an adventure there is no story to show; the title screen offers one. Until the game

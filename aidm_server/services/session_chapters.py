@@ -91,6 +91,15 @@ CHAPTER_CARRIED_KEYS = (
     'gameplayEventLedger',
     'combatRewardLedger',
     'interactableActionLedger',
+    # The heroes' word, the players' plans and the director's clocks and used nudges outlast a chapter.
+    'promises',
+    'plans',
+    'clocks',
+    'director',
+    # What past fights left (stake states), the leads they gave and the clocks a plan started.
+    'stakes',
+    'leads',
+    'clocksStarted',
 )
 SCENE_COMBAT_LAYOUT_KEYS = ('playerPositions', 'playerZones', 'characterPositions', 'characterZones')
 UNSETTLED_TURN_STATUSES = ('pending', 'processing', 'awaiting_clarification')

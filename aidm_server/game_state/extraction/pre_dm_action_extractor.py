@@ -387,6 +387,24 @@ def _extract_from_action_intent(action_intent: dict[str, Any] | None, *, actor_i
             ],
             'notes': ['action_intent_pre_dm'],
         }
+    if action_intent.get('kind') == 'plan':
+        plan = action_intent.get('plan') if isinstance(action_intent.get('plan'), dict) else {}
+        if not plan:
+            return None
+        return {
+            'declaredActions': [
+                {
+                    'id': 'act_001',
+                    'type': 'scene.effect',
+                    'actorId': actor_id,
+                    'confidence': 1.0,
+                    'sourceText': player_message,
+                    'requiresDMResolution': False,
+                    'scenePlan': dict(plan),
+                }
+            ],
+            'notes': ['action_intent_pre_dm'],
+        }
     if action_intent.get('kind') == 'rest':
         rest_type = str(action_intent.get('rest_type') or '').strip()
         if rest_type not in {'short_rest', 'long_rest'}:
@@ -702,8 +720,11 @@ def extract_pre_dm_actions(
     action_intent: dict[str, Any] | None = None,
     free_text_intents: list[dict[str, Any]] | None = None,
     force_helper: bool = False,
+    helper_allowed: bool = True,
     before_provider_call: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
+    """The turn's declared actions; ``helper_allowed`` False keeps the helper out (it was already asked this turn)."""
+
     free_text_payload = (
         _extract_from_free_text_intents(free_text_intents, actor_id=actor_id, player_message=player_message)
         if free_text_intents
@@ -753,7 +774,7 @@ def extract_pre_dm_actions(
                 'notes': ['freeform_authoritative_spell'],
             }, fallback_actor_id=actor_id), _empty_helper_debug(source='spell_name', reason='freeform_authoritative_spell'))
 
-    helper_enabled = _helper_enabled()
+    helper_enabled = _helper_enabled() and helper_allowed
     if not ACTIONABLE_PATTERN.search(player_message or '') and not (force_helper and helper_enabled):
         return _attach_debug(
             {'declaredActions': [], 'notes': ['no_actionable_intent']},

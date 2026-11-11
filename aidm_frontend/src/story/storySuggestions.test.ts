@@ -276,6 +276,22 @@ describe('storySuggestions', () => {
     expect(rest.filter((suggestion) => suggestion.kind === 'take')).toEqual([])
   })
 
+  it('suggests a plan only when the server marks it suggested, the rest waiting under More…', () => {
+    const gate = object('yard_gate', 'Yard Gate', [
+      offer('inspect', 'Examine Yard Gate'),
+      offer('plan', 'Shut and bar the yard gate', { authored: true, planId: 'bar_gate', suggested: true }),
+    ])
+    const lantern = object('yard_lantern', 'Yard Lantern', [
+      offer('inspect', 'Examine Yard Lantern'),
+      offer('plan', 'Smash the yard lantern', { authored: true, planId: 'smash' }),
+    ])
+
+    const chips = storySuggestions(world(), controls([gate, lantern]))
+
+    expect(chips.map((chip) => chip.label)).toEqual(['Shut and bar the yard gate', 'Examine Yard Lantern', 'More…'])
+    expect(chips[0]).toMatchObject({ kind: 'object', key: 'object:yard_gate:bar_gate', action: { id: 'plan', planId: 'bar_gate' } })
+  })
+
   it('suggests nothing in combat', () => {
     expect(storySuggestions(world({ combat: combat(true), sceneItems: [key] }), controls([bell]))).toEqual([])
     expect(storySuggestions(world({ sceneItems: [key] }), controls([bell], { inCombat: true }))).toEqual([])

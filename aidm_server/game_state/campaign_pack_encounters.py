@@ -135,6 +135,11 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
     if encounter.get('allowParley') is True:
         # Its enemies may parley or give ground from the first blow.
         flags['allowParley'] = True
+    # What the fight is about (W9-SCENE): its stakes, and the goals its enemies pursue.
+    from aidm_server.game_state.orchestration.fight_stakes import combat_goal_flags, initial_stakes
+
+    stakes = initial_stakes(state, encounter)
+    flags.update(combat_goal_flags(state, encounter, stakes, enemies))
 
     combat.update(
         {
@@ -181,6 +186,11 @@ def party_scaling(
     first: their removed groups are gone before the most enemies is applied,
     and an ``hpMultiplier`` multiplies with the party's HP multiplier. They are
     recorded here as ``adjustments``.
+
+    Floors come last and hold for a party under four (recorded as ``floors``, see
+    :func:`aidm_server.game_state.orchestration.fight_stakes.encounter_floors`): the first group regains enemies up
+    to ``minEnemies``; no enemy of a group has less maximum HP than its ``minHp``; the runner of a ``take_and_flee``
+    encounter, at least ``runnerMinHp``.
     """
 
     adjustments = adjustments or []
@@ -222,6 +232,14 @@ def party_scaling(
     if adjustments:
         scaling['adjustments'] = deepcopy(adjustments)
         scaling['hpAdjustments'] = hp_adjustments
+    from aidm_server.game_state.orchestration.fight_stakes import encounter_floors
+
+    floors = encounter_floors(encounter, party_size=party_size)
+    if floors:
+        shortfall = int(floors.get('minEnemies') or 0) - sum(group['count'] for group in groups)
+        if groups and shortfall > 0:
+            groups[0]['count'] += shortfall
+        scaling['floors'] = floors
     return scaling
 
 
@@ -248,13 +266,18 @@ def _scaled_count(count: int, party_size: int) -> int:
     return max(1, math.floor(Fraction(count * party_size, AUTHORED_PARTY_SIZE) + Fraction(1, 2)))
 
 
-def _scaled_hp(max_hp: Any, scaling: dict[str, Any], enemy_id: str) -> int:
+def _scaled_hp(max_hp: Any, scaling: dict[str, Any], enemy_id: str, *, runner: bool = False) -> int:
     hp = max(0, _positive_int(max_hp) or 0)
     multiplier = PARTY_SCALING[int(scaling['partySize'])][0] if scaling.get('applied') else Fraction(1)
     adjustment = (scaling.get('hpAdjustments') or {}).get(enemy_id)
     if adjustment is not None:
         multiplier *= Fraction(str(adjustment))
-    return hp if multiplier == 1 else math.ceil(Fraction(hp) * multiplier)
+    scaled = hp if multiplier == 1 else math.ceil(Fraction(hp) * multiplier)
+    floors = scaling.get('floors') if isinstance(scaling.get('floors'), dict) else {}
+    floor = int((floors.get('minHp') or {}).get(enemy_id) or 0)
+    if runner:
+        floor = max(floor, int(floors.get('runnerMinHp') or 0))
+    return max(scaled, floor)
 
 
 def _scaled_abilities(abilities: Any, scaling: dict[str, Any], participant: dict[str, Any]) -> list[Any]:
@@ -397,7 +420,7 @@ def _instantiate_pack_enemies(
                 participant['name'] = singular if count == 1 else f'{singular} {index + 1}'
             if enemy.get('proper') is True:
                 participant['proper'] = True
-            max_hp = _scaled_hp(participant['hp']['max'], scaling, group['enemyId'])
+            max_hp = _scaled_hp(participant['hp']['max'], scaling, group['enemyId'], runner=sequence == 1)
             participant['hp'] = {**participant['hp'], 'current': max_hp, 'max': max_hp}
             participant['stats'] = {**participant['stats'], 'maxHp': max_hp}
             participant['abilities'] = _scaled_abilities(participant.get('abilities'), scaling, participant)

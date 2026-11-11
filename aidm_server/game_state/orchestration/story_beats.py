@@ -8,10 +8,15 @@ persisted Dungeon Master log entry and its turn event once every change of
 the turn, campaign progress included, has landed.
 
 Kinds, in this order: check, hp, condition, death_save, combat_end,
-item_gained / item_lost, coins, clue, objective_complete / objective_new,
-place, place_within, met, promise, bond, thread, inspiration, xp, level, defeat, ending, then hint (once per
-session, for words the scripted narrator could not map to an action, or said to someone who has nothing to say to
-them). Beats name people and creatures by their display names, never by participant ids.
+item_gained / item_lost, coins, clue, change (a scene fact a plan or a fight's result made, W9-SCENE), lead
+(``A lead — …``), objective_complete / objective_new,
+place, place_within, met, promise, bond, thread, inspiration, xp, level, defeat, ending, then plan (``Noted as a
+plan — …``, an intention the pre-narration helper read in a hero's words), hint (once per session, for words the
+scripted narrator could not map to an action, or said to someone who has nothing to say to them) and chapter_end
+(``End of chapter 1 · The Empty Caravan``, carrying the chapter-end entry as ``chapterEnd``:
+:func:`aidm_server.services.session_return.chapter_end`). A turn that reaches the ending also writes the finished
+adventure into the records (:mod:`aidm_server.services.adventure_records`). Beats name people and creatures by their
+display names, never by participant ids.
 
 A conversation's check reads as an object's (``Persuasion check: 15 — success``). A promise made reads ``A promise
 made — Promise to bring word of the drivers`` (an authored one, by its topic's label) or ``A promise made — "I will
@@ -70,7 +75,9 @@ from aidm_server.game_state.orchestration.conversations import TALK_CHANGE
 from aidm_server.game_state.orchestration.hero_threads import INSPIRATION_CHANGE, THREAD_CHANGE
 from aidm_server.game_state.zones import ZONE_MOVE_CHANGE
 from aidm_server.models import DmTurn, Session, SessionLogEntry, TurnEvent, safe_json_dumps, safe_json_loads
+from aidm_server.services.adventure_records import record_completion
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
+from aidm_server.services.session_return import chapter_end
 from aidm_server.spellbook import class_spells_for_level
 from aidm_server.turn_events import DM_RESPONSE_EVENT
 
@@ -86,6 +93,7 @@ COMBAT_END_TEXT = {
     'negotiated_resolution': 'The fight ends — they yield',
     'enemies_fled': 'The fight ends — they flee',
     'players_fled': 'You got away',
+    'enemy_goal_met': 'The fight ends — they got away with it',
 }
 COIN_ORDER = ('pp', 'gp', 'ep', 'sp', 'cp')
 ACTIVE_COMBAT_STATUSES = frozenset({'starting', 'active'})
@@ -206,6 +214,10 @@ def beat_basis(state: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
         },
         'places': {_text(place.get('id')): _text(place.get('name')) for place in _dicts(places) if _text(place.get('id'))},
         'ending': _text(ending.get('title')),
+        # W9-SCENE: what has changed at the place, and the party's leads.
+        'factsAt': _text(scene.get('locationId')),
+        'facts': [_text(fact) for fact in scene.get('facts') or [] if _text(fact)],
+        'leads': [_text(lead.get('text')) for lead in _dicts(journal.get('leads')) if _text(lead.get('text'))],
     }
 
 
@@ -239,6 +251,15 @@ def object_check_text(change: dict[str, Any], state_before: dict[str, Any]) -> s
     if change.get('type') != 'scene.interactable.action' or not isinstance(event.get('check'), dict):
         return None
     beat = _check_beat(event['check'], show_dc=_shows_dc(state_before, change))
+    return beat['text'] if beat else None
+
+
+def plan_check_text(change: dict[str, Any]) -> str | None:
+    """``Athletics check: 14 — success (DC 10)`` for the check a plan (W9-SCENE) rolled."""
+
+    if change.get('type') != 'scene.effect' or not isinstance(change.get('check'), dict):
+        return None
+    beat = _check_beat(change['check'], show_dc=True)
     return beat['text'] if beat else None
 
 
@@ -469,7 +490,11 @@ def story_beats(
     party = len(heroes_after) > 1
     acting_name = (heroes_after.get(actor_id) or {}).get('name') or 'Someone'
     beats: list[dict[str, Any]] = []
-    checks = [text for change in applied_changes if (text := object_check_text(change, state_before) or talk_check_text(change))]
+    checks = [
+        text
+        for change in applied_changes
+        if (text := object_check_text(change, state_before) or talk_check_text(change) or plan_check_text(change))
+    ]
     if isinstance(authoritative_roll, dict) and (beat := _roll_beat(authoritative_roll)):
         checks.append(beat['text'])
     if isinstance(combat_action, dict) and (beat := _fight_check_beat(combat_action)):
@@ -552,6 +577,10 @@ def story_beats(
     for clue_id, title in (after.get('clues') or {}).items():
         if clue_id not in (before.get('clues') or {}):
             beats.append({'kind': 'clue', 'text': f'Clue — {title}', 'refId': clue_id})
+    # A plan's scene fact (W9-SCENE), and a lead a fight's result left.
+    if before.get('factsAt') == after.get('factsAt'):
+        beats.extend({'kind': 'change', 'text': fact} for fact in after.get('facts') or [] if fact not in (before.get('facts') or []))
+    beats.extend({'kind': 'lead', 'text': f'A lead — {lead}'} for lead in after.get('leads') or [] if lead not in (before.get('leads') or []))
     old_objectives = before.get('objectives') or {}
     for objective_id, objective in (after.get('objectives') or {}).items():
         if objective['status'] == 'completed' and (old_objectives.get(objective_id) or {}).get('status') != 'completed':
@@ -629,10 +658,24 @@ def record_turn_story_beats(turn: DmTurn, session_obj: Session) -> list[dict[str
         combat_action=(pipeline.get('combatDebug') or {}).get('combatActionResolution') if isinstance(pipeline.get('combatDebug'), dict) else None,
     )
     narration = (pipeline.get('dmContextPacket') or {}).get('narration') if isinstance(pipeline.get('dmContextPacket'), dict) else {}
+    planned = narration.get('planNoted') if isinstance(narration, dict) and isinstance(narration.get('planNoted'), dict) else {}
+    if _text(planned.get('text')):
+        beats.append({'kind': 'plan', 'text': f"Noted as a plan — {_text(planned['text'])}"})
     unmatched = isinstance(narration, dict) and (narration.get('freeText') or {}).get('unmatched') is True
     if unmatched and _text(turn.llm_provider) == SCRIPTED_NARRATOR_PROVIDER and not _hint_already_shown(turn):
         beats.append({'kind': 'hint', 'text': HINT_TEXT})
         metadata[HINT_SHOWN_KEY] = True
+    before_pack = (pipeline.get('stateBeforeDm') or {}).get('campaignPack') if isinstance(pipeline.get('stateBeforeDm'), dict) else {}
+    chapter = state.get('chapter') if isinstance(state.get('chapter'), dict) else {}
+    ended = chapter_end(
+        state,
+        completed_before=(before_pack or {}).get('completedCheckpointIds') or [],
+        number=chapter.get('number') if isinstance(chapter.get('number'), int) else 1,
+    )
+    if ended is not None:
+        beats.append({'kind': 'chapter_end', 'text': f"End of chapter {ended['number']} · {ended['title']}", 'chapterEnd': ended})
+    if any(beat.get('kind') == 'ending' for beat in beats):
+        record_completion(state, campaign_id=turn.campaign_id, workspace_id=turn.campaign.workspace_id if turn.campaign else None)
     metadata[STORY_BEATS_KEY] = beats
     turn.metadata_json = safe_json_dumps(metadata, {})
     event = TurnEvent.query.filter_by(turn_id=turn.turn_id, event_type=DM_RESPONSE_EVENT).order_by(TurnEvent.event_id.desc()).first()

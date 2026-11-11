@@ -6,7 +6,7 @@ import type { StoryAudio } from './audio/storyAmbience'
 import { setStoryAudio } from './audio/storySound'
 import { RollCard } from './RollCard'
 import { CARD_GAP_MS, D20_CYCLE_MS, DICE_CYCLE_MS, PLAY_LIMIT_MS, SETTLE_MS, playRolls, resetRollPlayback, rollPlayback } from './rollPlayback'
-import type { RollCardRecord } from './storyRolls'
+import { rollCardRecord, type RollCardRecord } from './storyRolls'
 
 const NOW = new Date('2026-11-11T12:00:00.000Z').getTime()
 
@@ -160,6 +160,25 @@ describe('RollCard landed', () => {
     expect(text(container, '.roll-card-outcome')).toBe('failure vs DC 12 · natural 1')
     fireEvent.click(screen.getByRole('button', { name: 'Details' }))
     expect(text(container, '.roll-card-parts')).toBe('bonus + 1')
+  })
+
+  it("reads a contest against the hero's own Athletics, and an unknown kind as a DC", () => {
+    const grab = rollCardRecord({
+      id: 't9-2',
+      kind: 'check',
+      actor: { id: 'enemy_cutthroat_1', name: 'Cutthroat 1', side: 'enemy' },
+      target: { id: 'player_1', name: 'Arden Vale' },
+      label: 'Grab past a guard',
+      d20: { faces: [5], kept: 5, mode: 'normal' },
+      parts: [{ label: 'bonus', value: 1 }],
+      total: 6,
+      against: { kind: 'Athletics', value: 19 },
+      outcome: 'failure',
+    })
+    const { container } = render(<RollCard roll={grab as RollCardRecord} />)
+
+    expect(text(container, '.roll-card-outcome')).toBe('failure vs Athletics 19')
+    expect(rollCardRecord({ ...grab, against: { kind: 'Spite', value: 12 } })?.against).toEqual({ kind: 'DC', value: 12 })
   })
 
   it('reads healing, a death save and initiative highest first', () => {

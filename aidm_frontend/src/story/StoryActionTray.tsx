@@ -9,6 +9,7 @@ import {
   Minus,
   Plus,
   Quote,
+  ScrollText,
   Sparkles,
   Swords,
   Users,
@@ -1096,6 +1097,7 @@ export function StoryActionTray({
 
   const renderScene = () => {
     const loose = board.worldState.sceneItems.filter((item) => item.id && item.takeLabel)
+    const changed = board.worldState.sceneFacts ?? []
     const objects = controls.interactables
       .map((object) => ({ object, offers: sceneOffers(object) }))
       .filter(({ offers }) => offers.length)
@@ -1109,6 +1111,14 @@ export function StoryActionTray({
 
     return (
       <>
+        {changed.length ? (
+          <div className="story-tray-object" role="group" aria-label="What has changed">
+            <span className="story-label" aria-hidden="true">What has changed</span>
+            <ul className="story-tray-facts">
+              {changed.map((fact) => <li key={fact}>{fact}</li>)}
+            </ul>
+          </div>
+        ) : null}
         {loose.length ? (
           <div className="story-tray-object" role="group" aria-label="Lying here">
             <span className="story-label" aria-hidden="true">Lying here</span>
@@ -1141,10 +1151,10 @@ export function StoryActionTray({
             <div className="story-tray-offers" role="group" aria-label={`${object.name} actions`}>
               {offers.map((action) =>
                 renderOffer(
-                  `${object.id}-${action.id}`,
+                  `${object.id}-${action.planId ?? action.id}`,
                   objectActionLabel(action),
                   action.available ? mechanicsBusyReason : action.reason || 'Not possible right now.',
-                  () => submitTyped(objectActionSubmission(controls.actorName, object, action)),
+                  () => submitTyped(objectActionSubmission(controls.actorName, object, action, board.worldState.combat.active)),
                   action.retry,
                 ),
               )}
@@ -1440,6 +1450,19 @@ export function StoryActionTray({
             </button>
           )
         })}
+        {board.storyReturn ? (
+          <button
+            type="button"
+            className="story-link story-tray-nav-link"
+            onClick={() => {
+              composer.updateActionText('/plan ')
+              onDone()
+            }}
+          >
+            <ScrollText size={16} aria-hidden="true" />
+            Note a plan
+          </button>
+        ) : null}
       </nav>
       <div className="story-tray-content" aria-label={SECTION_META[activeSection].label} role="region">
         {renderContent ? renderContent() : null}

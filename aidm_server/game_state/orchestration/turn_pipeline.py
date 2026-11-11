@@ -38,7 +38,7 @@ from aidm_server.game_state.application.applier import (
     persist_state_to_database,
 )
 from aidm_server.game_state.campaign_pack_encounters import catalog_record
-from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, free_text_action, name_words
+from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, free_text_action, is_speech, name_words
 from aidm_server.game_state.extraction.post_dm_outcome_extractor import extract_post_dm_outcomes
 from aidm_server.game_state.extraction.pre_dm_action_extractor import engine_fight_action, extract_pre_dm_actions
 from aidm_server.game_state.logging.state_log_builder import build_state_log, state_log_message
@@ -51,6 +51,7 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     without_trusted_damage_overlaps,
 )
 from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, close_change, conversation_facts, talk_intent
+from aidm_server.game_state.orchestration import director
 from aidm_server.game_state.orchestration.engine_brief import engine_brief
 from aidm_server.game_state.orchestration.finishing_blow import finishing_blow, hold_spared_captive
 from aidm_server.game_state.orchestration.hero_threads import hero_turn_changes, hero_turn_facts
@@ -65,9 +66,20 @@ from aidm_server.game_state.orchestration.narration_facts import (
     object_facts,
     plain_results,
 )
+from aidm_server.game_state.orchestration.fight_stakes import defeat_text, foreseen_results, told_results
+from aidm_server.game_state.orchestration.scene_plans import (
+    PLAN_DECLARED,
+    UNSEEN_DID,
+    effect_facts,
+    helper_plan,
+    improvised_did,
+    plans_possible_here,
+    told_by_engine,
+)
+from aidm_server.game_state.orchestration.scene_plans import helper_enabled as plan_helper_enabled
 from aidm_server.game_state.orchestration.search_take import TAKEN_BY_SEARCH, search_take_actions, taken_by_search
 from aidm_server.game_state.orchestration.speech_acts import talk_extraction
-from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis
+from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis, story_beats
 from aidm_server.game_state.orchestration.story_rolls import SETTLED_ACTIONS_KEY, STORY_ROLLS_KEY, numbered, story_rolls_before_narration
 from aidm_server.game_state.orchestration.zone_turns import ZonePlan, without_zone_moves, zone_move_facts, zone_move_only, zone_plan
 from aidm_server.game_state.orchestration.turn_flow import (
@@ -95,7 +107,9 @@ from aidm_server.game_state.validation.validator import (
 )
 from aidm_server.models import Campaign, DmTurn, Player, Session, safe_json_dumps, safe_json_loads
 from aidm_server.price_list import catalog_item, normalize_price
+from aidm_server.services import session_return
 from aidm_server.telemetry import telemetry_metric
+from aidm_server.time_utils import utc_now
 from aidm_server.turn_events import record_turn_event
 from aidm_server.turn_rules import fight_look, fight_speech, finishing
 
@@ -126,6 +140,7 @@ AUTHORITATIVE_PRE_NARRATION_CHANGE_TYPES = {
     'shop.sell',
     'hero.inspiration',
     'npc.talk',
+    'scene.effect',
 }
 # Intents that leave a hero's conversation open: words out of character, a gesture, a roll, taking heart.
 CONVERSATION_KEEPING_KINDS = frozenset({'talk', 'ooc', 'admin', 'emote', 'roll', 'inspiration'})
@@ -2021,6 +2036,8 @@ def _downed_actor_result(
     state_log = build_state_log(turn_id=turn.turn_id, pre_validation=pre_validation, immediate_validation=empty_validation)
     refused = {'reason': refusal}
     metadata = _metadata(turn)
+    # Words aimed out of reach are a miss the director counts (its note waits for a turn that is told).
+    metadata[director.MARK_KEY] = director.refusal_mark(state, actor_id, miss=refused_as == 'zoneRefusal')
     metadata[STATE_PIPELINE_METADATA_KEY] = {
         'version': STATE_PIPELINE_VERSION,
         'actorId': actor_id,
@@ -2128,6 +2145,201 @@ def _with_search_takes(
     )
 
 
+def _with_clocks(
+    state_before: dict[str, Any],
+    state: dict[str, Any],
+    applied: list[dict[str, Any]],
+    *,
+    actor_id: str,
+    turn_id: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any] | None]:
+    """The state once this turn's causes have moved the place's clocks, its applied changes and the clock's note
+    (:mod:`aidm_server.game_state.orchestration.director`)."""
+
+    changes, note = director.advance_clocks(state_before, state, applied, turn_id=turn_id, actor_id=actor_id)
+    if not changes:
+        return state, applied, note
+    result = apply_state_changes(state, validated_changes_for_application(validate_state_changes(state=state, changes=changes)))
+    return result['nextState'], [*applied, *result['appliedChanges']], note
+
+
+def _with_director_note(
+    *,
+    turn: DmTurn,
+    session_obj: Session,
+    player_id: int,
+    state_before: dict[str, Any],
+    state_after: dict[str, Any],
+    applied: list[dict[str, Any]],
+    actor_id: str,
+    dm_context: dict[str, Any],
+    clock_note: dict[str, Any] | None,
+    declared_actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Put the turn's director note into its narration packet and keep a plan the helper read in the hero's words
+    (once a sitting); the turn's mark (:mod:`aidm_server.game_state.orchestration.director`)."""
+
+    narration = dm_context.setdefault('narration', {})
+    miss = bool(_dicts_of(dm_context.get('invalidActions'))) or (narration.get('freeText') or {}).get('unmatched') is True
+    session_turns, own_previous = director.recent_marks(turn)
+    note, mark = director.director_note(
+        state_before=state_before,
+        state_after=state_after,
+        applied=applied,
+        actor_id=actor_id,
+        narration=narration,
+        clock_note=clock_note,
+        miss=miss,
+        session_turns=session_turns,
+        own_previous=own_previous,
+        beats=lambda: story_beats(
+            beat_basis(state_before, actor_id=actor_id),
+            beat_basis(state_after, actor_id=actor_id),
+            actor_id=actor_id,
+            state_before=state_before,
+            applied_changes=applied,
+        ),
+    )
+    changed = False
+    if note is not None:
+        narration[director.NOTE_KEY] = note
+        if note['kind'] == 'opportunity':
+            director.use_nudge(state_after, note['nudge'])
+            changed = True
+    plan = next((str(action.get('plan') or '').strip() for action in declared_actions if isinstance(action, dict) and str(action.get('plan') or '').strip()), '')
+    now = utc_now()
+    if plan and session_return.helper_plan_allowed(state_after, session_obj.session_id, turn_id=turn.turn_id, now=now):
+        noted = session_return.note_plan(state_after, plan, player_id=player_id, source='helper', now=now)
+        if noted is not None:
+            narration['planNoted'] = {'id': noted['id'], 'text': noted['text']}
+            changed = True
+    if changed:
+        session_obj.state_snapshot = safe_json_dumps(state_after, {})
+    return mark
+
+
+def _dicts_of(value: Any) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+NO_ROLL_REQUIREMENT = {'requiresRoll': False, 'confidence': 1.0, 'reason': 'The engine resolves what the words name.'}
+
+
+def _plan_extraction(
+    state: dict[str, Any],
+    *,
+    free_text: FreeTextAction | None,
+    actor_id: str,
+    player_message: str,
+    action_intent: dict[str, Any] | None,
+    before_provider_call: Callable[[], None] | None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """``(pre_extraction, helper_asked)`` of words the first pass did not place (W9-SCENE): words naming a thing still
+    hidden ask for nothing and roll nothing; with an AI narrator, other words that are not speech go once to the helper
+    for a plan in a place that offers one. ``(None, …)`` leaves the turn to the ordinary extraction."""
+
+    if free_text is not None and free_text.kind == 'unseen':
+        return {'declaredActions': [], 'notes': ['unseen'], 'rollRequirement': {**NO_ROLL_REQUIREMENT, 'reason': 'The words name nothing in sight.'}}, False
+    if (
+        free_text is not None
+        or not _is_free_text(action_intent, player_message)
+        or _combat_is_running(state)
+        or not has_campaign_pack(state)
+        or is_speech(player_message)
+        or not plan_helper_enabled()
+        or not plans_possible_here(state, actor_id)
+    ):
+        return None, False
+    plan, debug = helper_plan(state, actor_id=actor_id, words=player_message, before_provider_call=before_provider_call)
+    if plan is None:
+        return None, True
+    declared = {
+        'id': 'act_001',
+        'type': PLAN_DECLARED,
+        'actorId': actor_id,
+        'confidence': 1.0,
+        'sourceText': player_message,
+        'requiresDMResolution': False,
+        'scenePlan': plan,
+    }
+    return {'declaredActions': [declared], 'notes': ['plan_helper'], 'rollRequirement': dict(NO_ROLL_REQUIREMENT), 'debug': debug}, True
+
+
+def _improvised_roll(turn: DmTurn, state: dict[str, Any]) -> dict[str, Any] | None:
+    """The improvised attempt this turn resolves (the old rules-hint floor, amendment 7): in a pack adventure outside a
+    fight, the check the player rolled for words that named nothing the engine holds; None otherwise."""
+
+    roll = _metadata(turn).get('authoritative_roll')
+    if (
+        not isinstance(roll, dict)
+        or roll.get('free') is True
+        or not isinstance(roll.get('total'), int)
+        or not _turn_resolves_player_roll(turn)
+        or not has_campaign_pack(state)
+        or _combat_is_running(state)
+        or str(roll.get('rule_type') or '').lower() in {'attack', 'spell_attack', 'initiative'}
+    ):
+        return None
+    resolved_id = _metadata(turn).get('resolved_turn_id') or (safe_json_loads(turn.rules_hint, {}) or {}).get('resolved_turn_id')
+    resolved = db.session.get(DmTurn, resolved_id) if isinstance(resolved_id, int) else None
+    words = str((resolved.player_input if resolved is not None else turn.player_input) or '').strip()
+    return {'words': words[:120], 'did': improvised_did(words, roll), 'success': str(roll.get('outcome') or '').lower() == 'success'}
+
+
+def _scene_narration(
+    *,
+    turn: DmTurn,
+    state: dict[str, Any],
+    state_after: dict[str, Any],
+    applied: list[dict[str, Any]],
+    actor_id: str,
+    free_text: FreeTextAction | None,
+    dm_context: dict[str, Any],
+) -> dict[str, Any]:
+    """The narration facts of plans and stakes (W9-SCENE): the ``effects`` resolved, words that named nothing in
+    sight (``unseen``), an ``improvised`` attempt told, and ``sceneTold``: the authored passages the engine tells as
+    written (a plan's or an object's failing-forward text first, a fight's results and ``onDefeat`` last)."""
+
+    facts: dict[str, Any] = {}
+    effects = effect_facts(applied, actor_id=actor_id)
+    if effects:
+        facts['effects'] = effects
+    if free_text is not None and free_text.kind == 'unseen':
+        facts['unseen'] = {'line': free_text.refusal, 'did': UNSEEN_DID}
+    improvised = _improvised_roll(turn, state_after)
+    if improvised:
+        facts['improvised'] = improvised
+    narration = dm_context.get('narration') if isinstance(dm_context.get('narration'), dict) else {}
+    opening = told_by_engine({'effects': effects})
+    # An object's failing-forward text follows the attempt; a fight's results and onDefeat come last.
+    closing = [*(fact['onFailText'] for fact in narration.get('objects') or [] if isinstance(fact, dict) and fact.get('onFailText')), *told_results(applied)]
+    if narration.get('fightEnds') and not told_results(applied):
+        closing.extend(foreseen_results(state_after, dm_context, actor_id=actor_id, turn_id=turn.turn_id, already_applied=applied))
+    if narration.get('partyDefeat'):
+        closing.extend(defeat_text(state_after))
+    if opening or closing:
+        facts['sceneTold'] = {'opening': opening, 'closing': closing}
+    return facts
+
+
+def _scene_skip_reason(pipeline: dict[str, Any]) -> str:
+    """Why the narration of a W9-SCENE turn is not read for state: the engine resolved the plan (``plan``), the
+    words named nothing in sight (``unseen``), or an improvised attempt changed nothing (``improvised``); ''."""
+
+    narration = ((pipeline.get('dmContextPacket') or {}).get('narration') or {}) if isinstance(pipeline.get('dmContextPacket'), dict) else {}
+    if narration.get('unseen'):
+        return 'unseen'
+    if narration.get('improvised'):
+        return 'improvised'
+    declared = ((pipeline.get('preDmExtraction') or {}).get('declaredActions') or []) if isinstance(pipeline.get('preDmExtraction'), dict) else []
+    applied = pipeline.get('immediateAppliedChanges') or []
+    if declared and all(isinstance(action, dict) and action.get('type') == PLAN_DECLARED for action in declared) and any(
+        isinstance(change, dict) and change.get('type') == PLAN_DECLARED for change in applied
+    ):
+        return 'plan'
+    return ''
+
+
 def pre_dm_pipeline(
     *,
     turn: DmTurn,
@@ -2217,13 +2429,22 @@ def pre_dm_pipeline(
                 helper_session_released = True
 
         # A conversation: the engine reads the words (asking the helper at most once, for a speech act) and holds it.
+        # Words that name nothing in sight, or a plan only the helper could place (W9-SCENE); the helper is asked once.
+        planned, plan_helper_asked = (None, False) if talk is not None else _plan_extraction(
+            state,
+            free_text=free_text,
+            actor_id=actor_id,
+            player_message=player_message,
+            action_intent=action_intent,
+            before_provider_call=_before_provider_call if before_helper_call else None,
+        )
         pre_extraction = talk_extraction(
             state,
             actor_id=actor_id,
             talk=talk,
             words=player_message,
             before_provider_call=_before_provider_call if before_helper_call else None,
-        ) if talk is not None else extract_pre_dm_actions(
+        ) if talk is not None else planned or extract_pre_dm_actions(
             current_state=compact_state_for_extraction(state),
             player_message=player_message,
             recent_timeline=recent_timeline,
@@ -2231,6 +2452,7 @@ def pre_dm_pipeline(
             action_intent=action_intent,
             free_text_intents=without_zone_moves(free_text.intents) if free_text is not None else None,
             force_helper=_turn_awaits_player_roll(turn),
+            helper_allowed=not plan_helper_asked,
             before_provider_call=_before_provider_call if before_helper_call else None,
         )
         if helper_session_released:
@@ -2285,6 +2507,13 @@ def pre_dm_pipeline(
         actor_id=actor_id,
         action_intent=action_intent,
         player_message=player_message,
+        turn_id=turn.turn_id,
+    )
+    state_after_immediate, applied_immediate, clock_note = _with_clocks(
+        state,
+        state_after_immediate,
+        applied_immediate,
+        actor_id=actor_id,
         turn_id=turn.turn_id,
     )
     immediate_combat = (
@@ -2550,7 +2779,7 @@ def pre_dm_pipeline(
         dm_context['dmInstructions'].append(
             'The hero speaks in the fight: it costs nothing and changes nothing. Answer in the scene in at most three sentences.'
         )
-    if free_text is not None and free_text.refusal:
+    if free_text is not None and free_text.refusal and free_text.kind != 'unseen':
         # Words that name nothing here change nothing; only the narrator says so.
         dm_context['invalidActions'].append(
             {'status': 'invalid', 'summary': player_message, 'type': 'scene.item.pickup', 'reason': free_text.refusal}
@@ -2584,6 +2813,29 @@ def pre_dm_pipeline(
             'The enemy turns resolved here put down every hero: after narrating them, tell that darkness '
             'takes the party and they wake later, alive but barely, with the enemies gone.'
         )
+    dm_context['narration'].update(
+        _scene_narration(
+            turn=turn,
+            state=state,
+            state_after=state_before_dm,
+            applied=[*applied_immediate, *applied_combat],
+            actor_id=actor_id,
+            free_text=free_text,
+            dm_context=dm_context,
+        )
+    )
+    director_mark = _with_director_note(
+        turn=turn,
+        session_obj=session_obj,
+        player_id=player.player_id,
+        state_before=state,
+        state_after=state_before_dm,
+        applied=[*applied_immediate, *applied_combat],
+        actor_id=actor_id,
+        dm_context=dm_context,
+        clock_note=clock_note,
+        declared_actions=pre_extraction.get('declaredActions') or [],
+    )
     dm_context['engineBrief'] = engine_brief(
         dm_context=dm_context,
         state_before=state,
@@ -2601,6 +2853,7 @@ def pre_dm_pipeline(
     )
     metadata = _metadata(turn)
     metadata[BEAT_BASIS_KEY] = beat_basis(state, actor_id=actor_id)
+    metadata[director.MARK_KEY] = director_mark
     if free_text is not None and free_text.intents:
         # The turn records the mapped intent, so it is handled exactly as the button's turn.
         metadata['action_intent'] = deepcopy(free_text.intents[0])
@@ -2657,8 +2910,8 @@ def pre_dm_pipeline(
 
 def _without_authored_text(dm_response_text: str, dm_context_packet: dict[str, Any]) -> str:
     """The narration without the pack's authored passages it was given to tell (an object's action
-    text and description, a fight's setup and adjustment lines), so wording such as "You strike the
-    bell" is never read as a new fight."""
+    text and description, a fight's setup and adjustment lines, the director's authored note), so wording
+    such as "You strike the bell" is never read as a new fight."""
 
     narration = dm_context_packet.get('narration') if isinstance(dm_context_packet.get('narration'), dict) else {}
     started = narration.get('fightStart') if isinstance(narration.get('fightStart'), dict) else {}
@@ -2671,6 +2924,7 @@ def _without_authored_text(dm_response_text: str, dm_context_packet: dict[str, A
         ),
         str(started.get('setup') or '').strip(),
         *(str(line or '').strip() for line in started.get('adjustments') or []),
+        *(director.told_by_engine(narration, place) for place in (director.OPENING, director.CLOSING)),
     ]
     text = str(dm_response_text or '')
     for passage in sorted({passage for passage in passages if passage}, key=len, reverse=True):
@@ -2906,6 +3160,9 @@ def post_dm_pipeline(
         elif talk_intent(metadata.get('action_intent')) is not None:
             # A conversation turn: the engine applied what the words did; the narration of it changes nothing.
             post_extraction = _skipped_post_extraction('conversation')
+        elif _scene_skip_reason(pipeline):
+            # A plan the engine resolved, words that named nothing in sight, an improvised attempt: nothing to read.
+            post_extraction = _skipped_post_extraction(_scene_skip_reason(pipeline))
         elif fight_speech(metadata.get('action_intent') if isinstance(metadata.get('action_intent'), dict) else None):
             # Words said in a fight change nothing, whatever the narration makes of them.
             post_extraction = _skipped_post_extraction('fight_speech')

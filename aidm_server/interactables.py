@@ -287,6 +287,8 @@ _NEVER_PUBLIC_FIELDS = frozenset(
         "choiceActions",
         "usableInCombat",
         "resolvesEncounter",
+        "onFail",
+        "affordances",
         FAILED_CHECK_ACTORS_KEY,
     }
 )
@@ -2231,7 +2233,13 @@ def _target_options(
                 target, collection, action, actor=actor, objects=objects, in_combat=in_combat
             )
             legality = chained or legality
-        retry = legality.get("code") == "check_already_attempted" and not in_combat
+        on_fail = target.get("onFail", {}).get(action) if isinstance(target.get("onFail"), dict) else None
+        # A failure that moved the story on (``onFail`` with ``noRetry``) is not tried again slowly.
+        retry = (
+            legality.get("code") == "check_already_attempted"
+            and not in_combat
+            and not (isinstance(on_fail, dict) and on_fail.get("noRetry") is True)
+        )
         entry: dict[str, Any] = {
             "action": action,
             "legal": legality["ok"] or retry,

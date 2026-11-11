@@ -31,7 +31,7 @@ from tests.helpers import seed_world_campaign_player_session
 
 POSTGRES_TEST_URI = str(os.getenv('AIDM_POSTGRES_TEST_URI') or '').strip()
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD_REVISION = '0031_authored_map_visibility'
+EXPECTED_HEAD_REVISION = '0032_adventure_records'
 pytestmark = pytest.mark.skipif(
     not POSTGRES_TEST_URI.startswith('postgresql+psycopg://'),
     reason='AIDM_POSTGRES_TEST_URI is required for PostgreSQL integration tests.',

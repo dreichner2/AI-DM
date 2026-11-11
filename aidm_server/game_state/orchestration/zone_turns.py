@@ -120,6 +120,11 @@ def _targets(state: Mapping[str, Any], intents: list[dict[str, Any]], free_text:
             target = _dict(intent.get('target'))
             if _text(target.get('kind')) == 'npc' and _text(target.get('npc_id')):
                 targets.append((npc_zone_id(state, target.get('npc_id')), _npc_name(state, target.get('npc_id')) or 'They'))
+        elif kind == 'plan':
+            # An effect or affordance aimed next door steps the hero in first, as an object action does.
+            from aidm_server.game_state.orchestration.scene_plans import plan_targets
+
+            targets.extend(plan_targets(state, _dict(intent.get('plan'))))
     return [(zone_id, subject) for zone_id, subject in targets if zone_id]
 
 

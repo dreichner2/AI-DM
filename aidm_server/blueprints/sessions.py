@@ -54,6 +54,9 @@ from aidm_server.services.session_lifecycle import (
     restore_session_record,
     session_playability_error,
 )
+from aidm_server.services.adventure_records import chronicle, owner_key
+from aidm_server.services.session_return import chapter_break_reached, coming_back, note_plan, plan_text, plans_for_view, remove_plan
+from aidm_server.services.session_state_mutation import mutate_session_snapshot_metadata
 from aidm_server.services.session_recovery import (
     OPERATOR_NOTE_MAX_LENGTH,
     TURN_RECOVERY_RESOLUTIONS,
@@ -1155,6 +1158,125 @@ def get_session_state(session_id):
             acting_player_id=projection.player_id,
         )
     )
+
+
+def _plan_player(session_obj: Session, player_id) -> tuple[int | None, tuple | None]:
+    """The hero a plan is noted for: one of the caller's own (any of the campaign's for an operator)."""
+
+    try:
+        projection = viewer_projection(
+            campaign_id=session_obj.campaign_id,
+            operator=_campaign_pack_operator_view(),
+            view='player',
+            player_id=player_id,
+            account_id=current_account_id(),
+        )
+    except ViewerProjectionError as exc:
+        return None, error_response(exc.error_code, exc.public_message, exc.status_code)
+    if projection.player_id is None:
+        return None, error_response('validation_error', 'player_id is required.', 400)
+    return projection.player_id, None
+
+
+def _plans_response(session_id: int, *, mutate) -> tuple:
+    """Change the session's plans under its turn lock; the plans as players see them."""
+
+    result = mutate_session_snapshot_metadata(session_id, mutate_snapshot=mutate, source='player.plans', change_type='session.plans')
+    if result.session_obj is None:
+        return error_response('session_not_found', 'Session not found.', 404)
+    return jsonify({'session_id': session_id, 'plans': plans_for_view(result.state), **result.metadata})
+
+
+@sessions_bp.route('/<int:session_id>/plans', methods=['POST'])
+def add_session_plan(session_id):
+    """Note a plan (``/plan`` in the action box, or ``Note a plan``)."""
+
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    unplayable = _playability_response(session_obj)
+    if unplayable:
+        return unplayable
+    payload = parse_json_body(request)
+    if payload is None:
+        return error_response('validation_error', 'Expected JSON request body.', 400)
+    if not plan_text(payload.get('text')):
+        return error_response('validation_error', 'A plan needs words.', 400)
+    player_id, refused = _plan_player(session_obj, payload.get('player_id'))
+    if refused:
+        return refused
+
+    def note(_session_obj: Session, state: dict) -> dict:
+        plan = note_plan(state, payload.get('text'), player_id=player_id, source='player', now=utc_now())
+        return {'plan': {key: plan[key] for key in ('id', 'text')}} if plan else {}
+
+    return _plans_response(session_id, mutate=note)
+
+
+@sessions_bp.route('/<int:session_id>/plans/<plan_id>', methods=['DELETE'])
+def remove_session_plan(session_id, plan_id):
+    """A plan's ``Done``: it leaves the list."""
+
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    unplayable = _playability_response(session_obj)
+    if unplayable:
+        return unplayable
+    return _plans_response(session_id, mutate=lambda _session_obj, state: {'removed': remove_plan(state, plan_id)})
+
+
+@sessions_bp.route('/<int:session_id>/next-chapter', methods=['POST'])
+def begin_next_chapter(session_id):
+    """After a chapter break, the next action begins the next chapter: any player at the table may start it, once
+    (a second request replays the first)."""
+
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    if not chapter_break_reached(session_id):
+        return error_response('no_chapter_break', 'This chapter has not reached its end.', 409)
+    try:
+        result = start_campaign_chapter(
+            session_obj.campaign_id,
+            workspace_id=current_workspace_id(),
+            continuity=CHAPTER_CONTINUE,
+            client_session_id=f'chapter-break-{session_id}',
+        )
+    except ChapterStartError as exc:
+        db.session.rollback()
+        return error_response(exc.error_code, exc.public_message, exc.status_code, exc.details or None)
+    started = db.session.get(Session, result.session_id)
+    return jsonify(session_start_payload(started, idempotent_replay=result.idempotent_replay)), 200 if result.idempotent_replay else 201
+
+
+@sessions_bp.route('/<int:session_id>/coming-back', methods=['GET'])
+def get_session_coming_back(session_id):
+    """The coming-back block for the viewer (``player_id``); ``comingBack`` is null within thirty minutes of the
+    last turn."""
+
+    session_obj = workspace_session(session_id)
+    if not session_obj:
+        return error_response('session_not_found', 'Session not found.', 404)
+    projection, projection_error = _viewer_projection(session_obj)
+    if projection_error:
+        return projection_error
+    state = safe_json_loads(session_obj.state_snapshot, {})
+    block = coming_back(
+        session_id,
+        state if isinstance(state, dict) else {},
+        player_ids=sorted(_viewer_player_ids(session_obj, projection)),
+        now=utc_now(),
+    )
+    return jsonify({'session_id': session_id, 'comingBack': block})
+
+
+@sessions_bp.route('/chronicle', methods=['GET'])
+def get_chronicle():
+    """``Your chronicle``: the finished adventures of the signed-in account, else of this workspace."""
+
+    key = owner_key(account_id=current_account_id(), workspace_id=current_workspace_id())
+    return jsonify({'adventures': chronicle([key])})
 
 
 @sessions_bp.route('/<int:session_id>/content-settings', methods=['GET'])

@@ -335,6 +335,7 @@ def normalize_declared_action(raw_action: Any, *, fallback_actor_id: str, fallba
         'targetId',
         'target_id',
         'summary',
+        'scenePlan',
     ):
         if key in raw_action:
             camel = ''.join([key.split('_')[0], *[part[:1].upper() + part[1:] for part in key.split('_')[1:]]])
@@ -404,6 +405,8 @@ def _declared_action_has_required_fields(action: dict[str, Any]) -> bool:
         return bool(str(action.get('weaponName') or '').strip())
     if action_type == 'generic.intent':
         return bool(str(action.get('summary') or action.get('sourceText') or '').strip())
+    if action_type == 'scene.effect':
+        return isinstance(action.get('scenePlan'), dict) and bool(action['scenePlan'])
     return action_type == 'inspiration.take_heart'
 
 

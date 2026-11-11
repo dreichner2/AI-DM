@@ -284,7 +284,7 @@ export function GameplayControls({ state, disabled, onSubmit }: GameplayControls
                       disabled={busy || !object.available || !action.available}
                       title={object.reason || action.reason || undefined}
                       onClick={() => {
-                        const { message, intent } = objectActionSubmission(state.actorName, object, action)
+                        const { message, intent } = objectActionSubmission(state.actorName, object, action, state.inCombat)
                         onSubmit(message, intent)
                       }}
                     >

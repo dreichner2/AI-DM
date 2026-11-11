@@ -81,6 +81,25 @@ All notable AIDM closed-beta changes should be recorded here.
   ledger, a line in the ending), and acting on them earns Inspiration, spent as
   "Take heart" for advantage on the next roll.
 - A hero from one adventure can be brought into another ("Play as …").
+- Plans change the scene. Blocking a way, causing a distraction, lighting
+  something up, hiding a thing, cutting something loose, breaking it, shielding
+  someone, pinning an enemy under something or snatching an item works on any
+  suitable object, typed or clicked, and leaves a lasting fact about the place
+  ("The yard gate is barred."). Packs can author such moves for a scene.
+- Fights can be about something: an item the enemy means to carry off, a
+  witness they mean to silence, a way out that can be shut. What became of each
+  decides what follows, and losing such a fight changes the situation instead
+  of resetting it. Encounters can set a floor on enemies and their hit points.
+- Typing an action on something not yet found looks for it where it is, or says
+  it is not in sight; an improvised attempt is told as what the hero tried and
+  never invents a find. Every check, in a conversation too, is a roll card.
+- Pacing follows causes: a place's clock moves only when something the players
+  did moves it, an earlier act can come back, and a stuck table is told plainly
+  what is in reach. Chapters end where the story does, with what you decided
+  and what is still open. Players can note their own plans (`/plan`), and coming
+  back shows where you stand and what you meant to do.
+- The ending says what became of the people you met and of your word; finished
+  adventures are listed under "Your chronicle".
 - Two players never block each other: adventures the engine runs hold no
   spotlight or queue, a hero who joins between turns is seen by everyone at
   once, and any refused action says why above the action box.

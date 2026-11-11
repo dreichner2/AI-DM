@@ -378,6 +378,10 @@ def hero_turn_changes(
     if _mercy(applied, action_intent, finisher or {}):
         earned.append((actor_id, MERCY_REASON))
     earned.extend((actor_id, reason) for reason in _inspiring_reasons(state_before, applied, actor_id))
+    # W9-SCENE: another hero's plan this hero's success relied on, in the same round.
+    from aidm_server.game_state.orchestration.scene_plans import teamwork_reasons
+
+    earned.extend(teamwork_reasons(state_before, state, applied, actor_id))
     grants: dict[str, dict[str, Any]] = {}
     for hero_id, reason in earned:
         if hero_id not in grants and (grant := grant_inspiration(state, hero_id, reason, turn_id=turn_id)):

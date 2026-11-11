@@ -7,6 +7,7 @@ import {
   type CombatLegalActionBundle,
   type CombatLegalTarget,
   type CombatParticipantSummary,
+  type CombatStake,
   type CombatStatePanel,
 } from '../gameSelectors'
 import type {
@@ -30,6 +31,8 @@ const MAX_ATTACKS = 2
 const MAX_SPELLS = 2
 const MAX_ABILITIES = 3
 const MAX_STORY_OBJECT_ACTIONS = 2
+/** Authored plans (shut the gate, slap the horse) the server suggests; the rest wait under More…. */
+const MAX_PLANS = 2
 /** Features used only at rest (Arcane Recovery) never appear on the ribbon. */
 const REST_ONLY_EFFECTS = new Set(['restore_slots'])
 const SPELL_COSTS: Record<string, string> = { action: 'A', bonus_action: 'B', reaction: 'R' }
@@ -40,6 +43,32 @@ const MANEUVER_GLYPHS: ReadonlyArray<[string, LucideIcon]> = [
   ['subdue', Hand],
   ['demand_surrender', MessageCircle],
 ]
+
+/**
+ * `AT STAKE — the road-stone fragment (the cutthroat has it) · Tovin Bell (safe)`: what the fight is about, one quiet
+ * line; a stake whose state changed with this turn is in the accent until the next turn.
+ */
+function AtStake({ stakes, turn }: { stakes: CombatStake[]; turn: string }) {
+  const states = Object.fromEntries(stakes.map((stake) => [stake.id, stake.state]))
+  const key = JSON.stringify(states)
+  const [seen, setSeen] = useState({ key, turn, states, changed: [] as string[] })
+  if (seen.key !== key || seen.turn !== turn) {
+    const changed = stakes.filter((stake) => stake.id in seen.states && seen.states[stake.id] !== stake.state).map((stake) => stake.id)
+    setSeen({ key, turn, states, changed })
+  }
+  return (
+    <p className="story-ribbon-stakes">
+      <span className="story-label">At stake</span>
+      {' — '}
+      {stakes.map((stake, index) => (
+        <Fragment key={stake.id}>
+          {index ? ' · ' : ''}
+          <span data-changed={seen.changed.includes(stake.id) || undefined}>{`${stake.name} (${stake.words})`}</span>
+        </Fragment>
+      ))}
+    </p>
+  )
+}
 
 /** Where the action tray opens from the ribbon: Magic (at one spell) or the full Combat list. */
 export type RibbonTraySection = 'magic' | 'combat'
@@ -335,7 +364,8 @@ export function StoryCombatRibbon({
     .slice(0, MAX_SPELLS)
   const storyActions = controls.interactables
     .filter((object) => object.offered && object.available)
-    .flatMap((object) => object.actions.filter((action) => action.authored && action.available).map((action) => ({ object, action })))
+    // A plan is offered among the fight's own actions (`plan.<object>.<affordance>`).
+    .flatMap((object) => object.actions.filter((action) => action.authored && action.available && action.id !== 'plan').map((action) => ({ object, action })))
     .slice(0, MAX_STORY_OBJECT_ACTIONS)
   const actionChoice = (action: CombatLegalAction): RibbonChoice => ({
     kind: 'action',
@@ -374,6 +404,7 @@ export function StoryCombatRibbon({
       object,
       action,
     })),
+    ...legal.filter((action) => action.type === 'plan' && action.suggested).slice(0, MAX_PLANS).map(actionChoice),
     ...MANEUVER_GLYPHS.flatMap(([type, glyph]) => firstOfType(type).map((action) => maneuverChoice(action, glyph))),
     ...firstOfType('advance').map(actionChoice),
     ...firstOfType('reposition').map(actionChoice),
@@ -483,6 +514,7 @@ export function StoryCombatRibbon({
 
   return (
     <section className="story-ribbon" aria-label={`Combat, round ${bundle.round}`}>
+      {combat.stakes ? <AtStake stakes={combat.stakes} turn={`${bundle.round}:${actingId}`} /> : null}
       <div ref={rosterRef} className="story-ribbon-roster story-scroll-row">
         <span className="story-label story-ribbon-round">Round {bundle.round}</span>
         <ul className="story-combatants" aria-label="Combatants">

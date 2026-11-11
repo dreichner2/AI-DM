@@ -783,13 +783,16 @@ def free_text_action(
         for clause in clauses
         for start, end, entity in _spans(clause.words, everything, _entity_name)
     ]
+    hidden = _hidden_named(state, actor_id=actor_id, message=message, scene=scene)
+    if hidden is not None:
+        return hidden
     mapped = [
         result
         for clause in clauses
         if clause.sentence < MAX_SENTENCES and (result := _map_clause(clause, scene, message)) is not None
     ]
     if not mapped:
-        return None
+        return _planned(state, actor_id=actor_id, message=message)
     first, later = mapped[0], mapped[1:]
     taken = {label['label'] for label in first.labels}
     deferred: list[dict[str, str]] = []
@@ -809,20 +812,52 @@ def free_text_action(
     )
 
 
+def _hidden_named(state: Mapping[str, Any], *, actor_id: str, message: str, scene: _Scene) -> FreeTextAction | None:
+    """Words naming a thing still hidden, read before anything else (W9-SCENE amendment 5): the offered action whose
+    authored ``reveals`` link uncovers it is performed, else the thing is seen to be absent; None when none is named."""
+
+    from aidm_server.game_state.orchestration.scene_plans import hidden_named, reveal_action, unseen_line
+
+    hidden = hidden_named(state, actor_id, message)
+    if hidden is None:
+        return None
+    reveal = reveal_action(state, actor_id, hidden['object'])
+    pair = next((pair for pair in scene.objects if reveal and pair[0].get('id') == reveal['object'].get('id')), None)
+    if pair is not None:
+        mapped = _object_action(pair[0], pair[1], reveal['action'], message)
+        if mapped is not None:
+            return mapped.action
+    heroes = [hero for hero in state.get('playerCharacters') or [] if isinstance(hero, Mapping)]
+    hero = _text(_hero(state, actor_id).get('name')) if len(heroes) > 1 else ''
+    return FreeTextAction(kind='unseen', refusal=unseen_line(hidden['typed'], hero=hero))
+
+
+def _planned(state: Mapping[str, Any], *, actor_id: str, message: str) -> FreeTextAction | None:
+    """Words no offered action took that name a plan (:mod:`aidm_server.game_state.orchestration.scene_plans`)."""
+
+    from aidm_server.game_state.orchestration.scene_plans import plan_from_words, plan_intent
+
+    found = plan_from_words(state, actor_id=actor_id, message=message)
+    if found is None or 'plan' not in found:
+        return None
+    return FreeTextAction(kind='plan', intents=(plan_intent(state, found['plan'], message=message, source='free_text'),))
+
+
 @dataclass(frozen=True)
 class FightWords:
     """How typed words are taken on a fight turn.
 
     ``kind`` is ``speech`` (free: nothing is spent and the turn goes on), ``look`` (free like speech; the
     narrator tells where everyone stands), ``action`` (``action_id`` and ``target_id`` of a listed fight
-    action), ``improvised`` (``action_id`` is the improvised action, ``target_id`` the enemy named or the
-    only one) or ``refused`` (with ``refusal``).
+    action), ``plan`` (``plan``: what the words name, W9-SCENE), ``improvised`` (``action_id`` is the improvised
+    action, ``target_id`` the enemy named or the only one) or ``refused`` (with ``refusal``).
     """
 
     kind: str
     action_id: str | None = None
     target_id: str | None = None
     refusal: str | None = None
+    plan: dict[str, Any] | None = None
 
 
 def _unquoted_words(message: str) -> list[str]:
@@ -935,6 +970,16 @@ def _aims_at_a_thing(words: list[str], targets: list[dict[str, Any]]) -> bool:
     return bool(rest) and rest[0] in OBJECT_TARGET_WORDS
 
 
+def _names_a_scene_thing(state: Mapping[str, Any], words: list[str], standing: list[dict[str, Any]], *, actor_id: str) -> bool:
+    """The words after a fight verb name a scene object or item in reach, and no enemy."""
+
+    from aidm_server.game_state.orchestration.scene_plans import named_things
+
+    named = named_things(state, words, actor_id=actor_id)
+    enemy_ids = {_text(enemy.get('id')) for enemy in standing}
+    return bool(named) and all(thing['kind'] in {'object', 'item'} and thing['id'] not in enemy_ids for thing in named)
+
+
 def _attack_action(actions: list[dict[str, Any]], verb: str, target: dict[str, Any] | None) -> dict[str, Any] | None:
     attacks = [action for action in actions if _text(action.get('type')) == 'attack' and action.get('offhand') is not True]
     if RANGED_ATTACK_VERBS.match(verb):
@@ -984,6 +1029,9 @@ def fight_words(
         if joined is not None:
             mapped = [(joined[0], joined[1] or mapped[0][1], joined[2])]
     for action_type, words, verb in mapped:
+        if _names_a_scene_thing(state, words, standing, actor_id=_text(bundle.get('actorId'))):
+            # "Grab the fragment", "cut the rope": a fight verb aimed at a thing is a plan, not a manoeuvre.
+            continue
         if action_type == 'attack':
             enemies = [{'id': _text(enemy.get('id')), 'name': _text(enemy.get('name'))} for enemy in standing]
             if _aims_at_a_thing(words, enemies):
@@ -1004,6 +1052,14 @@ def fight_words(
         if not action.get('available'):
             return FightWords('refused', refusal=_text(action.get('reason')) or 'That is not available now.')
         return FightWords('action', action_id=_text(action.get('id')), target_id=_text((target or {}).get('id')) or None)
+    from aidm_server.game_state.orchestration.scene_plans import plan_from_words, unseen_line
+
+    found = plan_from_words(state, actor_id=_text(bundle.get('actorId')), message=message)
+    if found is not None and 'hidden' in found:
+        heroes = [hero for hero in state.get('playerCharacters') or [] if isinstance(hero, Mapping)]
+        return FightWords('refused', refusal=unseen_line(found['hidden']['typed'], hero=hero_name if len(heroes) > 1 else ''))
+    if found is not None:
+        return FightWords('plan', plan=found['plan'])
     free = _free_fight_words(message, hero_name=hero_name)
     if free:
         return FightWords(free)

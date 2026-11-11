@@ -141,7 +141,10 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
     assert _story_beats(plain) == [{'kind': 'hint', 'text': HINT_TEXT}]
     assert _latest_turn(app, ids['session_id'])['roll_gate'] is None
     again = _send(socket_client, ids, 'I wait by the wagons.', client_message_id='turn-2b')
-    assert _payload(again, 'dm_response_end')['text'] in NOTHING_LINES
+    # A second message that reaches nothing: the director names two things on offer (W8-DIRECTOR-RETURN).
+    nothing, clarify = _payload(again, 'dm_response_end')['text'].split('\n\n')
+    assert nothing in NOTHING_LINES
+    assert clarify == 'The Caravan Ledger is still unexamined, and Tovin has not been spoken to.'
     assert _story_beats(again) == []
 
     sneak = _send(socket_client, ids, 'I sneak around behind the last wagon.', client_message_id='turn-3')

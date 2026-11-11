@@ -654,3 +654,15 @@ def test_a_spotlight_left_by_an_older_build_is_cleared_on_the_next_action(party)
     assert _errors(party.act('Seren Ashgrove', 'inn_caravan_ledger', 'inspect')) == []
     with party.app.app_context():
         assert turn_control_from_session(db.session.get(Session, party.ids['session_id']))['mode'] == 'free'
+
+
+def test_naming_the_hidden_strongbox_searches_the_wagon_that_hides_it(solo):
+    """The Play Now pack writes ``reveals`` as a plain list (what a search uncovers). Typed words naming the
+    still-hidden strongbox search the lead wagon, instead of asking for a roll about a thing nobody has seen."""
+
+    assert _errors(solo.send('Arden Vale', 'I search the wagon strongbox.')) == []
+
+    told = solo.last()
+    assert [change.get('targetId') for change in told['pipeline']['immediateAppliedChanges'] if change.get('type') == 'scene.interactable.action'] == ['inn_lead_wagon']
+    strongbox = next(entry for entry in solo.snapshot()['currentScene']['interactables'] if entry['id'] == 'inn_wagon_strongbox')
+    assert strongbox.get('hidden') is False

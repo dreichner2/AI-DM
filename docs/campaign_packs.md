@@ -234,16 +234,17 @@ consumer.
 | npc | `personality`, `motivation`, `knows`, `secret`, `useInPlay`, `ifSkipped`, `gmNotes`, `trueName` | stored |
 | npc | `greeting`, `topics`, `reacts`, `callbacks`, `caresAbout`, `wants`, `believes` (see People You Can Talk To) | mechanical (a line reaches players only when told) |
 | scene object | `affects` (see People You Can Talk To) | mechanical |
+| scene object | `tags`, `affordances`, `guards`, `onFail` (see Plans and Stakes) | mechanical |
 | quest | `id`, `title`, `status`, `objectives`, `completionPolicy`, `failOnObjectiveFailure`, `rewards`, `xpReward`, `rewardActorId`, `onComplete`, `onFail`, `visibleAtStart` | mechanical |
 | quest | `summary`, `stage` | prompt, player |
 | quest | `playerSummary`, `description` | player |
 | objective | `id`, `status`, `optional`, `prerequisiteObjectiveIds`, `completeWhen`, `failWhen` | mechanical |
 | objective | `description` | prompt, player |
-| encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds`, `trigger`, `once`, `when`, `unless`, `scaling`, `adjustments`, `allowParley`, `lethalDefeat` | mechanical |
+| encounter | `id`, `enemyIds`, `enemyGroups`, `completion`, `rewards`, `partyAllocation`, `outcomes`, `outcomeRewards`, `outcomeConsequences`, `questEvents`, `on*` hooks, `questIds`, `trigger`, `once`, `when`, `unless`, `scaling`, `adjustments`, `allowParley`, `lethalDefeat`, `stakes`, `enemyGoal`, `secondaryGoal`, `results`, `onDefeat`, `minEnemies` | mechanical |
 | encounter | `title`, `summary`/`description`, `locationIds`, `checkpointIds` | prompt |
 | encounter | `setup` (read aloud when its fight starts, by either narrator) | mechanical, prompt |
 | encounter | `zoneId` (where its fight happens), `enemyGroups[].startBand` (`melee`, `near` or `far`; default `near`) | mechanical, prompt, player |
-| encounter | `stakes`, `gmNotes`, `difficulty`, `tags` | stored |
+| encounter | `gmNotes`, `difficulty`, `tags`, `stakes` as a string (an operator's note) | stored |
 | enemy | creature fields (`stats`, `abilities`, `behavior`, ...), `xpReward` | mechanical |
 | enemy | `challengeTier: "boss"` (never yields or retreats above a quarter of its HP) | mechanical |
 | enemy | `singularName`, `proper`, `pronoun` (how one of them is named and referred to in narration) | mechanical |
@@ -676,6 +677,18 @@ authored hit points and damage whatever the party size:
 {"id": "enc_champion_duel", "enemyGroups": [{"enemyId": "enemy_champion", "count": 1}], "scaling": false}
 ```
 
+Floors keep a small party's fight worth having: `minEnemies` (1–6) on the
+encounter means the scaled encounter never has fewer enemies (the first group
+regains them), and `minHp` on a group means none of its enemies has less maximum
+HP after scaling. Both apply after scaling and adjustments, to a party under
+four, and are recorded as `partyScaling.floors`. An encounter with a
+`take_and_flee` goal and no floors gets defaults (Plans and Stakes, below).
+
+```json
+{"id": "enc_yard_theft", "minEnemies": 2,
+ "enemyGroups": [{"enemyId": "enemy_cutthroat", "count": 2, "minHp": 14}]}
+```
+
 ### What the party knows adjusts the fight
 
 `adjustments` apply when the encounter's combat is created, before party
@@ -902,6 +915,97 @@ bring one back once: `{"id", "when": {"remembers", "flags"?, "on": "arrival" |
 "offers"?}` fires while the person is known and present, its `text` opening the
 narration. `topics`, `reacts`, `callbacks`, `caresAbout`, `wants` and `believes`
 never reach a player view; a topic's line does only once told.
+
+## Pressure, Chapters and Endings
+
+**The director note.** Each turn that is not wholly inside a fight carries at most
+one note, the first of: a person's callback that fired (its `text`, the reply's
+opening paragraph); a clock step (its `text`, the reply's last paragraph); a
+request for clarity, after the same hero's message and the one before it were both
+refused or reached nothing; a nudge, after four turns at the place with no beat
+but hints; a breath, after a turn that won a fight, uncovered a secret, made or
+kept a promise or brought a callback. Authored text — a callback, a clock step, a
+nudge — is told as written by the engine with any narrator; a narrating model is
+told it under `Already told this turn` and narrates the rest. The clarify and
+breathe notes reach a model as `Director — clarify: …` and `Director — breathe:
+…`; the scripted narrator ends a clarify turn with one sentence naming two things
+on offer (`The Caravan Ledger is still unexamined, and Tovin has not been spoken
+to.`) and adds nothing to a breath.
+
+**Clocks** give pressure a cause. Locations and encounters may carry `clocks`:
+
+```json
+{"id": "clock_hedge_watchers",
+ "startWhen": {"flags": {"yard_searched": true}},
+ "advanceOn": {"flags": ["ledger_read", "bench_key_found"], "objectActions": ["inn_wagon_strongbox:search"],
+               "everyTurnsAfterStart": 8},
+ "steps": [{"text": "Out past the hedge a horse stamps, where no horse should be standing."},
+           {"text": "They are done waiting.", "effects": {"startsEncounterId": "enc_empty_caravan_pressure"}}]}
+```
+
+The clocks of the place the party is at are live: the location's, and those of
+its encounters that have not begun. A clock starts once `startWhen` holds
+(`flags`, `encounterResolvedIds`; at once without it) or an affordance starts it
+(`startsClockId`). It then gathers causes: each listed flag the first time it is
+set, each listed `objectId:action` the first time it succeeds, and every
+`everyTurnsAfterStart` turns taken there outside a fight since it started or last
+moved. On a turn outside a fight with no callback, the first live clock with a
+cause moves one step and its `effects` apply: `setsFlags`,
+`discoversLocationIds`, `startsEncounterId` (started as a triggered encounter
+starts, unless it has begun) and `affects`. A cause left over waits for the next
+such turn, so every step is told once; a clock never moves without a cause.
+
+**Nudges.** A scene object, an affordance or a topic may carry `nudge`, one line
+pointing at it (`"Tovin keeps glancing at the stable."`). After four turns in a
+row at the place with no beat but hints, the first unused nudge of an untouched
+visible object (then its affordances), else of an available topic of someone
+present, is told once.
+
+**Chapter ends.** A checkpoint with `"chapterBreak": true` ends the chapter when it
+completes. The story gains the entry `END OF CHAPTER 1 · {its playerTitle}`, then
+`WHAT YOU DECIDED` — each of its `decisionLines` whose `when` holds, at most five —
+then `STILL OPEN` (promises left open, leads not followed, the players' plans)
+and its `teaser`. The entry is kept in the log; the next action, once no fight or
+roll holds the chapter, begins the next chapter. A chapter started by hand adds no
+entry.
+
+```json
+{"id": "cp_01_empty_caravan", "playerTitle": "The Empty Caravan", "chapterBreak": true,
+ "teaser": "Next: the old north road, where the lights are waiting.",
+ "decisionLines": [
+   {"when": {"flags": {"promised_mara_word": true}}, "text": "You gave Mara Reedwake your word."},
+   {"when": {"remembers": {"npcId": "npc_osric_hale", "key": "claimed_authority"}}, "text": "You claimed an authority you do not hold."},
+   {"when": {"stakes": {"enc_empty_caravan_pressure.fragment": "taken"}}, "text": "The fragment went north without you."}]}
+```
+
+A decision line's `when` may test `flags`, `stakes` (the final state of a stake
+of a finished fight) and `remembers` (`{"npcId", "key"}` or a list of them); a
+line without `when` always holds.
+
+**The end of an adventure.** The ending card tells `WHAT BECAME OF THEM`: for each
+person the party met, in the pack's order and at most six, the first of their
+`epilogues` whose `when` holds (`flags`, `dispositionAtLeast`, `companion: true`
+while they walk with the party; an entry without `when` is the default, one
+without `text` gives no line). Then `YOUR WORD`: each promise as it stood — `kept`
+only by its keeping act, `broken` by its breaking act or when its `brokenWhen`
+flags hold, else left open — read in the promise's own words:
+
+```json
+"effects": {"promise": {"id": "promised_mara_word",
+                        "keptText": "You kept your word to Mara Reedwake.",
+                        "brokenText": "You never did bring Mara Reedwake word.",
+                        "openText": "Mara Reedwake is still waiting for word."}}
+```
+
+**Records.** Reaching an ending writes the adventure into the record of every
+account at the table (or of the local workspace with sign-in off): the endings
+reached and the secrets found. Secrets are every scene object that starts hidden,
+every topic with a `check` or a `requires.dispositionAtLeast`, every tie line and
+every clue marked `"secret": true`. The title screen's `Your chronicle` lists the
+finished adventures with their endings and `Things you never found: n`.
+
+`clocks`, `nudge`, `decisionLines`, `epilogues` and the promise lines never
+reach a player view before they are told.
 
 ## Rooms and Areas
 
@@ -1197,6 +1301,101 @@ Campaign packs can now drive mystery, faction, map, handout, and lore state thro
 - `lore.unlock`
 
 Pack-authored records are materialized from `campaignPack.catalog`; non-pack additions are tagged as emergent or blocked according to the active director rules.
+
+## Plans and Stakes
+
+Plans let the heroes change a scene in ways that last; stakes make a fight about
+something they can win or lose besides hit points (`docs/gameplay_systems.md`,
+Plans and Stakes, for what the engine does with them).
+
+**Scene object fields.**
+
+- `tags`: any of `exit`, `barrier`, `light`, `fire`, `cover`, `heavy`,
+  `fragile`, `rope`, `animal`, `crowd`, `vehicle`, `container`, `noise`,
+  `high_ground`. A tagged object in reach can be used for the effects the
+  engine's table allows (`obstruct` a barrier, `destroy` a light, `conceal` in
+  cover, `distract` with an animal, …) without authoring anything else.
+- `affordances`: authored plans on the object, offered with its actions (at most
+  two suggested at a time) and chosen by typed words holding one of their
+  `keywords` and the object's name or a second keyword. Fields: `id`, `effect`
+  (one of `obstruct`, `distract`, `expose`, `conceal`, `separate`, `restrain`,
+  `destroy`, `protect`, `take`), `label`, `keywords`, `check` (`{"skill", "dc"}`,
+  engine-rolled; none means it simply works), `cost` (`action`, `bonus_action`,
+  `free`), `inFight` / `outsideFight` (both default true), `once`, `requires`
+  (`{"flags": {}}`), `target` (`enemy`, `zone` or `stake:<id>`), `inspires` (an
+  Inspiration reason), `result` (`fact`, `text`, `setsFlags`, `stakes`,
+  `conditions`, `affects`, `startsClockId`: recorded under `clocksStarted`),
+  `failResult` (`text`, `fact`) and `onFail`. `text` is told as written by the
+  engine with any narrator.
+- `guards`: the id of the object whose way this one blocks when obstructed.
+- `onFail`: by action (`{"search": {…}}`), what a failed check does instead of
+  coming up empty: `text`, `reveals`, `setsFlags`, `affects`,
+  `startsEncounterId`, `fact`, and `noRetry: true` to withhold the take-your-time
+  retry.
+
+**Encounter fields.**
+
+- `stakes`: `{"id", "name", "kind": "item" | "person" | "route"}` with `itemId`,
+  `npcId` or `objectId`; a stake may carry a `when` flag test.
+- `enemyGoal`: `{"type": "take_and_flee", "stakeId": "<item stake>",
+  "routeStakeId": "<route stake>"}`; `secondaryGoal`: `{"type": "silence",
+  "stakeId": "<person stake>"}`.
+- `results`: applied in order when the fight ends; `when` may test `stakes`
+  (final states), `end` (the end reasons, `enemy_goal_met` and `defeat`
+  included), `flags` and `captives: true|false`; each may set flags, add a scene
+  `fact`, change dispositions (`affects`), add a `lead` and tell a `text`.
+- `onDefeat`: `{"wakeZoneId", "text", "setsFlags", "stakes"}` replaces the
+  defeat re-arm; the encounter does not happen again.
+- `outcomeRewards.flee` (or `outcomes.flee.rewards`, `onFlee`): what an
+  `enemy_goal_met` ending pays; without it the party gets half the encounter's
+  XP.
+- `minEnemies`, `enemyGroups[].minHp`: floors (Encounters fit the party). With
+  `take_and_flee` and no floors the defaults are two enemies when there is a
+  `silence` goal (else one) and a runner of at least 16 HP for two or three
+  heroes, 12 for one.
+
+The linter errors on an unknown tag or effect, a stake id no encounter
+declares, a goal naming a stake of the wrong kind, a `when` state the stake kind
+does not have, an unknown person, item, object or wake zone, and a floor out of
+range.
+
+### Worked example
+
+A coaching yard: barring the gate keeps the runner in; snuffing the lantern and
+hiding the fragment in the crate keeps it from him in the dark. Each plan leaves
+a different fact, flag, lead and stake behind.
+
+```json
+{"interactables": [
+   {"id": "yard_gate", "name": "Yard Gate", "kind": "object", "tags": ["barrier", "exit"], "zoneId": "yard",
+    "affordances": [{"id": "bar_gate", "effect": "obstruct", "label": "Shut and bar the yard gate",
+                     "keywords": ["gate", "bar", "shut", "close"], "check": {"skill": "athletics", "dc": 10},
+                     "once": true,
+                     "result": {"fact": "The yard gate is barred.", "stakes": {"way_out": "blocked"}},
+                     "failResult": {"text": "The bar jumps out of its brackets and lands in the mud."}}]},
+   {"id": "yard_lantern", "name": "Yard Lantern", "kind": "object", "tags": ["light", "fragile"], "zoneId": "yard"},
+   {"id": "feed_crate", "name": "Feed Crate", "kind": "object", "tags": ["cover", "container"], "zoneId": "yard"},
+   {"id": "rain_barrel", "name": "Rain Barrel", "kind": "container", "zoneId": "yard",
+    "onFail": {"search": {"text": "Cold water to the elbow, and a drowned glove that is not yours."}}}],
+ "encounters": [{
+   "id": "enc_yard_theft", "locationIds": ["loc_yard"], "zoneId": "yard",
+   "enemyGroups": [{"enemyId": "enemy_cutthroat", "count": 2, "startBand": "near"}],
+   "stakes": [{"id": "fragment", "name": "the road-stone fragment", "kind": "item", "itemId": "road_stone_fragment"},
+              {"id": "witness", "name": "Wenna Pike", "kind": "person", "npcId": "npc_wenna"},
+              {"id": "way_out", "name": "the yard gate", "kind": "route", "objectId": "yard_gate"}],
+   "enemyGoal": {"type": "take_and_flee", "stakeId": "fragment", "routeStakeId": "way_out"},
+   "secondaryGoal": {"type": "silence", "stakeId": "witness"},
+   "results": [
+     {"when": {"stakes": {"fragment": "secured"}, "captives": true}, "setsFlags": {"cutthroat_taken": true},
+      "lead": "The bound cutthroat names a buyer at the mill."},
+     {"when": {"stakes": {"fragment": "secured"}, "captives": false}, "setsFlags": {"fragment_kept_in_the_dark": true},
+      "fact": "Mud and blood mark where the cutthroats fell.", "lead": "Whoever sent them will come again by daylight."},
+     {"when": {"stakes": {"fragment": "taken"}}, "setsFlags": {"fragment_lost": true},
+      "lead": "The fragment went north with the cutthroat.", "text": "Hoofbeats fade up the lane."}],
+   "onDefeat": {"wakeZoneId": "stable", "text": "You wake in the straw of the stable. The wagon stands open and empty.",
+                "stakes": {"fragment": "taken"}},
+   "rewards": {"xp": 100}}]}
+```
 
 ## Merchants
 

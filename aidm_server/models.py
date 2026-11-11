@@ -931,6 +931,26 @@ class SessionState(db.Model):
     )
 
 
+class AdventureRecord(db.Model):
+    """What one account (or, with sign-in off, one local workspace) has done with one pack, kept across adventures:
+    the endings reached, the secrets found and how often it was finished (:mod:`aidm_server.services.adventure_records`)."""
+
+    __tablename__ = 'adventure_records'
+    __table_args__ = (db.UniqueConstraint('owner_key', 'pack_id', name='uq_adventure_records_owner_pack'),)
+
+    record_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    owner_key = db.Column(db.String(120), nullable=False, index=True)
+    pack_id = db.Column(db.String(120), nullable=False)
+    pack_title = db.Column(db.String(160), nullable=False, default='', server_default='')
+    endings_json = db.Column(db.Text, nullable=False, default='[]', server_default='[]')
+    secrets_found_json = db.Column(db.Text, nullable=False, default='[]', server_default='[]')
+    secrets_total = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    completions_json = db.Column(db.Text, nullable=False, default='[]', server_default='[]')
+    times_completed = db.Column(db.Integer, nullable=False, default=0, server_default='0')
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
+
+
 def safe_json_loads(raw_value, default):
     if raw_value is None:
         return default

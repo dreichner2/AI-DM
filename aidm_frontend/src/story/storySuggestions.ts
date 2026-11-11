@@ -64,7 +64,7 @@ const UNREACHABLE_NPC_STATUSES = new Set(['dead', 'deceased', 'destroyed'])
 
 /** The contract's order of object actions. */
 const ACTION_ORDER: GameplayObjectAction['id'][] = [
-  'search', 'use', 'trigger', 'open', 'unlock', 'inspect', 'close', 'lock', 'break', 'disarm', 'reset',
+  'search', 'use', 'trigger', 'open', 'unlock', 'inspect', 'close', 'lock', 'break', 'disarm', 'reset', 'plan',
 ]
 
 /**
@@ -89,7 +89,7 @@ function objectChip(
   zones?: WorldZoneSummary[],
 ): ObjectSuggestion {
   const label = markedLabel(objectActionLabel(action), zones, object.zoneId)
-  return { kind: 'object', key: `object:${object.id}:${action.id}`, label, object, action }
+  return { kind: 'object', key: `object:${object.id}:${action.planId ?? action.id}`, label, object, action }
 }
 
 /**
@@ -111,7 +111,8 @@ function choiceSuggestions(objects: GameplayInteractableControl[], zones?: World
  * offers nothing else.
  */
 function objectSuggestion(object: GameplayInteractableControl, zones?: WorldZoneSummary[]): ObjectSuggestion | null {
-  const actions = inActionOrder(objectChoices(object).filter((action) => !action.choice))
+  // A plan is a chip only when the server suggests it (two at a time); the rest wait under More….
+  const actions = inActionOrder(objectChoices(object).filter((action) => !action.choice && (action.id !== 'plan' || action.suggested)))
   const action = actions.find((candidate) => candidate.authored) ?? actions[0]
   return action ? objectChip(object, action, zones) : null
 }

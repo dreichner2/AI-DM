@@ -7,7 +7,9 @@ named in the words: that is its ``about``), ``threaten``, ``offer`` (coin, an it
 ``authority`` when the words say by whose authority, else ``identity``) and ``apologise``. Failing a cue, or before
 a bare claim of who the hero is, a topic's ``keywords`` choose it. With an AI narrator, words that hold no cue are put once to the pre-narration helper
 (:func:`helper_act`), which may only name one of the seven acts, or none, and what it is about; the engine applies
-the act and the helper never decides the person's answer. Words that are none of these are free speech.
+the act and the helper never decides the person's answer. Words that are none of these are free speech; when the
+helper reads in them an intention for later (``"plan"``), it becomes the players' plan
+(:mod:`aidm_server.services.session_return`).
 """
 
 from __future__ import annotations
@@ -56,6 +58,8 @@ HELPER_SYSTEM_MESSAGE = (
     'Answer with JSON only.'
 )
 HELPER_RAW_PREVIEW_LIMIT = 600
+# A plan the helper reads, at most this many characters.
+PLAN_LIMIT = 160
 
 
 def _text(value: Any) -> str:
@@ -162,7 +166,9 @@ def _helper_prompt(words: str, *, person: str, topics: list[dict[str, Any]], thi
         '- apologise: says sorry or asks forgiveness\n'
         '- none: anything else\n\n'
         f'Topics:\n{topic_lines}\n\nThings the hero has:\n{thing_lines}\n\n'
-        'Answer {"act": "...", "about": "...", "text": "<the words that carry the act>"}. Never answer for the person.'
+        'Answer {"act": "...", "about": "...", "text": "<the words that carry the act>"}. Never answer for the person.\n'
+        'When the act is none and the words say what the hero means to do later, something that cannot be done here '
+        'and now, add "plan": "<that intention in at most twelve words>".'
     )
 
 
@@ -191,7 +197,8 @@ def helper_act(
     before_provider_call: Callable[[], None] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """The act the pre-narration helper reads in the words (``{"act", "about"?, "text"?}``), or None for none or an
-    answer outside the acts and the ids it was given; and the helper's debug record."""
+    answer outside the acts and the ids it was given; ``{"act": "none", "plan"}`` when it reads no act but an
+    intention the hero means to carry out later; and the helper's debug record."""
 
     with foreground_provider_reservation() as activate_provider:
         if before_provider_call:
@@ -215,6 +222,9 @@ def helper_act(
         'claim': {'', 'authority', 'identity'},
     }
     debug = _helper_debug(attempted=True, model=response.model, raw=raw, parsed=payload)
+    plan = ' '.join(_text((payload or {}).get('plan')).split())[:PLAN_LIMIT]
+    if act == 'none' and plan:
+        return {'act': 'none', 'plan': plan}, debug
     if act not in ACTS or (act in allowed and about not in allowed[act]):
         return None, debug
     if act == 'claim':
@@ -368,6 +378,10 @@ def talk_extraction(
             act = None if topic else act
         if topic is None and act is None and action == 'words' and speech_helper_enabled():
             act, debug = helper_act(words, person=_text(person.get('name')), topics=topics, things=things, before_provider_call=before_provider_call)
+            if act and act['act'] == 'none':
+                # No act, but an intention for later: the director notes it as the players' plan.
+                declared['plan'] = act['plan']
+                act = None
             if act and act['act'] == 'ask':
                 topic, act = next((entry for entry in topics if _text(entry.get('id')) == act.get('about')), None), None
         if topic is not None:

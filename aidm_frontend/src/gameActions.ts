@@ -148,7 +148,7 @@ export type ShopIntent = {
 } & ({ action: 'buy'; stock_id: string } | { action: 'sell'; item_id: string })
 
 export type ActionIntent = {
-  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'zone_move' | 'rest' | 'shop' | 'combat' | 'inspiration' | 'talk'
+  kind: ComposerMode | 'message' | 'capability' | 'object' | 'travel' | 'zone_move' | 'rest' | 'shop' | 'combat' | 'inspiration' | 'talk' | 'plan'
   source: 'composer' | 'dice_roller' | 'combat_hud' | 'scene_panel'
   text: string
   client_message_id: string
@@ -195,6 +195,8 @@ export type ActionIntent = {
   take_time?: boolean
   /** A conversation: a topic chosen, or leaving it. */
   talk?: { action: 'topic' | 'leave'; npc_id: string; topic_id?: string }
+  /** A plan that changes the scene: an object's authored affordance (shut and bar the gate). */
+  plan?: { objectId: string; affordanceId: string }
   inventory_action?: InventoryAction
   cost_gold?: number
   interaction?: {

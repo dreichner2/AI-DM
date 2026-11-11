@@ -51,6 +51,7 @@ import { RollCard } from './story/RollCard'
 import { rollPlayback } from './story/rollPlayback'
 import { entryRollCards } from './story/storyRolls'
 import { useReducedMotion } from './story/useReducedMotion'
+import type { StoryReturnActions } from './story/useStoryReturn'
 import type {
   ActivePlayer,
   Campaign,
@@ -242,6 +243,8 @@ export type SessionBoardProps = {
   endedChapter?: { onContinue: () => void } | null
   /** Switches the app back to Story view. */
   onOpenStoryView?: () => void
+  /** Plans, coming back, the next chapter and the leaving question (Story view). */
+  storyReturn?: StoryReturnActions
 }
 
 function formatDateTime(value: string | null) {

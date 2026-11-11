@@ -106,6 +106,8 @@ MOVE_FIRST_TYPES = frozenset({'attack', *MANEUVER_TYPES})
 LIGHT_WEAPON_MARKERS = ('dagger', 'handaxe', 'light hammer', 'scimitar', 'shortsword', 'sickle', 'club')
 _ACTION_PROVIDERS: list[ActionProvider] = []
 _ACTION_RESOLVERS: dict[str, ActionResolver] = {}
+# Actions never offered as buttons that typed words may still name (``fn(bundle, player, snapshot, payload)``).
+_UNLISTED_ACTIONS: dict[str, Callable[..., tuple[dict[str, Any] | None, str | None, str | None]]] = {}
 WEAPON_DAMAGE_PROFILES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (('greatsword',), '2d6', 'slashing'),
     (('greataxe',), '1d12', 'slashing'),
@@ -144,6 +146,12 @@ def register_action_resolver(prefix: str, fn: ActionResolver) -> ActionResolver:
 
 def unregister_action_resolver(prefix: str) -> None:
     _ACTION_RESOLVERS.pop(_text(prefix), None)
+
+
+def register_unlisted_action(action_id: str, fn: Callable[..., tuple[dict[str, Any] | None, str | None, str | None]]) -> None:
+    """An action typed words may name that no bundle lists (a plan the words describe, W9-SCENE)."""
+
+    _UNLISTED_ACTIONS[_text(action_id)] = fn
 
 
 def _resolver_for(action_id: str) -> ActionResolver | None:
@@ -1105,10 +1113,12 @@ def resolve_combat_legal_action(
     action_id: Any,
     target_id: Any = None,
     attempt: Any = None,
+    payload: Any = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
     """Resolve and canonicalize a client-selected action against current state.
 
-    ``combat.improvise`` (typed words that name no listed action, ``attempt``) is never in the bundle.
+    ``combat.improvise`` (typed words that name no listed action, ``attempt``) is never in the bundle, nor is an
+    unlisted action typed words named (its ``payload``).
     """
 
     bundle = legal_combat_actions_for_player(snapshot, player)
@@ -1117,6 +1127,8 @@ def resolve_combat_legal_action(
     normalized_action_id = _text(action_id)
     if normalized_action_id == IMPROVISE_ACTION_ID:
         return _improvised_action(bundle, player, snapshot, target_id=_text(target_id), attempt=_text(attempt))
+    if normalized_action_id in _UNLISTED_ACTIONS:
+        return _UNLISTED_ACTIONS[normalized_action_id](bundle, player, snapshot, payload)
     action = next(
         (candidate for candidate in bundle['actions'] if candidate.get('id') == normalized_action_id),
         None,

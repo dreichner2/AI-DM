@@ -453,7 +453,8 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('die', 'string', optional=True),
             field('parts', 'StoryRollPart[]', optional=True),
             field('total', 'number | null', optional=True),
-            field('against', "{ kind: 'AC' | 'DC'; value: number } | null", optional=True),
+            # A contest is against the hero's own total (``Athletics``, W9-SCENE: grabbing past a guard, wresting).
+            field('against', "{ kind: 'AC' | 'DC' | 'Athletics'; value: number } | null", optional=True),
             field('outcome', "'hit' | 'miss' | 'success' | 'failure' | null", optional=True),
             field('natural', "'twenty' | 'one' | null", optional=True),
             field('damage', 'StoryRollDamage', optional=True),
@@ -482,12 +483,24 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
         ),
     ),
     TypeContract(
+        'StoryChapterEnd',
+        fields=(
+            field('number', 'number'),
+            field('title', 'string'),
+            field('checkpointId', 'string', optional=True),
+            field('decided', 'string[]'),
+            field('open', 'string[]'),
+            field('teaser', 'string', optional=True),
+        ),
+    ),
+    TypeContract(
         'StoryBeatRecord',
         fields=(
             field('kind', 'string'),
             field('text', 'string'),
             field('refId', 'string', optional=True),
             field('level', 'StoryBeatLevel', optional=True),
+            field('chapterEnd', 'StoryChapterEnd', optional=True),
         ),
     ),
     TypeContract('SessionLogEntryMetadata', alias='JsonRecord & { storyRolls?: StoryRoll[]; storyBeats?: StoryBeatRecord[] }'),
@@ -900,6 +913,53 @@ API_TYPE_CONTRACTS: tuple[TypeContract, ...] = (
             field('created_at', 'string | null'),
             field('updated_at', 'string | null'),
         ),
+    ),
+    TypeContract(
+        'SessionPlan',
+        fields=(
+            field('id', 'string'),
+            field('text', 'string'),
+            field('playerId', 'number', optional=True),
+            field('createdAt', 'string'),
+        ),
+    ),
+    TypeContract(
+        'SessionPlansResponse',
+        fields=(
+            field('session_id', 'number'),
+            field('plans', 'SessionPlan[]'),
+            field('plan', '{ id: string; text: string }', optional=True),
+            field('removed', 'boolean', optional=True),
+        ),
+    ),
+    TypeContract(
+        'ComingBackBlock',
+        fields=(
+            field('where', 'string'),
+            field('people', 'string[]'),
+            field('plans', 'string[]'),
+        ),
+    ),
+    TypeContract(
+        'ComingBackResponse',
+        fields=(
+            field('session_id', 'number'),
+            field('comingBack', 'ComingBackBlock | null'),
+        ),
+    ),
+    TypeContract(
+        'ChronicleAdventure',
+        fields=(
+            field('packId', 'string'),
+            field('title', 'string'),
+            field('endings', 'string[]'),
+            field('timesCompleted', 'number'),
+            field('neverFound', 'number'),
+        ),
+    ),
+    TypeContract(
+        'ChronicleResponse',
+        fields=(field('adventures', 'ChronicleAdventure[]'),),
     ),
 )
 

@@ -60,6 +60,8 @@ WORLD_STATE_CHANGE_TYPES = {
     'flag.unset',
     'hero.thread',
     'npc.talk',
+    'scene.effect',
+    'scene.stake',
 }
 
 COMBAT_STATE_CHANGE_TYPES = {

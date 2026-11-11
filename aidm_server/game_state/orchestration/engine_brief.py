@@ -27,10 +27,22 @@ the acting hero this turn, a pending finishing blow's first),
 
 In a conversation (:mod:`aidm_server.game_state.orchestration.conversations`) ``did`` tells what the hero's
 words did: the person turning to them (their greeting the first time), ``{Name} tells: …`` for a topic (its check
-first, when it rolled one), a speech act and what came of it, words that reach nothing, leaving; a person's
-callback is ``Callback — tell it now: …``. ``conversation`` names the person, their personality, disposition word,
+first, when it rolled one), a speech act and what came of it, words that reach nothing, leaving.
+``conversation`` names the person, their personality, disposition word,
 the lines already told, what they remember of this hero and what they ``mayTell`` if asked; ``offered`` is then the
 conversation's own actions.
+
+The turn's director note (:mod:`aidm_server.game_state.orchestration.director`): an authored one (a callback, a
+clock step, a nudge) is told by the engine around the narration and given as ``alreadyTold``; an instruction
+(clarify, breathe) is ``director`` (``{"kind", "note"}``).
+
+Plans and stakes (W9-SCENE, :mod:`aidm_server.game_state.orchestration.scene_plans`,
+:mod:`aidm_server.game_state.orchestration.fight_stakes`): ``did`` tells each plan resolved (``Effect — obstruct:
+the yard gate is barred (Athletics 19 vs DC 10)``), words that named nothing in sight (``nothing — the hero finds
+no such thing in sight.``) and an improvised attempt (``Improvised — "…": … The engine changed nothing.``) and
+each runner's or silencer's move; ``facts`` are what has changed in the place (``Now true here:``), ``atStake`` a
+fight's stakes in words as they stand once the turn's enemy moves apply, and the authored passages the engine tells
+as written (an affordance's text, failing forward, a fight's results, ``onDefeat``) join ``alreadyTold``.
 
 In a place with rooms (:mod:`aidm_server.game_state.zones`) ``did`` also tells
 the hero's step into another zone, a call to someone next door and who came
@@ -52,7 +64,10 @@ from aidm_server.combat.positioning import REACH_LABELS, reach_kind
 from aidm_server.combat.state import normalize_combat_state, participant_is_targetable
 from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, mentions, ways_onward
 from aidm_server.game_state.orchestration.conversations import TALK_CHANGE, conversation_actions, conversation_brief
+from aidm_server.game_state.orchestration import director
+from aidm_server.game_state.orchestration.fight_stakes import at_stake_line
 from aidm_server.game_state.orchestration.finishing_blow import finisher_actions
+from aidm_server.game_state.orchestration.scene_plans import scene_facts
 from aidm_server.game_state.orchestration.hero_threads import PERSONAL_THREAD, hero_line
 from aidm_server.game_state.orchestration.narration_facts import PICKUP_SOURCE, enemy_prose
 from aidm_server.game_state.orchestration.story_beats import COIN_ORDER, beat_basis, object_check_text, story_beats, talk_check_text
@@ -61,10 +76,10 @@ from aidm_server.game_state.zones import hero_zone_id, where_line
 from aidm_server.services.campaign_pack_visibility import filter_session_snapshot_for_player
 
 # Beats the brief leaves to its own lines: checks sit with their object or topic, a pickup with "Took", a tie line
-# with its personal thread; Inspiration is the player's own reward, not something to narrate.
-OWN_LINE_BEATS = frozenset({'check', 'hint', 'thread', 'inspiration'})
+# with its personal thread, a scene fact with its "Effect —" line and "Now true here:"; Inspiration is the player's
+# own reward, not something to narrate.
+OWN_LINE_BEATS = frozenset({'check', 'hint', 'thread', 'inspiration', 'change'})
 SPOKE_TO = 'The hero spoke to {name}: it reaches nothing the engine holds, so nothing changes. Answer as {name}.'
-CALLBACK = 'Callback — tell it now:'
 # What came of a speech act, for the narrator, by (act, outcome); ``{name}`` is the person.
 ACT_RESULTS = {
     ('promise', 'default'): '{name} takes the word given and will remember it.',
@@ -118,6 +133,9 @@ def _join(words: list[str]) -> str:
 
 def _object_line(fact: dict[str, Any], check: str | None) -> str:
     head = f"{fact.get('label')} ({check})" if check else _text(fact.get('label'))
+    if fact.get('failed') is True and _text(fact.get('onFailText')):
+        # Failing forward (W9-SCENE): what the failure turned up is the authored text the engine tells itself.
+        return f'{head}: failed.'
     if fact.get('failed') is True:
         return f'{head}: failed; nothing is found, opened or learned this time.'
     parts = [f'{head}: done.']
@@ -178,6 +196,9 @@ def _reaction_lines(action: dict[str, Any]) -> list[str]:
 
 
 def _enemy_line(action: dict[str, Any]) -> str | None:
+    if _text(action.get('goal')) and _text(action.get('stakeLine')):
+        # What the fight is about (W9-SCENE): the runner's or silencer's move, as the engine resolved it.
+        return _text(action['stakeLine'])
     enemy = _text(action.get('enemyName')) or 'An enemy'
     grappler = _text(action.get('grapplerName')) or 'its captor'
     escape = action.get('breakFree') if isinstance(action.get('breakFree'), dict) else {}
@@ -234,6 +255,8 @@ def _combat_lines(
         lines.extend(_reaction_lines(action))
         if line := _enemy_line(action):
             lines.append(line)
+        if _text(action.get('stakeLine')) and _text(action.get('stakeLine')) != line:
+            lines.append(_text(action['stakeLine']))
         enemy_id = _text(action.get('enemyId'))
         if enemy_id and enemy_id not in told:
             told.add(enemy_id)
@@ -304,9 +327,9 @@ def _check_words(check: Any) -> str:
 
 
 def _conversation_lines(narration: dict[str, Any], hero: str) -> list[str]:
-    """The callbacks told this turn and what the hero's words did in their conversation (see the module docstring)."""
+    """What the hero's words did in their conversation (see the module docstring)."""
 
-    lines = [f'{CALLBACK} {_text(callback.get("text"))}' for callback in _dicts(narration.get('callbacks')) if _text(callback.get('text'))]
+    lines: list[str] = []
     talk = narration.get('conversation') if isinstance(narration.get('conversation'), dict) else {}
     name = _text(talk.get('name'))
     if not name:
@@ -338,6 +361,49 @@ def _conversation_lines(narration: dict[str, Any], hero: str) -> list[str]:
     if talk.get('left') is True:
         lines.append(f'{hero} leaves it there with {name}.')
     return lines
+
+
+def _director_fields(narration: dict[str, Any]) -> dict[str, Any]:
+    """``alreadyTold`` (the authored note the engine tells this turn) or ``director`` (an instruction note)."""
+
+    note = narration.get(director.NOTE_KEY) if isinstance(narration.get(director.NOTE_KEY), dict) else {}
+    told = [text for place in (director.OPENING, director.CLOSING) if (text := director.told_by_engine(narration, place))]
+    if told:
+        return {'alreadyTold': told}
+    if _text(note.get('instruction')):
+        return {'director': {'kind': _text(note.get('kind')), 'note': _text(note['instruction'])}}
+    return {}
+
+
+def _scene_lines(narration: dict[str, Any]) -> list[str]:
+    """The plans resolved this turn (``Effect — obstruct: the yard gate is barred (Athletics 14 vs DC 10)``), words that
+    named nothing in sight, and an improvised attempt (W9-SCENE)."""
+
+    lines = [_text(effect.get('did')) for effect in _dicts(narration.get('effects')) if _text(effect.get('did'))]
+    unseen = narration.get('unseen') if isinstance(narration.get('unseen'), dict) else {}
+    if _text(unseen.get('did')):
+        lines.append(_text(unseen['did']))
+    improvised = narration.get('improvised') if isinstance(narration.get('improvised'), dict) else {}
+    if _text(improvised.get('did')):
+        lines.append(_text(improvised['did']))
+    return lines
+
+
+def _scene_fields(narration: dict[str, Any], state: dict[str, Any], enemy_actions: list[dict[str, Any]]) -> dict[str, Any]:
+    """``facts`` (what has changed here), ``atStake`` (a fight's stakes) and the authored passages the engine tells
+    this turn, merged into ``alreadyTold`` with the director's."""
+
+    fields: dict[str, Any] = {}
+    facts = scene_facts(state)
+    if facts:
+        fields['facts'] = facts
+    if at_stake := at_stake_line(state, enemy_actions):
+        fields['atStake'] = at_stake
+    told = narration.get('sceneTold') if isinstance(narration.get('sceneTold'), dict) else {}
+    passages = [_text(text) for key in ('opening', 'closing') for text in told.get(key) or [] if _text(text)]
+    if passages:
+        fields['alreadyTold'] = [*passages, *_director_fields(narration).get('alreadyTold', [])]
+    return fields
 
 
 def _fight_positions(state: dict[str, Any], actor_id: str) -> str:
@@ -586,6 +652,7 @@ def engine_brief(
     elif (narration.get('freeText') or {}).get('kind') == 'look' and isinstance(narration.get('positions'), list):
         did.extend([LOOKED, _positions_line(_dicts(narration['positions']))])
     did.extend(_object_line(fact, checks.get(_text(fact.get('targetId')))) for fact in _dicts(narration.get('objects')))
+    did.extend(_scene_lines(narration))
     taken = [_text(phrase) for phrase in narration.get('taken') or [] if _text(phrase)]
     if taken:
         did.append(f'Took {_join(taken)}.')
@@ -662,6 +729,8 @@ def engine_brief(
         'actingHero': acting_hero,
         **({'hero': hero} if (hero := hero_line(state_after, actor_id)) else {}),
         **({'conversation': talking} if (talking := conversation_brief(state_after, actor_id)) else {}),
+        **_director_fields(narration),
+        **_scene_fields(narration, state_after, _dicts(combat_state.get('enemyResolvedActions'))),
         'heroes': [_text(hero.get('name')) for hero in _dicts(state_after.get('playerCharacters')) if _text(hero.get('name'))],
         'gains': gains,
         'offered': _offered_labels(state_after, actor_id=actor_id, objects=objects, items=items, ways=ways, captives=captives),

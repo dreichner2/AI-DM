@@ -6,6 +6,8 @@ export const accountSheetChunk = lazyModule(() => import('./sheets/StoryAccountS
 export const settingsSheetChunk = lazyModule(() => import('./sheets/StorySettingsSheet'))
 export const sessionDialogsChunk = lazyModule(() => import('../CampaignSessionActionDialogs'))
 export const drawerChunk = lazyModule(() => import('./StoryDrawer'))
+/** The end of a chapter, coming back, the ending's last sections and the leaving question. */
+export const returnChunk = lazyModule(() => import('./StoryReturn'))
 export const drawerSectionChunks = {
   character: lazyModule(() => import('./drawer/CharacterSection')),
   pack: lazyModule(() => import('./drawer/PackSection')),

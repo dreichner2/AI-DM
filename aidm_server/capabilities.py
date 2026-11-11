@@ -88,6 +88,13 @@ HTTP_ENDPOINT_CAPABILITIES: dict[tuple[str, str], Capability] = {
     ('sessions.get_session_state', 'GET'): 'player_read',
     ('sessions.get_session_content_settings', 'GET'): 'player_read',
     ('sessions.get_session_campaign_pack_progress', 'GET'): 'player_read',
+    ('sessions.get_session_coming_back', 'GET'): 'player_read',
+    ('sessions.get_chronicle', 'GET'): 'player_read',
+    # The players' own plans are table notes, kept with the session.
+    ('sessions.add_session_plan', 'POST'): 'player_action',
+    # After a chapter break the next action, anyone's, begins the next chapter.
+    ('sessions.begin_next_chapter', 'POST'): 'player_action',
+    ('sessions.remove_session_plan', 'DELETE'): 'player_action',
     ('sessions.update_session', 'PATCH'): 'dm_runtime_control',
     ('sessions.archive_session', 'POST'): 'dm_runtime_control',
     ('sessions.restore_session', 'POST'): 'dm_runtime_control',

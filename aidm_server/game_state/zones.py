@@ -245,7 +245,8 @@ def fight_running(state: Mapping[str, Any]) -> bool:
 
 
 def present_npcs(state: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The known people and companions present at the place."""
+    """The known people and companions present at the place; someone a fight hurt is out of play until the next long
+    rest (``outOfPlay``, W9-SCENE)."""
 
     present = {_text(value) for value in _scene(state).get('activeNpcIds') or []}
     party = [npc for npc in _dicts(state.get('partyNpcs')) if _text(npc.get('name'))]
@@ -253,7 +254,7 @@ def present_npcs(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     known = [
         npc
         for npc in _dicts(state.get('knownNpcs'))
-        if _text(npc.get('id')) in present and _text(npc.get('id')) not in party_ids and _text(npc.get('name'))
+        if _text(npc.get('id')) in present and _text(npc.get('id')) not in party_ids and _text(npc.get('name')) and npc.get('outOfPlay') is not True
     ]
     return [*known, *party]
 
@@ -373,7 +374,8 @@ def encounter_zone_id(state: Mapping[str, Any], encounter: Mapping[str, Any]) ->
 
 def zones_for_viewer(state: Mapping[str, Any], hero_id: Any) -> list[dict[str, Any]]:
     """The place's known zones for one hero's view: ``{"id", "name", "current", "adjacent", "exit", "here",
-    "moveLabel"?}`` with ``here`` the heroes, known people and companions there by name."""
+    "moveLabel"?, "conditions"?}`` with ``here`` the heroes, known people and companions there by name and
+    ``conditions`` what a plan made of the zone (``dark``, W9-SCENE)."""
 
     zones = place_zones(state)
     if not zones:
@@ -396,6 +398,9 @@ def zones_for_viewer(state: Mapping[str, Any], hero_id: Any) -> list[dict[str, A
         }
         if adjacent:
             entry['moveLabel'] = move_label(zone)
+        conditions = _scene(state).get('zoneConditions') if isinstance(_scene(state).get('zoneConditions'), dict) else {}
+        if conditions.get(zone['id']):
+            entry['conditions'] = [_text(condition) for condition in conditions[zone['id']] if _text(condition)]
         view.append(entry)
     return view
 

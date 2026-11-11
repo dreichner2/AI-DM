@@ -98,8 +98,13 @@ export function rollCardRecord(value: unknown): RollCardRecord | null {
     ? { id: stringValue(value.actor.id), name: stringValue(value.actor.name), side: side(value.actor.side) }
     : undefined
   const target = isRecord(value.target) ? { id: stringValue(value.target.id), name: stringValue(value.target.name) } : undefined
-  const against = isRecord(value.against) && numberValue(value.against.value) !== null
-    ? { kind: stringValue(value.against.kind) === 'AC' ? ('AC' as const) : ('DC' as const), value: numberValue(value.against.value) as number }
+  const againstKind = isRecord(value.against) ? stringValue(value.against.kind) : ''
+  // A contest is against the hero's own Athletics; anything else the client does not know reads as a DC.
+  const against: RollCardRecord['against'] = isRecord(value.against) && numberValue(value.against.value) !== null
+    ? {
+        kind: againstKind === 'AC' || againstKind === 'Athletics' ? againstKind : 'DC',
+        value: numberValue(value.against.value) as number,
+      }
     : null
   const outcome = stringValue(value.outcome)
   const natural = stringValue(value.natural)

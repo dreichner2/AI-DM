@@ -178,6 +178,10 @@ def object_facts(
         if event.get('takeTime') is True:
             fact['takeTime'] = True
             fact['takeTimeLine'] = take_time_line(state_before, actor_id=actor_id)
+        on_fail = entry.get('onFail').get(action) if failed and isinstance(entry.get('onFail'), dict) else None
+        if isinstance(on_fail, dict) and _text(on_fail.get('text')):
+            # Failing forward (W9-SCENE): the authored failure is told as written, instead of coming up empty.
+            fact['onFailText'] = _text(on_fail['text'])
         if _text(action_text.get(action)):
             fact['actionText'] = _text(action_text.get(action))
         if not failed and action in {'inspect', 'search'}:

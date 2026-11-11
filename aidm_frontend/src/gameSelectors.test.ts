@@ -1581,6 +1581,26 @@ describe('worldMapFromSnapshot', () => {
 })
 
 describe('Story screen fields', () => {
+  it('reads what has changed in the place and what a fight is about, and leaves both out when there are none', () => {
+    const panel = worldStateFromSnapshot({
+      currentScene: { facts: ['The yard gate is barred.', '', 'The yard lantern is out; the yard is dark.'] },
+      combat: {
+        status: 'active',
+        participants: [{ id: 'cutthroat_1', name: 'Cutthroat', team: 'enemy' }],
+        stakes: [
+          { id: 'fragment', name: 'the road-stone fragment', kind: 'item', state: 'held_by_enemy', words: 'the cutthroat has it' },
+          { id: '', name: 'a stake without an id', state: 'safe', words: 'safe' },
+        ],
+      },
+    })
+
+    expect(panel.sceneFacts).toEqual(['The yard gate is barred.', 'The yard lantern is out; the yard is dark.'])
+    expect(panel.combat.stakes).toEqual([{ id: 'fragment', name: 'the road-stone fragment', state: 'held_by_enemy', words: 'the cutthroat has it' }])
+    const quiet = worldStateFromSnapshot({ currentScene: {}, combat: { status: 'active' } })
+    expect(quiet.sceneFacts).toBeUndefined()
+    expect(quiet.combat.stakes).toBeUndefined()
+  })
+
   it('reads take labels, exact hit points only when sent (else the server’s health word), and a capability’s effect', () => {
     const panel = worldStateFromSnapshot({
       currentScene: {

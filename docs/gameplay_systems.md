@@ -114,6 +114,40 @@ chapter of it, and exactly one chapter is current.
   not carried.
 - Play Now and the title's Continue open the current chapter; when a campaign
   has only ended chapters, a continued chapter is started.
+- The heroes' word (`promises`), the players' plans, the director's clocks and
+  used nudges carry into a continued chapter.
+
+### Where a chapter ends, and coming back
+
+- A pack checkpoint with `chapterBreak` ends the chapter where the story does:
+  the turn that completes it carries a `chapter_end` story beat holding the
+  chapter-end entry (`END OF CHAPTER 1 · The Empty Caravan`, `WHAT YOU DECIDED`,
+  `STILL OPEN`, the teaser; `docs/campaign_packs.md`), kept in the log. The next
+  action, anyone's, begins the next chapter (`POST
+  /api/sessions/{id}/next-chapter`, open to players, once: a second request
+  replays the first; 409 `no_chapter_break` before a break, `chapter_unsettled`
+  while a fight or roll holds it) and is sent there.
+- Plans: `/plan <words>` in the action box, or the Actions menu's `Note a plan`,
+  notes one (`POST /api/sessions/{id}/plans`); the journal lists them under
+  `PLANS`, each with `Done` (`DELETE /api/sessions/{id}/plans/{planId}`). With a
+  narrating model, words to a person the pre-narration helper reads as an
+  intention for later become a plan (beat `Noted as a plan — …`), at most one a
+  sitting. A player leaving by `Exit to title` with no plan noted this sitting is
+  asked `Before you go — what do you mean to do next?` (`Skip`).
+- Coming back: when the last turn is more than thirty minutes old, the viewer
+  sees above the action box, until their first action, `WHERE YOU STAND` (the
+  place, the room and the active objective in one sentence, and up to two people
+  whose memory of the viewer's heroes or regard changed in the last sitting) and
+  `YOU MEANT TO` (the plans): `GET /api/sessions/{id}/coming-back`. A sitting is
+  a run of turns with no gap longer than thirty minutes.
+- The director note (one a turn, outside a fight: a callback, a clock step,
+  clarify, a nudge, a breath) and pack clocks are described in
+  `docs/campaign_packs.md`.
+- The ending card adds `WHAT BECAME OF THEM`, `YOUR WORD` and `Play it again` (a
+  new adventure from the same ready-made pack). Reaching an ending writes the
+  account's (or local workspace's) record for the pack; the title screen's `Your
+  chronicle` (`GET /api/sessions/chronicle`) lists finished adventures with the
+  endings reached and `Things you never found: n`.
 
 ## How a Player Acts
 
@@ -851,7 +885,15 @@ Encounters are authored for four heroes and scale to the heroes present
 Each group keeps `max(1, round(count × heroes ÷ 4))` enemies; over the most,
 whole groups drop from the end (never the first), then the last group loses
 enemies. `scaling: false` on an encounter keeps the authored numbers. The record
-is `combat.flags.partyScaling`. `scripts/solo_balance.py` plays every ready-made
+is `combat.flags.partyScaling`.
+
+Floors come last and hold for a party under four (recorded as
+`partyScaling.floors`): an encounter's `minEnemies` (the first group regains
+enemies up to it) and a group's `minHp`. An encounter with a `take_and_flee`
+goal and no floors of its own gets the defaults: at least two enemies when it
+also has a `silence` goal (else one), and a runner of at least 16 maximum HP for
+two or three heroes, 12 for one, so a fight about something never ends in one
+blow. `scripts/solo_balance.py` plays every ready-made
 hero alone through every Play Now fight to check the one-hero row.
 
 ### What the party knows adjusts a fight
@@ -1239,6 +1281,105 @@ Potion of Healing, and clerics and druids also carry a Healer's Kit.
   Hidden or GM-only targets fail as not found for players; an optional expected
   revision rejects stale selections, and `interactableActionLedger` makes a
   same-ID replay idempotent.
+
+## Plans and Stakes
+
+Plans change the scene; stakes make a fight about something besides hit points.
+Engine: `game_state/orchestration/scene_plans.py` (plans) and
+`game_state/orchestration/fight_stakes.py` (stakes); pack fields in
+`docs/campaign_packs.md`, Plans and Stakes.
+
+### Effects
+
+- Nine effects, each with one engine meaning: `obstruct` (a way is `blocked`;
+  whoever needs it spends an action clearing it, Strength or Dexterity against
+  DC 12), `distract` (people or enemies in the zone are `distracted` to the end
+  of the next round: no reactions, advantage on the next attack or check against
+  them), `expose` (hidden objects and enemies in the zone are revealed;
+  `a secret uncovered` Inspiration), `conceal` (a hero hides; an item cannot be
+  taken by an enemy until it spends an action searching), `separate` (`cut_off`
+  to the end of the next round; a person cut off from the others may be told a
+  conversation's `private` topics), `restrain` (W7's grapple or bind, or
+  `restrained` by an object until it breaks free), `destroy` (`broken` for good;
+  a light leaves the zone `dark`, a rope looses what it held, a barrier opens the
+  way), `protect` (the hero is `guarding` a person or item until their next turn:
+  attacks go to the hero, a grab is a contest against their Athletics; a person
+  guarded remembers it as `protected`) and `take`.
+- Without an authored affordance an effect on a tagged thing in reach resolves
+  by the table in `scene_plans.TABLE` (check engine-rolled, DC 12); a pair it
+  does not hold falls to the improvised floor. An object or person in the room
+  next door is stepped to first, as an action is; one further off is refused
+  with `{Name} is in the loft. Go there first.`
+- Every resolved effect adds a scene fact (`currentScene.facts`, one sentence:
+  the affordance's `fact` or a built one, `The yard gate is barred.`), kept with
+  the place and restored on return, a `change` beat with the same sentence, and
+  in the Story view the Scene tab's `What has changed`. A fight's passing effects
+  (distracted, cut off, guarding, restrained, hidden) end with it, and when the
+  party leaves the place. A zone made `dark` is `currentScene.zoneConditions` and
+  the zone's `conditions` in the player view.
+- How a plan is recognised: offered affordances are clicked (in a fight as the
+  fight action `plan.<objectId>.<affordanceId>`; at most two are `suggested`);
+  typed words choose one by its `keywords` plus the object's name or a second
+  keyword; failing that the verb families (`bar`, `snuff`, `hide`, `shield`, …)
+  with a thing in reach named in the clause. With a narrating model, words the
+  first pass could not place (not speech, outside a fight, in a place offering
+  something to plan with) go once to the pre-narration helper, which may only
+  name one of the nine effects and the ids of the things in the hero's own room;
+  any other answer is ignored and the words fall to the old floor.
+- Words naming a thing still hidden (its name, or two of its name words) are
+  read before anything else: the offered action whose authored `reveals` link
+  uncovers it is taken (stepping next door first), else nothing is attempted, no
+  roll is asked for and the line is `You see no saddle cache here.` (`Arden Vale
+  sees no …` in party play; a model is told `Did: nothing — the hero finds no
+  such thing in sight.`).
+- An improvised attempt outside a fight (the rules-hint roll) changes nothing:
+  the scripted narrator says `You try it. It comes to nothing.` or `You manage
+  it, for what it is worth.`; a model is given `Improvised — "<words>": Athletics
+  19 vs DC 14, success. The engine changed nothing.` and rule 20, and its
+  narration is not read for state (reason `improvised`).
+- A narrating model is told a plan under `Did` (`Effect — obstruct: the yard
+  gate is barred (Athletics 19 vs DC 10)`), with rule 19 (`Tell what the plan
+  changed in the scene …`) on that turn and `Now true here:` with the place's
+  facts on every turn. An affordance's authored `result.text`, `failResult.text`
+  and an object's `onFail.text` are told as written by the engine; a turn holding
+  nothing else makes no model call, and a model narrating the rest is given them
+  under `Already told this turn`. A clicked affordance makes at most one model
+  call (the narrator); typed words the helper places make two.
+- Every check a plan rolls is a roll card (`storyRolls`), as are a fight's
+  clearing, grabbing past a guard and wresting (`against: {"kind":
+  "Athletics"}` for a contest) and a conversation's checks.
+
+### Stakes
+
+- An encounter's `stakes` (an item, a person, a route) are kept in
+  `combat.flags.stakes` during the fight (`combat.stakes` in the player view, in
+  words; the runner and the goals stay the engine's) and, once it ends, at
+  `stakes.<encounterId>.<stakeId>` in the session state. Item: `in_place`,
+  `held_by_hero`, `on_ground`, `held_by_enemy`, `taken`, `secured`; person:
+  `safe`, `threatened`, `hurt` (out of play to the next long rest, never killed),
+  `taken`; route: `open`, `blocked`.
+- `take_and_flee`: the runner (the first enemy, chosen again if it falls)
+  holding the item moves a band outward and from `far` with the route open
+  escapes (`taken`); a blocked route costs its turn clearing it; an item in reach
+  it takes; a hero holding it is attacked, and a hit on a hero at half HP or less
+  may wrest it instead (its Strength against the hero's Athletics); a hero who
+  drops holding it drops it. When the item is `taken` the others withdraw and
+  the fight ends `enemy_goal_met` (the `flee` reward, else half the XP).
+  `silence`: another enemy goes for the person each turn it is not engaged; a
+  guard redirects it. No model picks these moves.
+- At the end the states are final (`held_by_hero`, `on_ground`, `in_place` →
+  `secured`) and each `results` entry whose `when` holds applies: flags, a scene
+  fact, dispositions, a lead (session state `leads: [{"text", "followed"?}]`,
+  the journal's `LEADS`, beat `A lead — …`) and its `text`, told as written.
+- `onDefeat` replaces the defeat re-arm: the party wakes in `wakeZoneId`, its
+  `text` is told after the fall, its flags and stakes apply, and the encounter is
+  complete.
+- `onFail` on an object action or affordance: a failed check applies it instead
+  of coming up empty; with `noRetry` the take-your-time retry is not offered.
+- The Story view's fight strip carries one quiet line above the turn order, `AT
+  STAKE — the road-stone fragment (the cutthroat has it) · Wenna Pike (safe) ·
+  the yard gate (open)`, a state that changed this turn in the accent; a model is
+  given the same as `At stake:`, as it stands once the turn's enemy moves apply.
 
 ## Quests, Branches and Travel
 

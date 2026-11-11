@@ -10,7 +10,7 @@ import {
   type RefObject,
 } from 'react'
 import { Backpack, Coins, Flag, Heart, MapPin, ScrollText, Sparkles, Star, Swords, UserRound } from 'lucide-react'
-import type { WorldEnding } from '../gameSelectors'
+import { isRecord, stringValue, type WorldEnding } from '../gameSelectors'
 import { lazyModule } from '../lazyModule'
 import { NarrativeProse } from '../NarrativeProse'
 import type { SessionBoardProps, TurnQualityScores } from '../SessionBoard'
@@ -33,6 +33,7 @@ import {
   type StoryTurnBeatTarget,
   type TurnBeatsBeat,
 } from './storyBeats'
+import { returnChunk } from './storyChunks'
 import { dismissEnding, useEndingDismissed } from './storyEnding'
 import { useNarrationHold } from './narrationHold'
 import { useReducedMotion } from './useReducedMotion'
@@ -57,6 +58,8 @@ const QUALITY_SCORE_OPTIONS = [1, 2, 3, 4, 5] as const
 const DEFAULT_TURN_QUALITY_SCORES: TurnQualityScores = { coherence: 4, fun: 4, rules: 4 }
 // A level reached is shown as a moment, kept out of the start-up bundle: the one-line beat stands in while it loads.
 const LevelMoment = lazyModule(() => import('./LevelMoment')).component((module) => module.LevelMoment)
+const ChapterEnd = returnChunk.component((module) => module.ChapterEnd)
+const EndingSections = returnChunk.component((module) => module.EndingSections)
 
 function findBeat(container: HTMLElement, key: string) {
   for (const element of container.querySelectorAll<HTMLElement>('[data-beat-key]')) {
@@ -721,6 +724,12 @@ function BeatView({
       return <TurnBeatsView beat={beat} onOpen={onOpenBeatTarget} />
     case 'notice':
       return <p className="story-notice-text">{beat.text}</p>
+    case 'chapterEnd':
+      return (
+        <Suspense fallback={<p className="story-label">{beat.text}</p>}>
+          <ChapterEnd text={beat.text} chapterEnd={beat.chapterEnd} />
+        </Suspense>
+      )
   }
 }
 
@@ -749,15 +758,19 @@ function EmptyStory({ board }: { board: SessionBoardProps }) {
   )
 }
 
-/** The adventure's last beat: its ending, and what to do next. */
+/** The adventure's last beat: its ending, what became of the people met and of the heroes' word, and what to do next. */
 function EpilogueBeat({
   ending,
+  sections,
   onDownloadChronicle,
+  onPlayAgain,
   onExitToTitle,
   onKeepPlaying,
 }: {
   ending: WorldEnding
+  sections: Record<string, unknown>
   onDownloadChronicle: () => void
+  onPlayAgain?: () => void
   onExitToTitle: () => void
   onKeepPlaying: () => void
 }) {
@@ -767,8 +780,12 @@ function EpilogueBeat({
       <p className="story-label story-epilogue-label">The end</p>
       <h2 id="story-epilogue-title" className="story-epilogue-title">{ending.title}</h2>
       {ending.summary ? <p className="story-epilogue-summary">{ending.summary}</p> : null}
+      <Suspense fallback={null}>
+        <EndingSections ending={sections} />
+      </Suspense>
       <div className="story-epilogue-links">
         <button type="button" className="story-link" onClick={onDownloadChronicle}>Download the Chronicle</button>
+        {onPlayAgain ? <button type="button" className="story-link" onClick={onPlayAgain}>Play it again</button> : null}
         <button type="button" className="story-link" onClick={onExitToTitle}>Start another adventure</button>
         <button type="button" className="story-link" onClick={onKeepPlaying}>Keep playing</button>
       </div>
@@ -815,6 +832,10 @@ export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: 
     )?.key ?? null
   const ending = board.worldState.ending ?? null
   const showEnding = Boolean(ending) && !loading && !empty && !endingDismissed
+  const snapshotPack = board.sessionState?.state_snapshot?.campaignPack
+  const endingSections = isRecord(snapshotPack) && isRecord(snapshotPack.afterword) ? snapshotPack.afterword : {}
+  const replay = stringValue(endingSections.replay)
+  const storyReturn = board.storyReturn
   const announcement =
     board.sendPending || board.streamingTurnActive
       ? 'Dungeon Master response in progress.'
@@ -882,7 +903,9 @@ export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: 
           {showEnding && ending ? (
             <EpilogueBeat
               ending={ending}
+              sections={endingSections}
               onDownloadChronicle={() => void board.downloadSessionChronicle()}
+              onPlayAgain={replay && storyReturn ? () => storyReturn.playAgain(replay) : undefined}
               onExitToTitle={onExitToTitle}
               onKeepPlaying={() => dismissEnding(board.sessionId)}
             />

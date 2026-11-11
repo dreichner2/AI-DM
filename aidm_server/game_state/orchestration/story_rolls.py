@@ -812,6 +812,13 @@ def _change_rolls(change: dict[str, Any], *, people: People, combat: dict[str, A
         return _rest_rolls(change, people=people)
     if change_type == 'scene.interactable.action':
         return _object_rolls(change, people=people)
+    if change_type in {'npc.talk', 'scene.effect'} and _int(_dict(change.get('check')).get('total')) is not None:
+        # A conversation's check (a topic, a threat, a claim) and a plan's: cards exactly like an object check.
+        subject = (change.get('npcId'), change.get('npcName')) if change_type == 'npc.talk' else (
+            change.get('subjectId') or change.get('objectId'),
+            change.get('subjectName') or change.get('objectName'),
+        )
+        return [_engine_check(_dict(change['check']), people=people, actor_id=change.get('actorId'), target=people.target(*subject))]
     if change_type == 'combat.start':
         initiative = _initiative(combat, people)
         return [initiative] if initiative else []
@@ -826,6 +833,22 @@ def _enemy_action_rolls(action: dict[str, Any], *, people: People, attackers: di
     enemy = people.actor(enemy_id, action.get('enemyName'), side=people.records.get(enemy_id, {}).get('side') or 'enemy')
     ability = _text(action.get('abilityName')) or 'Attack'
     rolls = _reaction_rolls(action.get('reactions'), people=people, mover_id=enemy_id, attackers=attackers)
+    for check in _dicts(action.get('stakeChecks')):
+        # What a fight is about (W9-SCENE): clearing a barred way, grabbing past a guard, wresting an item away.
+        against = _dict(check.get('against'))
+        rolls.append(
+            _roll(
+                'check',
+                actor=enemy,
+                target=people.target(against.get('heroId'), against.get('heroName')) if against else people.target(None, check.get('targetName')),
+                label=_text(check.get('label')) or 'Check',
+                d20=_d20([check.get('roll')], check.get('roll'), 'normal'),
+                parts=[{'label': 'bonus', 'value': _int(check.get('modifier')) or 0}],
+                total=check.get('total'),
+                against={'kind': _text(against.get('kind')), 'value': _int(against.get('value'))} if against else _against('DC', check.get('dc')),
+                outcome='success' if check.get('success') is True else 'failure',
+            )
+        )
     escape = _dict(action.get('breakFree'))
     if _int(escape.get('total')) is not None:
         rolls.append(
