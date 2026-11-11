@@ -114,8 +114,8 @@ describe('useSessionActions', () => {
     const options = createOptions()
     const { result } = renderHook(() => useSessionActions(options))
 
-    let firstRequest!: Promise<void>
-    let duplicateRequest!: Promise<void>
+    let firstRequest!: Promise<number | null>
+    let duplicateRequest!: Promise<number | null>
     act(() => {
       firstRequest = result.current.startSession()
       duplicateRequest = result.current.startSession()
@@ -125,12 +125,17 @@ describe('useSessionActions', () => {
     expect(apiFetchMock).toHaveBeenCalledTimes(1)
 
     firstStart.resolve({ session_id: 11 })
-    await act(async () => firstRequest)
+    await act(async () => {
+      // Resolves to the new chapter once the workspace has been read again.
+      await expect(firstRequest).resolves.toBe(11)
+    })
 
     expect(options.setSelectedSessionId).toHaveBeenCalledWith(11)
     expect(options.refreshCampaignWorkspace).toHaveBeenCalledWith(7)
 
-    await act(async () => result.current.startSession())
+    await act(async () => {
+      await expect(result.current.startSession()).resolves.toBe(12)
+    })
 
     expect(apiFetchMock).toHaveBeenCalledTimes(2)
     expect(options.setSelectedSessionId).toHaveBeenLastCalledWith(12)
@@ -147,12 +152,12 @@ describe('useSessionActions', () => {
       { initialProps: { selectedCampaignId: 7 } },
     )
 
-    let firstRequest!: Promise<void>
+    let firstRequest!: Promise<number | null>
     act(() => {
       firstRequest = result.current.startSession()
     })
     rerender({ selectedCampaignId: 8 })
-    let secondRequest!: Promise<void>
+    let secondRequest!: Promise<number | null>
     act(() => {
       secondRequest = result.current.startSession()
     })
@@ -167,9 +172,24 @@ describe('useSessionActions', () => {
     expect(options.refreshCampaignWorkspace).toHaveBeenCalledWith(8)
 
     firstStart.resolve({ session_id: 11 })
-    await act(async () => firstRequest)
+    // Moved on to another campaign: no chapter of the first one is opened.
+    await act(async () => {
+      await expect(firstRequest).resolves.toBeNull()
+    })
     expect(options.setSelectedSessionId).toHaveBeenCalledTimes(1)
     expect(options.refreshCampaignWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves to no chapter and reports it when the chapter cannot start', async () => {
+    apiFetchMock.mockRejectedValueOnce(new Error('timeout'))
+    const options = createOptions()
+    const { result } = renderHook(() => useSessionActions(options))
+
+    await act(async () => {
+      await expect(result.current.startSession()).resolves.toBeNull()
+    })
+    expect(options.pushError).toHaveBeenCalledWith('persistence', 'Could not start the next chapter: timeout')
+    expect(options.setSelectedSessionId).not.toHaveBeenCalled()
   })
 
   describe('the next-chapter dialog', () => {

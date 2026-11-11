@@ -8,7 +8,6 @@ import { StoryClarification } from './StoryClarification'
 import { StoryCombatRibbon } from './StoryCombatRibbon'
 import { StoryComposer } from './StoryComposer'
 import { StoryFeed } from './StoryFeed'
-import { StoryNotices, type StoryNotice } from './StoryNotices'
 import { rollFromEntry } from './storyBeats'
 
 function playerRoll(id: string, metadata: JsonRecord): TimelineEntry {
@@ -71,44 +70,6 @@ describe('StoryClarification', () => {
     expect(answer).toHaveAttribute('title', 'Found in the cellar')
     fireEvent.click(within(question).getByRole('button', { name: 'Glyph key' }))
     expect(resolveClarification).toHaveBeenCalledWith('glyph')
-  })
-})
-
-describe('StoryNotices', () => {
-  const roll: StoryNotice = { key: 'roll-1', text: 'Brannoc: I roll a d20: 12' }
-  const chapter: StoryNotice = { key: 'chapter-1', text: 'That chapter has ended — you are now in the current chapter.' }
-
-  it('shows one line, the most recent notice to arrive', () => {
-    const onSelect = vi.fn()
-    const error: StoryNotice = {
-      key: 'error-1',
-      text: 'Socket connection failed: timeout',
-      tone: 'fail',
-      action: { label: 'Refresh and reconnect', onSelect },
-    }
-    const { container, rerender } = render(<StoryNotices notices={[roll]} />)
-    const status = screen.getByRole('status')
-    expect(status).toHaveTextContent('Brannoc: I roll a d20: 12')
-
-    rerender(<StoryNotices notices={[roll, chapter]} />)
-    expect(status).toHaveTextContent(chapter.text)
-    expect(container.querySelectorAll('.story-notice')).toHaveLength(1)
-
-    // Newest wins whatever order the notices are listed in.
-    rerender(<StoryNotices notices={[error, roll, chapter]} />)
-    expect(status).toHaveTextContent('Socket connection failed: timeout')
-    expect(container.querySelector('.story-notice')).toHaveAttribute('data-tone', 'fail')
-    fireEvent.click(within(status).getByRole('button', { name: 'Refresh and reconnect' }))
-    expect(onSelect).toHaveBeenCalledTimes(1)
-
-    rerender(<StoryNotices notices={[roll, chapter]} />)
-    expect(status).toHaveTextContent(chapter.text)
-
-    rerender(<StoryNotices notices={[{ key: 'roll-2', text: 'Wren: I roll a d20: 3' }, chapter]} />)
-    expect(status).toHaveTextContent('Wren: I roll a d20: 3')
-
-    rerender(<StoryNotices notices={[]} />)
-    expect(status).toBeEmptyDOMElement()
   })
 })
 

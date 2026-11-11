@@ -58,6 +58,7 @@ import type {
 } from './SessionBoard'
 import {
   abilityOptionsFromStatBlock,
+  activePlayerHealth,
   buildMapMeta,
   buildTimeline,
   recentMemoryFromSnippets,
@@ -94,9 +95,10 @@ import type { SceneMusicControlPayload, SceneMusicSyncState } from './SceneMusic
 import { StoryClarification } from './story/StoryClarification'
 import { StoryComposer } from './story/StoryComposer'
 import { StoryDrawer } from './story/StoryDrawer'
-import { StoryNotices, type StoryNotice } from './story/StoryNotices'
+import { StoryNotices } from './story/StoryNotices'
+import { StoryNoticeContext, useStoryNoticeLine, type StoryNotice } from './story/storyNoticeLine'
 import { StoryAccountSheet, type AccountSheetView } from './story/sheets/StoryAccountSheet'
-import { StorySettingsSheet, type NarrationSetting } from './story/sheets/StorySettingsSheet'
+import { StorySettingsSheet, type NarrationSetting, type NarratorSetting } from './story/sheets/StorySettingsSheet'
 import { useStoryPreferences } from './story/sheets/storyPreferences'
 import { StoryView } from './story/StoryView'
 import type { StoryChromeProps, StoryConnection, StoryDrawerTab } from './story/types'
@@ -114,7 +116,6 @@ import type {
   ActorCapabilitiesResponse,
   ActivePlayer,
   ActivePlayerHealth,
-  ActivePlayerHealthTone,
   BadTurnFeedbackResponse,
   BetaSummary,
   Campaign,
@@ -262,13 +263,6 @@ function ModalLoading({
   )
 }
 
-const ACTIVE_PLAYER_HEALTH_LABELS: Record<ActivePlayerHealthTone, string> = {
-  uninjured: 'Uninjured',
-  wounded: 'Wounded',
-  'badly-wounded': 'Badly wounded',
-  dead: 'Dead',
-}
-
 function normalizedCharacterLookup(value: unknown) {
   return stringValue(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 }
@@ -330,21 +324,8 @@ function healthStatusFromSnapshotPlayer(record: Record<string, unknown>): Active
       stats.maxHp ??
       stats.max_hp,
   )
-  if (currentHp === null || maxHp === null || maxHp <= 0) return null
-  let tone: ActivePlayerHealthTone = 'wounded'
-  if (currentHp <= 0) {
-    tone = 'dead'
-  } else if (currentHp >= maxHp) {
-    tone = 'uninjured'
-  } else if (currentHp / maxHp <= 0.25) {
-    tone = 'badly-wounded'
-  }
-  return {
-    tone,
-    label: ACTIVE_PLAYER_HEALTH_LABELS[tone],
-    currentHp,
-    maxHp,
-  }
+  if (currentHp === null || maxHp === null) return null
+  return activePlayerHealth(currentHp, maxHp)
 }
 
 function activePlayersWithSnapshotHealth(activePlayers: ActivePlayer[], snapshot: unknown): ActivePlayer[] {
@@ -387,6 +368,24 @@ type UiError = {
   category: UiErrorCategory
   message: string
   createdAt: number
+}
+
+/** Categories the Story view's notice line treats as errors: an alert that stays until dismissed or replaced. */
+const STORY_ERROR_CATEGORIES: ReadonlySet<UiErrorCategory> = new Set(['connection', 'persistence', 'workspace'])
+
+/** A failure that keeps the table from playing, which a refresh and reconnect can clear. */
+function isOperationalPlayError(error: UiError) {
+  return (
+    (error.category === 'connection' && (
+      error.message.startsWith('Socket connection failed:') ||
+      error.message === 'Realtime is reconnecting. Try again in a moment.'
+    )) ||
+    (error.category === 'workspace' && (
+      error.message.startsWith('Workspace load failed:') ||
+      error.message.startsWith('Session refresh failed:') ||
+      error.message.startsWith('Player load failed:')
+    ))
+  )
 }
 
 function readBoardViewMode(): BoardViewMode {
@@ -466,6 +465,10 @@ function isUnauthorizedError(error: unknown) {
 
 function isNotFoundError(error: unknown) {
   return error instanceof ApiClientError && error.status === 404
+}
+
+function apiErrorCode(error: unknown) {
+  return error instanceof ApiClientError && isRecord(error.payload) ? error.payload.error_code : null
 }
 
 function isAuthTokenWorkspaceError(error: UiError) {
@@ -724,6 +727,8 @@ function AIDMApp() {
   const [sceneState, setSceneState] = useState<SceneDisplayState | null>(null)
   const [sendPending, setSendPending] = useState(false)
   const [errors, setErrors] = useState<UiError[]>([])
+  // Every notice as it is raised, repeats included; the Story view shows the latest one.
+  const [latestNotice, setLatestNotice] = useState<UiError | null>(null)
   const [optimisticEntries, setOptimisticEntries] = useState<TimelineEntry[]>([])
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null)
   const [turnStatuses, setTurnStatuses] = useState<Record<number, string>>({})
@@ -1071,6 +1076,13 @@ function AIDMApp() {
   )
   const pushError = useCallback((category: UiErrorCategory, message: string) => {
     const createdAt = Date.now()
+    const notice: UiError = {
+      id: `${createdAt}-${Math.random().toString(36).slice(2, 8)}`,
+      category,
+      message,
+      createdAt,
+    }
+    setLatestNotice(notice)
     setErrors((current) => {
       const duplicate = current.find(
         (item) =>
@@ -1079,15 +1091,7 @@ function AIDMApp() {
           createdAt - item.createdAt < 15_000,
       )
       if (duplicate) return current
-      return [
-        {
-          id: `${createdAt}-${Math.random().toString(36).slice(2, 8)}`,
-          category,
-          message,
-          createdAt,
-        },
-        ...current.slice(0, 7),
-      ]
+      return [notice, ...current.slice(0, 7)]
     })
   }, [])
   const dismissError = useCallback((category: UiErrorCategory, message: string) => {
@@ -1137,26 +1141,7 @@ function AIDMApp() {
     setSelectedPlayerId,
   ])
   const clearResolvedOperationalErrors = useCallback(() => {
-    setErrors((current) =>
-      current.filter((item) => {
-        if (
-          item.category === 'connection' &&
-          (item.message.startsWith('Socket connection failed:') ||
-            item.message === 'Realtime is reconnecting. Try again in a moment.')
-        ) {
-          return false
-        }
-        if (
-          item.category === 'workspace' &&
-          (item.message.startsWith('Workspace load failed:') ||
-            item.message.startsWith('Session refresh failed:') ||
-            item.message.startsWith('Player load failed:'))
-        ) {
-          return false
-        }
-        return true
-      }),
-    )
+    setErrors((current) => current.filter((item) => !isOperationalPlayError(item)))
   }, [])
   useEffect(() => {
     if (health?.status !== 'ok') return
@@ -1302,17 +1287,13 @@ function AIDMApp() {
     ? `Welcome to ${activeSessionName}. Choose an opening move and the DM will begin the scene.`
     : 'Start or select a session to begin play.'
 
-  const latestPlayError = errors.find((error) =>
-    (error.category === 'connection' && (
-      error.message.startsWith('Socket connection failed:') ||
-      error.message === 'Realtime is reconnecting. Try again in a moment.'
-    )) ||
-    (error.category === 'workspace' && (
-      error.message.startsWith('Workspace load failed:') ||
-      error.message.startsWith('Session refresh failed:') ||
-      error.message.startsWith('Player load failed:')
-    )),
-  ) ?? null
+  const latestPlayError = errors.find(isOperationalPlayError) ?? null
+  // The latest notice stays on the Story line only while the app still holds it (not cleared as resolved).
+  const storyAppNotice =
+    latestNotice &&
+    errors.some((item) => item.category === latestNotice.category && item.message === latestNotice.message)
+      ? latestNotice
+      : null
 
   const latestDmText =
     currentResponseEntry?.text ||
@@ -1608,6 +1589,7 @@ function AIDMApp() {
     olderSessionsLoading,
     refreshCampaignWorkspace,
     refreshCurrentWorkspace,
+    refreshLlmConfig,
     refreshRoot,
   } = useWorkspaceQueries({
     auth,
@@ -1801,6 +1783,7 @@ function AIDMApp() {
     shareSession,
     shareSessionUrl,
     startChapterDialog,
+    startSession,
     submitSaveImportDialog,
     submitSessionActionDialog,
     submitStartChapterDialog,
@@ -1831,6 +1814,64 @@ function AIDMApp() {
     setSessionMenuOpen,
     pushError,
   })
+
+  // A blank-page adventure has no chapter yet. Begin creates its first chapter, then sends the
+  // opening once that chapter has loaded and the realtime join is done.
+  const [firstChapterCampaignId, setFirstChapterCampaignId] = useState<number | null>(null)
+  const beginAdventure = () => {
+    // With a chapter open (or nothing to begin it for) the opening goes, or is refused, as before.
+    if (activeSessionId !== null || selectedCampaignId === null || selectedPlayerDetailId === null) {
+      startAdventure()
+      return
+    }
+    if (firstChapterCampaignId !== null) return
+    setFirstChapterCampaignId(selectedCampaignId)
+    void startSession().then((sessionId) => {
+      // startSession reports its own failure.
+      if (sessionId === null) setFirstChapterCampaignId(null)
+    })
+  }
+  useEffect(() => {
+    if (firstChapterCampaignId === null) return
+    if (
+      selectedCampaignId !== firstChapterCampaignId ||
+      Boolean(currentResponseEntry) ||
+      (activeSession?.turn_count ?? 0) > 0
+    ) {
+      setFirstChapterCampaignId(null)
+      return
+    }
+    if (
+      activeSessionId === null ||
+      selectedPlayerDetailId === null ||
+      socketStatus !== 'joined' ||
+      turnInFlight ||
+      dmResponseBlocking ||
+      workspaceLoading ||
+      sessionLoading ||
+      !sessionHydrated ||
+      storedSessionState?.session_id !== activeSessionId
+    ) {
+      return
+    }
+    setFirstChapterCampaignId(null)
+    startAdventure()
+  }, [
+    activeSession?.turn_count,
+    activeSessionId,
+    currentResponseEntry,
+    dmResponseBlocking,
+    firstChapterCampaignId,
+    selectedCampaignId,
+    selectedPlayerDetailId,
+    sessionHydrated,
+    sessionLoading,
+    socketStatus,
+    startAdventure,
+    storedSessionState?.session_id,
+    turnInFlight,
+    workspaceLoading,
+  ])
 
   const {
     campaignActionDialog,
@@ -2399,6 +2440,7 @@ function AIDMApp() {
     rememberDialogTrigger()
     setAccountMenuOpen(false)
     setProfileSettingsOpen(true)
+    void refreshLlmConfig()
   }
 
   const closeProfileSettingsDialog = useCallback(() => {
@@ -2533,17 +2575,26 @@ function AIDMApp() {
     async (provider: string, model: string) => {
       if (!provider || !model) return
       setRuntimePending(true)
-      try {
-        const nextConfig = await apiFetch<LlmRuntimeConfig>(
+      const requestSwitch = (persist: boolean) =>
+        apiFetch<LlmRuntimeConfig>(
           baseUrl,
           '/api/llm/config',
           auth,
           {
             method: 'PATCH',
             headers: runtimeConfigHeaders,
-            body: JSON.stringify({ provider, model, persist: true }),
+            body: JSON.stringify({ provider, model, persist }),
           },
         )
+      try {
+        let nextConfig: LlmRuntimeConfig
+        try {
+          nextConfig = await requestSwitch(true)
+        } catch (error) {
+          // Where saving the choice is disabled, the server still accepts it for this run.
+          if (apiErrorCode(error) !== 'llm_config_persist_disabled') throw error
+          nextConfig = await requestSwitch(false)
+        }
         setLlmConfig(nextConfig)
         setHealth((current) =>
           current
@@ -2554,7 +2605,13 @@ function AIDMApp() {
             : current,
         )
       } catch (error) {
-        pushError('system', `Runtime switch failed: ${error instanceof Error ? error.message : String(error)}`)
+        // A refusal carries the server's own explanation; the previous narrator stays.
+        pushError(
+          'system',
+          error instanceof ApiClientError
+            ? error.message
+            : `Runtime switch failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
       } finally {
         setRuntimePending(false)
       }
@@ -2778,6 +2835,8 @@ function AIDMApp() {
   const runtime = llmConfig?.current ?? health?.llm ?? null
   const configuredProvider = stringValue(runtime?.provider, 'Unknown')
   const safeModeActive = configuredProvider.trim().toLowerCase() === 'fallback'
+  // No AI provider narrates: the scripted narrator runs, whether chosen or for want of a key.
+  const scriptedNarrator = safeModeActive || runtime?.configured === false
   useModalFocusTrap({
     activeKey: activeModalKey,
     dialogRef: modalDialogRef,
@@ -2797,7 +2856,8 @@ function AIDMApp() {
     baseUrl,
     campaignCount: campaigns.length,
     campaigns,
-    safeMode: safeModeActive || runtime?.configured === false,
+    safeMode: scriptedNarrator,
+    storyView: playView === 'story',
     openCampaignChooser: openCampaignChooserDialog,
     closeMobilePanels,
     modalOpen,
@@ -3885,7 +3945,8 @@ function AIDMApp() {
     recentMemory,
     clarificationRequest,
     resolveClarification,
-    onStartAdventure: startAdventure,
+    onStartAdventure: beginAdventure,
+    adventureBeginning: firstChapterCampaignId !== null,
     actionComposerProps: {
       actionInputRef,
       actionText,
@@ -4057,6 +4118,13 @@ function AIDMApp() {
     : ttsConfigLoadFailed
       ? { enabled: false, problem: 'Could not check whether narration is available. Refresh to try again.' }
       : null
+  const narratorSetting: NarratorSetting = runtime
+    ? {
+        current: { provider: configuredProvider, model: configuredModel },
+        providers: llmConfig?.providers ?? null,
+        pending: runtimePending,
+      }
+    : null
   const settingsDiagnostics = {
     player: runtimeAccount
       ? `You are ${runtimeAccount.displayName}${selectedPlayer ? `, playing ${displayCharacter.name}` : ''}.`
@@ -4083,16 +4151,19 @@ function AIDMApp() {
         }]
       : []),
     ...(chapterNotice ? [chapterNotice] : []),
-    ...(latestPlayError
+    ...(storyAppNotice
       ? [{
-          key: `error-${latestPlayError.id}`,
-          text: latestPlayError.message,
-          tone: 'fail' as const,
-          action: { label: 'Refresh and reconnect', onSelect: () => void recoverOperationalError() },
+          key: `notice-${storyAppNotice.id}`,
+          text: storyAppNotice.message,
+          ...(STORY_ERROR_CATEGORIES.has(storyAppNotice.category) ? { tone: 'fail' as const } : { fades: true }),
+          ...(isOperationalPlayError(storyAppNotice)
+            ? { action: { label: 'Refresh and reconnect', onSelect: () => void recoverOperationalError() } }
+            : {}),
         }]
       : []),
   ]
-  return (
+  const storyNoticeLine = useStoryNoticeLine(storyNotices)
+  const shell = (
     <div
       ref={rootRef}
       className={shellClassName}
@@ -4412,7 +4483,9 @@ function AIDMApp() {
       {showTitleScreen ? <TitleScreen {...titleScreenProps} /> : null}
 
       {storyView ? (
-        showTitleScreen ? null : (
+        // Without an adventure there is no story to show; the title screen offers one. Until the game
+        // server answers, the Story view stays as the one place that says what is wrong.
+        showTitleScreen || (selectedCampaignId === null && backendReachable) ? null : (
           <StoryView
             board={sessionBoardProps}
             inspector={inspectorPanelProps}
@@ -4420,7 +4493,8 @@ function AIDMApp() {
             composer={
               <>
                 <StoryClarification board={sessionBoardProps} />
-                <StoryNotices notices={storyNotices} />
+                {/* An open sheet shows the line at its foot instead. */}
+                {modalOpen ? null : <StoryNotices line={storyNoticeLine} />}
                 <StoryComposer
                   board={{ ...sessionBoardProps, operationalError: undefined, onRecoverOperationalError: undefined }}
                   chrome={storyChrome}
@@ -4671,6 +4745,7 @@ function AIDMApp() {
           dialogRef={modalDialogRef}
           fullscreen={fullscreenActive}
           narration={narrationSetting}
+          narrator={narratorSetting}
           onClose={closeProfileSettingsDialog}
           onConnectionSettings={() => {
             setProfileSettingsOpen(false)
@@ -4682,6 +4757,7 @@ function AIDMApp() {
           onNarrationChange={(enabled) => {
             if (enabled !== ttsEnabled) toggleTts()
           }}
+          onNarratorChange={(provider, model) => void switchRuntime(provider, model)}
           onReconnect={() => {
             setSocketReconnectKey((current) => current + 1)
             closeProfileSettingsDialog()
@@ -4928,12 +5004,17 @@ function AIDMApp() {
             packOptions={createCampaignPackOptions}
             packOptionsPending={createCampaignPackOptionsPending}
             pending={createCampaignPending}
+            scriptedNarrator={scriptedNarrator}
             setForm={setCreateCampaignForm}
             worlds={worldSelectOptions}
           />
         </Suspense>
       ) : null}
     </div>
+  )
+  // Sheets opened in the Story view show the notice line at their foot.
+  return (
+    <StoryNoticeContext.Provider value={storyView ? storyNoticeLine : null}>{shell}</StoryNoticeContext.Provider>
   )
 }
 

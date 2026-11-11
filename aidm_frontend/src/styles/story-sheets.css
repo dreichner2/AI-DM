@@ -368,6 +368,13 @@
   font-size: 1.12rem;
   color: var(--story-ink);
 }
+/* A setting's current value when it is read rather than chosen on that line. */
+.story-dialog .story-dialog-setting-value {
+  margin-left: auto;
+  font-size: 0.92rem;
+  text-align: right;
+  color: var(--story-ink-soft);
+}
 .story-dialog .story-dialog-setting .story-dialog-choices { justify-content: flex-end; margin-left: auto; }
 .story-dialog .story-dialog-setting-note {
   flex-basis: 100%;
@@ -601,6 +608,8 @@
   white-space: nowrap;
   color: var(--story-muted);
 }
+/* What a row needs before it can be chosen. */
+.story-dialog .story-dialog-row-note { white-space: normal; color: var(--story-gold); }
 .story-dialog .story-dialog-row-summary {
   display: -webkit-box;
   max-width: 62ch;
@@ -666,6 +675,24 @@
   list-style: none;
   font-size: 0.84rem;
   color: var(--story-muted);
+}
+
+/* ---- the notice line at the foot ---- */
+/* App's notice line (StoryNotices): pinned to the bottom of the sheet while it scrolls. */
+.story-dialog .story-dialog-notice[data-active] {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  margin: 0 calc(-1 * var(--sheet-gutter));
+  padding: 26px var(--sheet-gutter) 20px;
+  background: linear-gradient(to top, var(--sheet-bar) 62%, transparent);
+}
+.story-dialog .story-dialog-panel:has(> .story-dialog-notice[data-active]) {
+  padding-bottom: 0;
+}
+/* The notice takes the bottom edge; the sheet's own actions scroll with its content above it. */
+.story-dialog .story-dialog-panel:has(> .story-dialog-notice[data-active]) .story-dialog-footer {
+  position: static;
 }
 
 /* ---- footer ---- */

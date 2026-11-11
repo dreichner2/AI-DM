@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { ModalShell } from '../../ModalShell'
+import type { LlmProviderOption } from '../../types'
 import {
   setMusicEnabled,
   setMusicVolume,
@@ -19,6 +20,16 @@ export type NarrationSetting = {
   problem: string
 } | null
 
+/** The table's narrator: who narrates now and which providers the server offers. */
+export type NarratorSetting = {
+  /** `fallback` is the scripted narrator. */
+  current: { provider: string; model: string }
+  /** Every provider the server lists; null until the list has loaded. */
+  providers: LlmProviderOption[] | null
+  /** A change is on its way to the server. */
+  pending: boolean
+} | null
+
 export type TableDiagnostics = {
   /** Who you are, which table, and the connection, each as one plain line. */
   player: string
@@ -29,6 +40,9 @@ export type TableDiagnostics = {
 type StorySettingsSheetProps = {
   dialogRef: RefObject<HTMLElement | null>
   onClose: () => void
+  narrator: NarratorSetting
+  /** Asks the server to narrate with this provider and model. */
+  onNarratorChange: (provider: string, model: string) => void
   narration: NarrationSetting
   onNarrationChange: (enabled: boolean) => void
   view: 'story' | 'console'
@@ -54,10 +68,15 @@ const ON_OFF: ReadonlyArray<[boolean, string]> = [
   [true, 'On'],
   [false, 'Off'],
 ]
+const SCRIPTED_PROVIDER = 'fallback'
+const SCRIPTED_NARRATOR = 'Scripted narrator'
+const NO_AI_NARRATOR =
+  "No AI narrator is set up on this server. Add a provider key to the server's environment (see the README), then choose it here."
 
 /** One setting: its name, then its choices as text, the chosen one in ember. */
 function SettingRow<T extends string | boolean>({
   name,
+  nameHidden = false,
   choices,
   value,
   onChange,
@@ -65,6 +84,8 @@ function SettingRow<T extends string | boolean>({
   note,
 }: {
   name: string
+  /** The row continues the line above it, which already says what it sets. */
+  nameHidden?: boolean
   choices: ReadonlyArray<[T, string]>
   value: T
   onChange: (value: T) => void
@@ -73,7 +94,7 @@ function SettingRow<T extends string | boolean>({
 }) {
   return (
     <div className="story-dialog-setting">
-      <span className="story-dialog-setting-name">{name}</span>
+      {nameHidden ? null : <span className="story-dialog-setting-name">{name}</span>}
       <span className="story-dialog-choices" role="group" aria-label={name}>
         {choices.map(([choice, label]) => (
           <button
@@ -93,16 +114,85 @@ function SettingRow<T extends string | boolean>({
   )
 }
 
-/** Settings a player recognises: reading, sound, motion and view, with the table's plumbing tucked away. */
+/**
+ * Who narrates: the current narrator, then the scripted narrator and every AI
+ * provider the server has a key for. Keys are never typed in here.
+ */
+function NarratorSection({
+  narrator,
+  onChange,
+}: {
+  narrator: NonNullable<NarratorSetting>
+  onChange: (provider: string, model: string) => void
+}) {
+  const { current, providers, pending } = narrator
+  const scripted = current.provider === SCRIPTED_PROVIDER
+  const currentOption = providers?.find((provider) => provider.id === current.provider) ?? null
+  const currentModelLabel =
+    currentOption?.models.find((model) => model.id === current.model)?.label ?? current.model
+  const currentLabel = scripted
+    ? SCRIPTED_NARRATOR
+    : `${currentOption?.label ?? current.provider} · ${currentModelLabel}`
+  const aiProviders = (providers ?? []).filter(
+    (provider) => provider.configured && provider.id !== SCRIPTED_PROVIDER,
+  )
+  const choices: Array<[string, string]> = [
+    [SCRIPTED_PROVIDER, SCRIPTED_NARRATOR],
+    ...aiProviders.map((provider): [string, string] => [provider.id, provider.label]),
+  ]
+  const choose = (providerId: string) => {
+    if (providerId === current.provider) return
+    const option = providers?.find((provider) => provider.id === providerId)
+    if (option) onChange(option.id, option.default_model)
+  }
+  const models = currentOption?.models ?? []
+
+  return (
+    <section className="story-dialog-section" aria-labelledby="settings-narrator">
+      <div className="story-dialog-setting">
+        <span id="settings-narrator" className="story-dialog-setting-name">Narrator</span>
+        <span className="story-dialog-setting-value">{currentLabel}</span>
+      </div>
+      {providers && !aiProviders.length ? (
+        <p className="story-dialog-help">{NO_AI_NARRATOR}</p>
+      ) : null}
+      {aiProviders.length ? (
+        <SettingRow
+          name="Narrator"
+          nameHidden
+          choices={choices}
+          value={current.provider}
+          onChange={choose}
+          disabled={pending}
+        />
+      ) : null}
+      {aiProviders.length && models.length > 1 ? (
+        <SettingRow
+          name="Model"
+          choices={models.map((model): [string, string] => [model.id, model.label])}
+          value={current.model}
+          onChange={(model) => {
+            if (model !== current.model) onChange(current.provider, model)
+          }}
+          disabled={pending}
+        />
+      ) : null}
+    </section>
+  )
+}
+
+/** Settings a player recognises: narrator, reading, sound, motion and view, with the table's plumbing tucked away. */
 export function StorySettingsSheet({
   diagnostics,
   dialogRef,
   fullscreen,
   narration,
+  narrator,
   onClose,
   onConnectionSettings,
   onFullscreenChange,
   onNarrationChange,
+  onNarratorChange,
   onReconnect,
   onRefresh,
   onViewChange,
@@ -120,6 +210,12 @@ export function StorySettingsSheet({
       title="Settings"
     >
       <div className="story-dialog-body story-settings">
+        {narrator ? (
+          <>
+            <NarratorSection narrator={narrator} onChange={onNarratorChange} />
+            <hr className="story-rule" />
+          </>
+        ) : null}
         <section className="story-dialog-section" aria-labelledby="settings-reading">
           <h3 id="settings-reading" className="story-label">Reading</h3>
           <SettingRow name="Text size" choices={TEXT_SIZES} value={preferences.textSize} onChange={setStoryTextSize} />

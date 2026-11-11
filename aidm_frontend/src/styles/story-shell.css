@@ -280,6 +280,26 @@
   to { opacity: 0; transform: translateY(-4px); }
 }
 
+/* The viewer's HP beside the titles: only where the dock's party HUD is hidden (below). */
+.story-shell .story-topbar-hp {
+  appearance: none;
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--story-ink-soft);
+  cursor: pointer;
+}
+.story-shell .story-topbar-hp[data-tone='danger'] { color: var(--story-danger); }
+
 .story-shell .story-topbar-actions {
   display: flex;
   flex: none;
@@ -529,6 +549,7 @@
 
 @media (max-width: 899.98px) {
   .story-shell .story-party { display: none; }
+  .story-shell .story-topbar-hp { display: inline-flex; }
 }
 
 /* ---- compact ---- */

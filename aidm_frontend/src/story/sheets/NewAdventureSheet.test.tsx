@@ -21,9 +21,11 @@ const WORLDS: World[] = [
 
 function Harness({
   onSubmit,
+  scriptedNarrator = false,
   worlds = WORLDS,
 }: {
   onSubmit: (form: CreateCampaignForm) => void
+  scriptedNarrator?: boolean
   worlds?: World[]
 }) {
   // useCampaignActions opens the sheet with the current world chosen.
@@ -44,6 +46,7 @@ function Harness({
       packOptions={PACKS}
       packOptionsPending={false}
       pending={false}
+      scriptedNarrator={scriptedNarrator}
       setForm={setForm}
       worlds={worlds}
     />
@@ -64,6 +67,7 @@ describe('NewAdventureSheet', () => {
     expect(rows[0]).toHaveTextContent('An empty caravan rolls into a roadside inn at dusk.')
     expect(rows.at(-1)).toHaveTextContent('A blank page')
     expect(rows.at(-1)).toHaveTextContent('You and the Dungeon Master make it up.')
+    expect(rows.at(-1)).not.toHaveTextContent('Needs an AI narrator')
 
     fireEvent.click(within(rows[0]).getByRole('button', { name: 'Begin The Road of Unremembered Kings' }))
     expect(onSubmit).toHaveBeenCalledOnce()
@@ -118,5 +122,22 @@ describe('NewAdventureSheet', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Back' }))
     expect(within(dialog).getByRole('heading', { name: 'Choose a beginning' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Begin with a blank page' })).toHaveFocus()
+  })
+
+  it('keeps the blank page shut while the scripted narrator runs the table, and says why', () => {
+    const onSubmit = vi.fn()
+    render(<Harness onSubmit={onSubmit} scriptedNarrator />)
+
+    const dialog = screen.getByRole('dialog', { name: 'New adventure' })
+    const blankPage = within(within(dialog).getByRole('list', { name: 'Beginnings' })).getAllByRole('listitem').at(-1)!
+    expect(blankPage).toHaveTextContent('Needs an AI narrator — choose one in Settings')
+    const begin = within(blankPage).getByRole('button', { name: 'Begin with a blank page' })
+    expect(begin).toBeDisabled()
+    fireEvent.click(begin)
+    expect(within(dialog).queryByLabelText('Name')).not.toBeInTheDocument()
+
+    // A ready-made adventure still begins.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Begin The Road of Unremembered Kings' }))
+    expect(onSubmit).toHaveBeenCalledOnce()
   })
 })

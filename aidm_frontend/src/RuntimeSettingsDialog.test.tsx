@@ -34,7 +34,7 @@ function dialogProps(overrides: Partial<RuntimeSettingsDialogProps> = {}): Runti
 describe('RuntimeSettingsDialog', () => {
   afterEach(cleanup)
 
-  it('preserves backend settings form, reset, submit, and dismissal behavior', () => {
+  it('names the connection in plain words and keeps its form, reset, submit, and dismissal behavior', () => {
     const props = dialogProps({ defaultBaseUrl: 'https://api.example.test' })
     let latestForm = props.form
     props.onFormChange = vi.fn((update) => {
@@ -42,9 +42,15 @@ describe('RuntimeSettingsDialog', () => {
     })
     render(<RuntimeSettingsDialog {...props} />)
 
-    const dialog = screen.getByRole('dialog', { name: 'Backend Settings' })
+    const dialog = screen.getByRole('dialog', { name: 'Connection' })
     expect(within(dialog).getByText('Only change this if you run the game server somewhere else.')).toBeInTheDocument()
-    const backendUrl = within(dialog).getByLabelText('Backend URL')
+    expect(dialog).not.toHaveTextContent(/backend/i)
+    expect([...dialog.querySelectorAll('.story-dialog-footer button')].map((button) => button.textContent)).toEqual([
+      'Reset',
+      'Cancel',
+      'Save',
+    ])
+    const backendUrl = within(dialog).getByLabelText('Game server address')
     expect(backendUrl).toHaveValue('http://127.0.0.1:5050')
     expect(backendUrl).toHaveAttribute('data-autofocus', 'true')
 
@@ -64,12 +70,12 @@ describe('RuntimeSettingsDialog', () => {
       recoveryCode: '',
     })
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save Settings' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
     expect(props.onSubmit).toHaveBeenCalledTimes(1)
 
     fireEvent.mouseDown(dialog.parentElement as HTMLElement)
     expect(props.onClose).toHaveBeenCalledTimes(1)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close backend settings' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close connection settings' }))
     expect(props.onClose).toHaveBeenCalledTimes(2)
   })
 

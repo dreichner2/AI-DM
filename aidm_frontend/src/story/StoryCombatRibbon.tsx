@@ -126,18 +126,21 @@ function Combatant({
   participant,
   portrait,
   current,
+  own,
   vitality,
 }: {
   participant: CombatParticipantSummary
   portrait: string
   current: boolean
+  /** The viewer's own marker: no range under it (a hero is never at a range from themselves). */
+  own: boolean
   vitality: CharacterVitality | null
 }) {
   const ally = participant.team !== 'enemy'
   const dots = vitality
     ? participant.conditions.filter((condition) => !VITALITY_CONDITIONS.has(condition.toLowerCase()))
     : participant.conditions
-  const detail = ally ? rangeBand(participant) : enemyDetail(participant)
+  const detail = own ? '' : ally ? rangeBand(participant) : enemyDetail(participant)
   return (
     <li
       className="story-combatant"
@@ -478,6 +481,7 @@ export function StoryCombatRibbon({
                 participant={participant}
                 portrait={participant.team === 'enemy' ? '' : portraitFor(participant)}
                 current={participant.id === actingId}
+                own={participant.id === bundle.actorId}
                 vitality={participant.team === 'enemy' ? null : characterVitality(participant.conditions, participant.deathSaves)}
               />
             </Fragment>

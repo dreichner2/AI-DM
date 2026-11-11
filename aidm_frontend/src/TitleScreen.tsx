@@ -11,6 +11,8 @@ export type TitleResume = {
   lastPlayedAt: string | null
   /** The server's one line: "{place} — {first sentence of the latest narration}". */
   continueLine: string | null
+  /** False until the adventure's first turn: it then reads "Not yet begun" instead of when it was played. */
+  begun: boolean
 }
 
 export type TitleScreenProps = {
@@ -110,7 +112,7 @@ export function TitleScreen({
     ? [
         resume.chapterNumber ? `Chapter ${resume.chapterNumber}` : null,
         resume.continueLine ? null : resume.scene,
-        playedAgo(resume.lastPlayedAt, now),
+        resume.begun ? playedAgo(resume.lastPlayedAt, now) : 'Not yet begun',
       ]
         .filter(Boolean)
         .join(' · ')

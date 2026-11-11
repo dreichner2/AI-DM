@@ -704,13 +704,13 @@ function BeatView({
 }
 
 function EmptyStory({ board }: { board: SessionBoardProps }) {
-  const title = board.campaign?.title || board.campaignTitle || board.activeSessionTitle
+  const title = board.campaign?.title ?? ''
   const description = board.campaign?.description?.trim() ?? ''
   return (
     <div className="story-empty">
       <p className="story-empty-title">{title}</p>
       {description ? <p className="story-empty-description">{description}</p> : null}
-      {board.sendPending ? (
+      {board.sendPending || board.adventureBeginning ? (
         <p className="story-empty-beginning" role="status">
           The story is beginning
           <span className="story-dots" aria-hidden="true">
@@ -719,11 +719,11 @@ function EmptyStory({ board }: { board: SessionBoardProps }) {
             <i />
           </span>
         </p>
-      ) : (
+      ) : board.campaign ? (
         <button type="button" className="story-primary" onClick={board.onStartAdventure}>
           Begin the adventure
         </button>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -781,7 +781,8 @@ export function StoryFeed({ board, textSize, onExitToTitle, onOpenBeatTarget }: 
     () => buildStoryBeats(entries, { selectedPlayerName, historyComplete: !sessionLogHasMore }),
     [entries, selectedPlayerName, sessionLogHasMore],
   )
-  const loading = board.sessionLoading && entries.length === 0
+  // A first chapter loading under Begin keeps the beginning line rather than the loading marks.
+  const loading = board.sessionLoading && entries.length === 0 && !board.adventureBeginning
   const empty = !loading && isEmptyStory(beats)
   const scroll = useStoryScroll(scrollRef, beats, board.sessionId, loading, selectedPlayerName)
   const feedbackKey =

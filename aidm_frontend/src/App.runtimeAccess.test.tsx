@@ -110,7 +110,7 @@ describe('App runtime and workspace access', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
     let dialog = await screen.findByRole('dialog', { name: 'Account' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Game server address')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Table code')).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create account' }))
 
@@ -570,7 +570,7 @@ describe('App runtime and workspace access', () => {
 
     const dialog = await screen.findByRole('dialog', { name: 'Account' })
     expect(screen.queryByLabelText('Scene music player')).not.toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Game server address')).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText('Table code')).not.toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Create account' })).toBeInTheDocument()
   })
@@ -611,7 +611,7 @@ describe('App runtime and workspace access', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Change table access' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Account' })
-    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Game server address')).not.toBeInTheDocument()
     const savedTables = within(dialog).getByRole('group', { name: 'Saved tables' })
     expect(within(savedTables).getByText('Here now')).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Delete Test' })).toBeInTheDocument()

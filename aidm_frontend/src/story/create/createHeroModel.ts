@@ -98,7 +98,7 @@ export const ANCESTRIES: Ancestry[] = [
     skills: [],
     languages: ['Common', 'one regional language'],
     names: {
-      male: ['Arden Vale', 'Tomas Reed', 'Edric Hale', 'Corin Ashby'],
+      male: ['Rowan Pell', 'Tomas Reed', 'Edric Hale', 'Corin Ashby'],
       female: ['Mira Holt', 'Elena Marsh', 'Sera Wren', 'Ada Thorne'],
     },
   }),
@@ -113,7 +113,7 @@ export const ANCESTRIES: Ancestry[] = [
     languages: ['Common', 'Elvish'],
     names: {
       male: ['Thalion Duskwind', 'Erevan Moonbrook', 'Aelar Silverleaf', 'Faelan Nightbloom'],
-      female: ['Liora Quill', 'Naivara Starwhisper', 'Sariel Brightwater', 'Ilyra Fernsong'],
+      female: ['Shava Leafwhisper', 'Naivara Starwhisper', 'Sariel Brightwater', 'Ilyra Fernsong'],
     },
   }),
   ancestry({
@@ -126,7 +126,7 @@ export const ANCESTRIES: Ancestry[] = [
     skills: ['history'],
     languages: ['Common', 'Dwarvish'],
     names: {
-      male: ['Tovan Ember', 'Durgan Stonehelm', 'Harbek Coalbeard', 'Rurik Ironfoot'],
+      male: ['Brottor Deepdelve', 'Durgan Stonehelm', 'Harbek Coalbeard', 'Rurik Ironfoot'],
       female: ['Hilde Frostbeard', 'Vistra Anvilmar', 'Eldra Gorunn', 'Brenna Hammerfall'],
     },
   }),
@@ -140,7 +140,7 @@ export const ANCESTRIES: Ancestry[] = [
     languages: ['Common', 'Halfling'],
     names: {
       male: ['Pip Tealeaf', 'Milo Brushgather', 'Cade Goodbarrel', 'Wellby Underbough'],
-      female: ['Mara Fen', 'Rosie Thorngage', 'Lidda Hilltop', 'Callie Greenbottle'],
+      female: ['Merla Applebrook', 'Rosie Thorngage', 'Lidda Hilltop', 'Callie Greenbottle'],
     },
   }),
   ancestry({
@@ -252,10 +252,22 @@ export function ancestryFromSelection(selection: CharacterRaceSelection, catalog
 
 const FALLBACK_NAMES: Record<SexKey, string[]> = ANCESTRIES[0].names
 
-/** The next suggested name for the ancestry, cycling past the current one. */
+function nameKey(name: string) {
+  return name.trim().toLowerCase()
+}
+
+/** The ready-made heroes' names: a suggestion never hands out one of them. */
+const READY_MADE_HERO_NAMES = new Set(['Arden Vale', 'Liora Quill', 'Mara Fen', 'Tovan Ember'].map(nameKey))
+
+/**
+ * The next suggested name for the ancestry, cycling past the current one
+ * (however it is capitalised), so the same name never comes twice in a row.
+ */
 export function suggestName(ancestryEntry: Ancestry | null, sex: SexKey, current: string) {
-  const names = ancestryEntry?.names[sex].length ? ancestryEntry.names[sex] : FALLBACK_NAMES[sex]
-  const index = names.indexOf(current.trim())
+  const names = (ancestryEntry?.names[sex].length ? ancestryEntry.names[sex] : FALLBACK_NAMES[sex]).filter(
+    (name) => !READY_MADE_HERO_NAMES.has(nameKey(name)),
+  )
+  const index = names.findIndex((name) => nameKey(name) === nameKey(current))
   return names[(index + 1) % names.length]
 }
 

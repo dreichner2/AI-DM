@@ -8,6 +8,7 @@ import { storyMood } from './storyMood'
 import { StoryPartyHud } from './StoryPartyHud'
 import { StoryTopBar } from './StoryTopBar'
 import type { StoryDrawerTab, StoryViewProps } from './types'
+import { partyWithViewer, viewerHero } from './viewerHero'
 
 const DRAWER_HOTKEYS: Record<string, StoryDrawerTab> = {
   c: 'character',
@@ -46,9 +47,13 @@ export function StoryView({
   const { textSize, typeface, reduceMotion } = useStoryPreferences()
   const mood = storyMood(board.worldState, board.sceneState, board.combatState)
   const viewerPlayerId = board.selectedPlayer?.player_id ?? board.playerId ?? inspector.selectedPlayerId
-  const viewer = board.activePlayers.find((player) => player.id === viewerPlayerId)
+  const viewer = viewerHero(board, inspector, viewerPlayerId)
+  const party = partyWithViewer(board.activePlayers, viewer)
   const snapshot = board.sessionState?.state_snapshot
   const vitality = useMemo(() => partyVitalityFromSnapshot(snapshot), [snapshot])
+  // Dying, stable, unconscious or dead: the hero is down whatever their hit points say.
+  const viewerDown =
+    viewerPlayerId !== null && (Boolean(vitality[viewerPlayerId]) || (viewer?.health ? viewer.health.currentHp <= 0 : false))
   const hasSpells = heroHasSpells(board, inspector)
 
   useEffect(() => {
@@ -82,11 +87,13 @@ export function StoryView({
       data-reduce-motion={reduceMotion ? '' : undefined}
     >
       <StoryAtmosphere mood={mood} viewerHp={viewer?.health?.currentHp ?? null} />
-      <h1 className="story-sr-only">{board.activeSessionTitle}</h1>
+      <h1 className="story-sr-only">{board.activeSession ? board.activeSessionTitle : board.campaign?.title}</h1>
       <div className="story-stage">
         <StoryTopBar
           board={board}
           chrome={chrome}
+          hero={viewer}
+          heroDown={viewerDown}
           drawerOpen={drawerOpen}
           drawerTab={drawerTab}
           onDrawerOpenChange={onDrawerOpenChange}
@@ -115,7 +122,7 @@ export function StoryView({
         </aside>
       </div>
       <StoryPartyHud
-        activePlayers={board.activePlayers}
+        activePlayers={party}
         viewerPlayerId={viewerPlayerId}
         vitality={vitality}
         onDrawerOpenChange={onDrawerOpenChange}

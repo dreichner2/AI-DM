@@ -11,6 +11,7 @@ import {
   ArrowLeftRight,
   BookPlus,
   Download,
+  Heart,
   LayoutPanelLeft,
   LogOut,
   Maximize2,
@@ -29,6 +30,7 @@ import {
 } from 'lucide-react'
 import { UNRECORDED_SCENE_NAME } from '../gameSelectors'
 import type { SessionBoardProps } from '../SessionBoard'
+import type { ActivePlayer } from '../types'
 import { EmberMark } from './glyphs'
 import type { StoryTextSize } from './sheets/storyPreferences'
 import type { StoryChromeProps, StoryDrawerTab } from './types'
@@ -53,6 +55,9 @@ const CONNECTION_LABELS: Record<StoryChromeProps['connection'], string> = {
 type StoryTopBarProps = {
   board: SessionBoardProps
   chrome: StoryChromeProps
+  /** The viewer's hero, for the HP readout narrow screens show here instead of in the dock. */
+  hero: ActivePlayer | null
+  heroDown: boolean
   drawerOpen: boolean
   drawerTab: StoryDrawerTab
   onDrawerOpenChange: (open: boolean, tab?: StoryDrawerTab) => void
@@ -121,9 +126,36 @@ function IconButton({
   )
 }
 
+/**
+ * The viewer's hit points beside the titles: "12 / 12" behind a small heart,
+ * in the danger tone at a quarter of the maximum or less, "Down" when down.
+ * Only narrow screens show it (story-shell.css); wider ones have the dock.
+ */
+function HeroHp({ hero, down, onOpen }: { hero: ActivePlayer; down: boolean; onOpen: () => void }) {
+  const health = hero.health
+  if (!health && !down) return null
+  const danger = down || (health ? health.currentHp / health.maxHp <= 0.25 : false)
+  const reading = down || !health ? 'Down' : `${health.currentHp} / ${health.maxHp}`
+  return (
+    <button
+      type="button"
+      className="story-topbar-hp"
+      data-tone={danger ? 'danger' : undefined}
+      aria-label={`HP ${reading}`}
+      title="Open character panel"
+      onClick={onOpen}
+    >
+      <Heart size={14} strokeWidth={1.6} aria-hidden="true" />
+      {reading}
+    </button>
+  )
+}
+
 export function StoryTopBar({
   board,
   chrome,
+  hero,
+  heroDown,
   drawerOpen,
   drawerTab,
   onDrawerOpenChange,
@@ -136,12 +168,15 @@ export function StoryTopBar({
   const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const musicRef = useRef<HTMLDivElement | null>(null)
   const worldSceneName = board.worldState.sceneName?.trim()
-  const sceneName =
-    board.sceneState?.locationName?.trim() ||
-    (worldSceneName === UNRECORDED_SCENE_NAME ? '' : worldSceneName) ||
-    board.activeSessionTitle
+  // An adventure with no chapter yet has no scene and no time of day: the line stays empty.
+  const chapterOpen = board.activeSession !== null
+  const sceneName = chapterOpen
+    ? board.sceneState?.locationName?.trim() ||
+      (worldSceneName === UNRECORDED_SCENE_NAME ? '' : worldSceneName) ||
+      board.activeSessionTitle
+    : ''
   const characterOpen = drawerOpen && drawerTab === 'character'
-  const clockLabel = board.worldState.clock?.label ?? ''
+  const clockLabel = chapterOpen ? board.worldState.clock?.label ?? '' : ''
 
   useEffect(() => {
     if (!menuOpen) return
@@ -272,12 +307,13 @@ export function StoryTopBar({
           <EmberMark size={24} />
         </button>
         <div className="story-titles">
-          <span className="story-label story-campaign-title">{board.campaignTitle || board.activeSessionTitle}</span>
+          <span className="story-label story-campaign-title">{board.campaign?.title ?? ''}</span>
           <span className="story-scene-line">
             <SceneName name={sceneName} />
             {clockLabel ? <span className="story-clock">{clockLabel}</span> : null}
           </span>
         </div>
+        {hero ? <HeroHp hero={hero} down={heroDown} onOpen={() => onDrawerOpenChange(true, 'character')} /> : null}
       </div>
 
       <div className="story-topbar-actions">

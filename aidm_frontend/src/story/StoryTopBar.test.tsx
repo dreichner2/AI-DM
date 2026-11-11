@@ -1,9 +1,13 @@
+/// <reference types="node" />
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { UNRECORDED_SCENE_NAME } from '../gameSelectors'
 import type { SessionBoardProps } from '../SessionBoard'
+import type { ActivePlayer } from '../types'
 import { makeBoardFixture } from './preview/fixtures'
 import { StoryTopBar } from './StoryTopBar'
 import type { StoryChromeProps, StoryDrawerTab } from './types'
@@ -33,17 +37,23 @@ function renderTopBar({
   onTextSizeChange = vi.fn(),
   onDrawerOpenChange = vi.fn(),
   drawerOpen = false,
+  hero = null,
+  heroDown = false,
 }: {
   chromeProps?: Partial<StoryChromeProps>
   board?: SessionBoardProps
   onTextSizeChange?: (size: 'default' | 'large' | 'extra') => void
   onDrawerOpenChange?: (open: boolean, tab?: StoryDrawerTab) => void
   drawerOpen?: boolean
+  hero?: ActivePlayer | null
+  heroDown?: boolean
 } = {}) {
   return render(
     <StoryTopBar
       board={board}
       chrome={chrome(chromeProps)}
+      hero={hero}
+      heroDown={heroDown}
       drawerOpen={drawerOpen}
       drawerTab="character"
       onDrawerOpenChange={onDrawerOpenChange}
@@ -87,6 +97,71 @@ describe('StoryTopBar', () => {
     })
     expect(screen.getByRole('banner')).not.toHaveTextContent('No scene recorded')
     expect(document.querySelector('.story-scene-name')).toHaveTextContent('Chapter 1')
+  })
+
+  it('leaves the chapter line empty for an adventure with no chapter, and never prints a placeholder', () => {
+    const board = makeBoardFixture('empty')
+    renderTopBar({
+      board: {
+        ...board,
+        activeSession: null,
+        sceneState: null,
+        activeSessionTitle: 'No session selected',
+        campaignTitle: 'The Lantern Road',
+      },
+    })
+    const banner = screen.getByRole('banner')
+    expect(banner).toHaveTextContent('The Lantern Road')
+    expect(banner).not.toHaveTextContent(/No session selected|Select a campaign|No campaign selected/)
+    expect(document.querySelector('.story-scene-name')).toHaveTextContent('')
+    expect(document.querySelector('.story-clock')).toBeNull()
+    cleanup()
+
+    // Still loading the adventure itself: no headline at all rather than a placeholder.
+    renderTopBar({
+      board: { ...board, campaign: null, activeSession: null, campaignTitle: 'No campaign selected', activeSessionTitle: 'Select a campaign' },
+    })
+    expect(screen.getByRole('banner')).not.toHaveTextContent(/No session selected|Select a campaign|No campaign selected/)
+  })
+
+  it("reads the hero's hit points beside the titles and opens the Character tab", () => {
+    const onDrawerOpenChange = vi.fn()
+    const hero = (currentHp: number): ActivePlayer => ({
+      id: 7,
+      character_name: 'Ysolde Marrow',
+      name: 'Danny',
+      health: { tone: 'wounded', label: 'Wounded', currentHp, maxHp: 24 },
+    })
+    const { unmount } = renderTopBar({ hero: hero(12), onDrawerOpenChange })
+    const hp = screen.getByRole('button', { name: 'HP 12 / 24' })
+    expect(hp).toHaveTextContent('12 / 24')
+    expect(hp.querySelector('svg')).toHaveClass('lucide-heart')
+    expect(hp).not.toHaveAttribute('data-tone')
+    expect(hp.previousElementSibling).toHaveClass('story-titles')
+    fireEvent.click(hp)
+    expect(onDrawerOpenChange).toHaveBeenCalledWith(true, 'character')
+    unmount()
+
+    const { unmount: unmountQuarter } = renderTopBar({ hero: hero(6) })
+    expect(screen.getByRole('button', { name: 'HP 6 / 24' })).toHaveAttribute('data-tone', 'danger')
+    unmountQuarter()
+
+    const { unmount: unmountDown } = renderTopBar({ hero: hero(0), heroDown: true })
+    expect(screen.getByRole('button', { name: 'HP Down' })).toHaveTextContent('Down')
+    expect(screen.getByRole('button', { name: 'HP Down' })).toHaveAttribute('data-tone', 'danger')
+    unmountDown()
+
+    renderTopBar({ hero: null })
+    expect(screen.queryByRole('button', { name: /^HP / })).toBeNull()
+  })
+
+  it('shows the hit points only below the width where the dock shows the party', () => {
+    const css = readFileSync(resolve(__dirname, '../styles/story-shell.css'), 'utf8')
+    expect(css).toMatch(/\.story-shell \.story-topbar-hp \{[^}]*display: none;/)
+    const narrow = css.slice(css.indexOf('@media (max-width: 899.98px)'))
+    const block = narrow.slice(0, narrow.indexOf('}\n}') + 1)
+    expect(block).toContain('.story-shell .story-party { display: none; }')
+    expect(block).toContain('.story-shell .story-topbar-hp { display: inline-flex; }')
   })
 
   it('shows the day clock after the scene name', () => {
@@ -208,6 +283,8 @@ describe('StoryTopBar', () => {
       <StoryTopBar
         board={board}
         chrome={chrome({ connection })}
+        hero={null}
+        heroDown={false}
         drawerOpen={false}
         drawerTab="character"
         onDrawerOpenChange={vi.fn()}

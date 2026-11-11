@@ -339,6 +339,61 @@ describe('StoryComposer', () => {
     }
   })
 
+  it('lets the suggestions take a second line where the stylesheet allows two', () => {
+    let rowWidth = 300
+    const layout = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const width = this.classList.contains('story-suggestions')
+        ? rowWidth
+        : this.classList.contains('story-chip') ? (this.textContent ?? '').length * 8 : 0
+      return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}) }
+    })
+    try {
+      const { props, rerender } = renderComposer()
+      const row = screen.getByRole('group', { name: 'Suggestions' })
+      const visible = () => within(row).getAllByRole('button').filter((chip) => !chip.hidden).map((chip) => chip.textContent)
+      // One line of 300: 144 px and More… only.
+      expect(visible()).toEqual(['Examine Lead wagon', 'More…'])
+
+      // Narrow screens (story-dock.css): 144 + 144 on the first line, 160 on the second.
+      row.style.setProperty('--story-chip-rows', '2')
+      rerender(<StoryComposer {...props} />)
+      expect(visible()).toEqual(['Examine Lead wagon', 'Talk to Marta Vell', 'Go to North causeway'])
+
+      rowWidth = 200
+      rerender(<StoryComposer {...props} />)
+      expect(visible()).toEqual(['Examine Lead wagon', 'Talk to Marta Vell', 'More…'])
+    } finally {
+      layout.mockRestore()
+    }
+  })
+
+  it('fits the suggestions again whenever web fonts finish loading', () => {
+    const fonts = new EventTarget()
+    Object.defineProperty(document, 'fonts', { configurable: true, value: fonts })
+    let charWidth = 6
+    const layout = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const width = this.classList.contains('story-suggestions')
+        ? 400
+        : this.classList.contains('story-chip') ? (this.textContent ?? '').length * charWidth : 0
+      return { x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}) }
+    })
+    try {
+      renderComposer()
+      const visible = () =>
+        within(screen.getByRole('group', { name: 'Suggestions' })).getAllByRole('button').map((chip) => chip.textContent)
+      // The fallback face is narrow enough for every chip…
+      expect(visible()).toEqual(['Examine Lead wagon', 'Talk to Marta Vell', 'Go to North causeway'])
+
+      // …the story face, arriving later, is not.
+      charWidth = 8
+      fonts.dispatchEvent(new Event('loadingdone'))
+      expect(visible()).toEqual(['Examine Lead wagon', 'Talk to Marta Vell', 'More…'])
+    } finally {
+      layout.mockRestore()
+      Reflect.deleteProperty(document, 'fonts')
+    }
+  })
+
   it('opens the tray on Scene from More…, and on the Combat list during a fight', () => {
     const many = ['Mara', 'Tovin', 'Osric'].map((name) => ({ id: name, name, race: '', role: '', disposition: '', status: 'present' }))
     renderComposer({ board: { worldState: testWorld({ presentNpcs: many }) } })

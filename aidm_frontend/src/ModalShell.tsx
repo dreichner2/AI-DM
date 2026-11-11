@@ -4,6 +4,8 @@ import {
 } from 'react'
 import { X } from 'lucide-react'
 import { useStoryPreferences } from './story/sheets/storyPreferences'
+import { useSharedStoryNoticeLine } from './story/storyNoticeLine'
+import { StoryNotices } from './story/StoryNotices'
 
 /** narrow: confirmations; standard: most sheets; wide: character editing, pack import. */
 export type SheetSize = 'narrow' | 'standard' | 'wide'
@@ -31,7 +33,8 @@ type ModalShellProps = {
 
 /**
  * Every menu and dialog is a sheet: a glass panel over the dimmed game, in
- * the Story design language whichever view opened it (story-sheets.css).
+ * the Story design language whichever view opened it (story-sheets.css). In
+ * the Story view the app's notice line shows at the sheet's foot.
  */
 export function ModalShell({
   busy,
@@ -48,6 +51,7 @@ export function ModalShell({
   title,
 }: ModalShellProps) {
   const { reduceMotion } = useStoryPreferences()
+  const noticeLine = useSharedStoryNoticeLine()
   const descriptionId = describedBy ?? `${labelledBy}-description`
 
   return (
@@ -93,6 +97,7 @@ export function ModalShell({
           </header>
         )}
         {children}
+        {noticeLine ? <StoryNotices line={noticeLine} className="story-dialog-notice" /> : null}
       </section>
     </div>
   )

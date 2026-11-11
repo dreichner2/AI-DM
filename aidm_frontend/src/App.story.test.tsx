@@ -270,9 +270,8 @@ describe('Story mode in the app', () => {
 
     expect(await screen.findByText(/Morning finds the caravan/)).toBeInTheDocument()
     expect(localStorage.getItem('aidm:open:selectedSessionId')).toBe('21')
-    const notices = document.querySelector('.story-notices')
-    expect(notices).toHaveAttribute('role', 'status')
-    expect(notices).toHaveTextContent(CHAPTER_ENDED_NOTICE)
+    const notices = document.querySelector('.story-notices') as HTMLElement
+    expect(within(notices).getByRole('status')).toHaveTextContent(CHAPTER_ENDED_NOTICE)
   })
 
   it('follows a session_ended REST refusal to the current chapter in the console', async () => {
@@ -355,5 +354,139 @@ describe('Story mode in the app', () => {
       expect.objectContaining({ session_id: 20, player_id: 30, turn_id: 77, selected_item_id: 'long' }),
     )
     expect(screen.queryByRole('region', { name: 'The Dungeon Master asks' })).not.toBeInTheDocument()
+  })
+})
+
+describe('What the app says, in the Story view', () => {
+  beforeEach(setupAppTest)
+  afterEach(teardownAppTest)
+
+  it('says the link was copied when Share is chosen, on one line above the dock that fades', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    await renderStoryApp()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Adventure menu' })[0]!)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Share' }))
+
+    const notices = document.querySelector('.story-composer-slot .story-notices') as HTMLElement
+    await waitFor(() => expect(within(notices).getByRole('status')).toHaveTextContent('Session link copied.'))
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('campaign=10&session=20'))
+    expect(notices.nextElementSibling).toHaveClass('story-dock')
+
+    // Clicking the line dismisses it.
+    fireEvent.click(within(notices).getByRole('button', { name: 'Session link copied.' }))
+    expect(within(notices).getByRole('status')).toBeEmptyDOMElement()
+  })
+
+  it('says why a send was refused, and says it again when it happens again', async () => {
+    await renderStoryApp()
+    await joinSocket()
+    socketMock.socket.connected = false
+
+    const input = screen.getByLabelText('Your Action')
+    fireEvent.change(input, { target: { value: 'I try the door.' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    const notices = document.querySelector('.story-composer-slot .story-notices') as HTMLElement
+    expect(within(notices).getByRole('status')).toHaveTextContent('Realtime is reconnecting. Try again in a moment.')
+    expect(sendMessageEmits()).toHaveLength(0)
+
+    fireEvent.click(within(notices).getByRole('button', { name: 'Realtime is reconnecting. Try again in a moment.' }))
+    expect(within(notices).getByRole('status')).toBeEmptyDOMElement()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(within(notices).getByRole('status')).toHaveTextContent('Realtime is reconnecting. Try again in a moment.')
+  })
+
+  it('keeps an error until it is dismissed, as an alert', async () => {
+    await renderStoryApp()
+    await joinSocket()
+
+    await act(async () => {
+      socketMock.serverEmit('error', { error: 'The table could not save that turn.' })
+    })
+    const notices = document.querySelector('.story-composer-slot .story-notices') as HTMLElement
+    const alert = within(notices).getByRole('alert')
+    expect(alert).toHaveTextContent('The table could not save that turn.')
+    fireEvent.click(within(alert).getByRole('button', { name: 'The table could not save that turn.' }))
+    expect(alert).toBeEmptyDOMElement()
+  })
+})
+
+describe('An adventure before its first chapter', () => {
+  beforeEach(setupAppTest)
+  afterEach(teardownAppTest)
+
+  function blankPageCampaign() {
+    appTestState.campaigns = appTestState.campaigns.map((campaign) => ({
+      ...campaign,
+      session_count: 0,
+      latest_session_id: null,
+    }))
+    appTestState.sessionsByCampaign[10] = []
+    localStorage.removeItem('aidm:selectedSessionId')
+    localStorage.removeItem('aidm:playView')
+  }
+
+  it('begins with one click: creates the first chapter, joins it, then sends the opening', async () => {
+    blankPageCampaign()
+    render(<App />)
+
+    const begin = await screen.findByRole('button', { name: 'Begin the adventure' })
+    // No placeholder headline, and the chosen hero already waits in the dock.
+    const banner = screen.getByRole('banner')
+    expect(banner).toHaveTextContent('Smoke Campaign')
+    expect(banner).not.toHaveTextContent(/No session selected|Select a campaign|No campaign selected/)
+    expect(within(screen.getByRole('group', { name: 'Party' })).getByRole('button', { name: /^Ember/ })).toBeInTheDocument()
+
+    fireEvent.click(begin)
+    expect(await screen.findByText('The story is beginning')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(appTestState.fetchCalls.filter((call) => call.path === '/api/sessions/start')).toHaveLength(1),
+    )
+    expect(appTestState.fetchCalls.find((call) => call.path === '/api/sessions/start')?.body).toMatchObject({
+      campaign_id: 10,
+      continuity: 'continue',
+    })
+    await waitFor(() => expect(socketMock.io).toHaveBeenCalled())
+    expect(sendMessageEmits()).toHaveLength(0)
+
+    await joinSocket()
+    await waitFor(() => expect(sendMessageEmits()).toHaveLength(1))
+    expect(sendMessageEmits()[0]?.[1]).toMatchObject({ session_id: 21, campaign_id: 10, player_id: 30, message_kind: 'opening' })
+    expect(screen.getByText('The story is beginning')).toBeInTheDocument()
+    expect(screen.queryByText(/Choose a campaign, session, and player/)).not.toBeInTheDocument()
+  })
+
+  it('shows the title screen, not an empty Story view, when no adventure is open', async () => {
+    localStorage.removeItem('aidm:selectedCampaignId')
+    localStorage.removeItem('aidm:selectedSessionId')
+    localStorage.removeItem('aidm:selectedPlayerId')
+    localStorage.removeItem('aidm:playView')
+    localStorage.setItem('aidm:hasPlayed', 'true')
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'AI-DM' })).toBeInTheDocument()
+    expect(screen.queryByRole('log', { name: 'Session timeline' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Your adventures' })).not.toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/No session selected|Select a campaign|No campaign selected/)
+  })
+
+  it('keeps the Story view, saying what is wrong, while the game server cannot be reached', async () => {
+    localStorage.removeItem('aidm:selectedCampaignId')
+    localStorage.removeItem('aidm:selectedSessionId')
+    localStorage.removeItem('aidm:selectedPlayerId')
+    localStorage.removeItem('aidm:playView')
+    const harnessFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(String(input), 'http://localhost:3000').pathname === '/api/health') throw new TypeError('Failed to fetch')
+      return harnessFetch(input, init)
+    }))
+    render(<App />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Connection failed: Failed to fetch')
+    expect(screen.getByRole('banner')).not.toHaveTextContent(/No session selected|Select a campaign|No campaign selected/)
+    expect(screen.queryByRole('button', { name: 'Begin the adventure' })).not.toBeInTheDocument()
   })
 })

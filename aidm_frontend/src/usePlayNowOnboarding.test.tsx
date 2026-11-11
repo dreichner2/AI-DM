@@ -340,6 +340,55 @@ describe('usePlayNowOnboarding', () => {
     expect(result.current.showTitleScreen).toBe(false)
   })
 
+  it('shows the title screen in the Story view whenever no adventure is open', () => {
+    localStorage.setItem('aidm:hasPlayed', 'true')
+    const options = createOptions({ campaignCount: 2 })
+    const { result, rerender } = renderHook(
+      ({ values }) => usePlayNowOnboarding(values),
+      { initialProps: { values: options } },
+    )
+    expect(result.current.showTitleScreen).toBe(false)
+
+    rerender({ values: createOptions({ campaignCount: 2, storyView: true }) })
+    expect(result.current.showTitleScreen).toBe(true)
+    // A stale hero or chapter choice without an adventure still leaves nothing to play.
+    rerender({ values: createOptions({ campaignCount: 2, storyView: true, selectedPlayerId: 30, selectedSessionId: 20 }) })
+    expect(result.current.showTitleScreen).toBe(true)
+    rerender({ values: createOptions({ campaignCount: 2, storyView: true, selectedCampaignId: 11 }) })
+    expect(result.current.showTitleScreen).toBe(false)
+    // A sheet opened from the title screen covers it.
+    rerender({ values: createOptions({ campaignCount: 2, storyView: true, modalOpen: true }) })
+    expect(result.current.showTitleScreen).toBe(false)
+  })
+
+  it('reads an adventure as not yet begun until its first turn', async () => {
+    const blankPage = campaign({ campaign_id: 11, title: 'The Salt Road', session_count: 0, latest_activity_at: '2026-11-10T09:00:00Z' })
+    const sessions: SessionSummary[] = []
+    routeApi({ '/api/campaigns/11/workspace': () => workspaceFor(blankPage, sessions) })
+    const options = createOptions({ campaignCount: 1, campaigns: [blankPage] })
+    const { result, rerender } = renderHook(
+      ({ values }) => usePlayNowOnboarding(values),
+      { initialProps: { values: options } },
+    )
+    // From the campaign list: no chapter at all.
+    expect(result.current.titleScreenProps.resume?.begun).toBe(false)
+    await waitFor(() => expect(callsTo('/api/campaigns/11/workspace')).toHaveLength(1))
+    expect(result.current.titleScreenProps.resume?.begun).toBe(false)
+
+    // Its first chapter exists but nothing has been played in it.
+    sessions.push(chapter({ session_id: 301, chapter_number: 1, is_current: true, turn_count: 0 }))
+    rerender({ values: { ...options, campaigns: [{ ...blankPage, session_count: 1 }], modalOpen: true } })
+    rerender({ values: { ...options, campaigns: [{ ...blankPage, session_count: 1 }] } })
+    await waitFor(() => expect(result.current.titleScreenProps.resume?.chapterNumber).toBe(1))
+    expect(result.current.titleScreenProps.resume?.begun).toBe(false)
+
+    sessions[0] = { ...sessions[0], turn_count: 2 }
+    rerender({ values: { ...options, modalOpen: true } })
+    rerender({ values: options })
+    await waitFor(() => expect(callsTo('/api/campaigns/11/workspace')).toHaveLength(3))
+    await waitFor(() => expect(result.current.titleScreenProps.resume?.begun).toBe(true))
+  })
+
   it('starts hosted Play Now as a guest while keeping account choices separate', async () => {
     const payload = {
       ...playNowResponse(),
@@ -658,6 +707,7 @@ describe('usePlayNowOnboarding', () => {
       scene: 'The Lantern Post Inn',
       lastPlayedAt: '2026-11-09T10:00:00Z',
       continueLine: null,
+      begun: true,
     })
     await waitFor(() => expect(result.current.titleScreenProps.resume?.chapterNumber).toBe(2))
     expect(result.current.titleScreenProps.resume).toEqual({
@@ -666,6 +716,7 @@ describe('usePlayNowOnboarding', () => {
       scene: 'The Old North Road',
       lastPlayedAt: '2026-11-09T12:00:00Z',
       continueLine: 'The Old North Road — Mist lies on the milestones.',
+      begun: true,
     })
     rerender({ values: { ...options } })
     expect(callsTo('/api/campaigns/11/workspace')).toHaveLength(1)

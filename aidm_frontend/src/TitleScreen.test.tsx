@@ -40,6 +40,7 @@ function resumeFixture(overrides: Partial<TitleResume> = {}): TitleResume {
     scene: 'The Lantern Post Inn',
     lastPlayedAt: new Date(Date.now() - 2 * 60 * 60 * 1000 - 60_000).toISOString(),
     continueLine: 'The Lantern Post Inn — At dusk, an empty caravan rolls into the Lantern Post.',
+    begun: true,
     ...overrides,
   }
 }
@@ -141,6 +142,15 @@ describe('TitleScreen', () => {
 
     expect(screen.getByText('The Road of Unremembered Kings')).toBeInTheDocument()
     expect(screen.queryByText(/Chapter|played/)).not.toBeInTheDocument()
+  })
+
+  it('reads Not yet begun for an adventure with no turns, where it would say when it was played', () => {
+    renderTitleScreen({
+      resume: resumeFixture({ chapterNumber: null, scene: null, lastPlayedAt: new Date().toISOString(), continueLine: null, begun: false }),
+    })
+
+    expect(screen.getByText('Not yet begun')).toBeInTheDocument()
+    expect(screen.queryByText(/played/)).not.toBeInTheDocument()
   })
 
   it('reveals the ready-made adventure in place for a returning player', () => {

@@ -21,6 +21,8 @@ import type { SessionBoardProps } from '../../SessionBoard'
 import type { TimelineEntry } from '../../types'
 import { StoryComposer } from '../StoryComposer'
 import { StoryDrawer } from '../StoryDrawer'
+import { useStoryNoticeLine, type StoryNotice } from '../storyNoticeLine'
+import { StoryNotices } from '../StoryNotices'
 import { StoryView } from '../StoryView'
 import type { StoryDrawerTab } from '../types'
 import { isStoryPreviewState, makeBoardFixture, makeInspectorFixture, type StoryPreviewState } from './fixtures'
@@ -32,7 +34,8 @@ import { isStoryPreviewState, makeBoardFixture, makeInspectorFixture, type Story
  * journal block and story beats), `wizard` (the combat ribbon for a spellcaster), `downed`
  * (a stable hero out of combat, someone else at the table) and `closein` (an attack that moves first),
  * plus `drawer=character|pack|magic|journal|map`, `section=<tray section>` (opens the tray there),
- * `operator=1` and `shell=1` (inside the real StoryView instead of a bare column). The composer
+ * `notice=status|alert` (the app's notice line above the dock), `operator=1` and `shell=1`
+ * (inside the real StoryView instead of a bare column). The composer
  * state is simulated locally so typing, the tray and the drawer can be exercised.
  */
 
@@ -77,6 +80,11 @@ const params = new URLSearchParams(window.location.search)
 const dockState = DOCK_STATES.find((state) => state === params.get('state')) ?? 'idle'
 const initialDrawer = DRAWER_TABS.find((tab) => tab === params.get('drawer')) ?? null
 const traySection = params.get('section')
+const PREVIEW_NOTICES: Record<string, StoryNotice> = {
+  status: { key: 'copied', text: 'Session link copied.', fades: true },
+  alert: { key: 'failed', text: 'Could not start the next chapter: the game server did not answer.', tone: 'fail' },
+}
+const previewNotices = PREVIEW_NOTICES[params.get('notice') ?? ''] ? [PREVIEW_NOTICES[params.get('notice') ?? '']] : []
 const operator = params.get('operator') === '1'
 const inShell = params.get('shell') === '1'
 document.body.style.margin = '0'
@@ -544,17 +552,21 @@ export function DockPreview() {
     if (section) window.setTimeout(() => button('.story-tray-nav-link', section)?.click(), 0)
   }, [])
 
+  const noticeLine = useStoryNoticeLine(previewNotices)
   const endedChapter = dockState === 'ended' ? { onContinue: () => console.info('[dock preview] continue') } : null
   const openDrawer = (tab: StoryDrawerTab) => {
     setDrawerTab(tab)
     setDrawerOpen(true)
   }
   const composerElement = (
-    <StoryComposer
-      board={liveBoard}
-      chrome={{ connection: 'ready', canUseOperatorTools: operator, endedChapter }}
-      onOpenDrawer={openDrawer}
-    />
+    <>
+      <StoryNotices line={noticeLine} />
+      <StoryComposer
+        board={liveBoard}
+        chrome={{ connection: 'ready', canUseOperatorTools: operator, endedChapter }}
+        onOpenDrawer={openDrawer}
+      />
+    </>
   )
   const drawerElement = (
     <StoryDrawer

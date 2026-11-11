@@ -91,7 +91,7 @@ describe('StoryAccountSheet', () => {
     const dialog = screen.getByRole('dialog', { name: 'Account' })
     expect(within(dialog).getByText('Ember Vale')).toBeInTheDocument()
     expect(within(dialog).getByText('At Ember Table · owner')).toBeInTheDocument()
-    expect(within(dialog).queryByLabelText('Backend URL')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Game server address')).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Switch table' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Log out' }))
     expect(props.onSwitchTable).toHaveBeenCalledOnce()

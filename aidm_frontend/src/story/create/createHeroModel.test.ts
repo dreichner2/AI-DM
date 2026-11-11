@@ -103,6 +103,27 @@ describe('createHeroModel', () => {
     expect(ancestryById('human')?.names.male).toContain(suggestName(null, 'male', ''))
   })
 
+  it("never suggests a ready-made hero's name, nor the same name twice in a row", () => {
+    const readyMade = ['Arden Vale', 'Liora Quill', 'Mara Fen', 'Tovan Ember']
+    const sexes = ['male', 'female'] as const
+    for (const entry of [...ANCESTRIES, null]) {
+      for (const sex of sexes) {
+        let current = ''
+        for (let press = 0; press < 10; press += 1) {
+          const next = suggestName(entry, sex, current)
+          expect(readyMade).not.toContain(next)
+          expect(next.toLowerCase()).not.toBe(current.trim().toLowerCase())
+          current = next
+        }
+        // A suggestion typed back in another case or with stray spaces still moves on.
+        const first = suggestName(entry, sex, '')
+        expect(suggestName(entry, sex, `  ${first.toUpperCase()} `)).not.toBe(first)
+      }
+    }
+    // A ready-made name typed in by the player is never offered back either.
+    expect(suggestName(ancestryById('human'), 'male', 'Arden Vale')).not.toBe('Arden Vale')
+  })
+
   it('lays the standard array out by each core class priority', () => {
     expect(CORE_CLASSES.map((entry) => entry.name).sort()).toEqual([
       'Barbarian', 'Bard', 'Cleric', 'Druid', 'Fighter', 'Monk', 'Paladin', 'Ranger', 'Rogue', 'Sorcerer', 'Warlock', 'Wizard',

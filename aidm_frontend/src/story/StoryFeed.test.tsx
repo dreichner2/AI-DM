@@ -1,5 +1,8 @@
+/// <reference types="node" />
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionBoardProps } from '../SessionBoard'
@@ -236,6 +239,27 @@ describe('StoryFeed', () => {
     expect(screen.getByText('The story is beginning')).toBeInTheDocument()
   })
 
+  it('keeps the beginning line while a blank page’s first chapter is created and loaded', () => {
+    const onStartAdventure = vi.fn()
+    const noChapter = { activeSession: null, sessionState: null, onStartAdventure }
+    const { rerender } = render(<StoryFeed board={board(noChapter)} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Begin the adventure' }))
+    expect(onStartAdventure).toHaveBeenCalledTimes(1)
+
+    rerender(<StoryFeed board={board({ ...noChapter, adventureBeginning: true })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Begin the adventure' })).toBeNull()
+    expect(screen.getByText('The story is beginning')).toHaveAttribute('role', 'status')
+
+    // Begin needs an adventure: with none open (only while the server is out of reach) there is no button.
+    rerender(<StoryFeed board={board({ ...noChapter, campaign: null })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: 'Begin the adventure' })).toBeNull()
+
+    // The new chapter loading under it does not swap the line for the loading marks.
+    rerender(<StoryFeed board={board({ adventureBeginning: true, sessionLoading: true, onStartAdventure })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
+    expect(screen.queryByLabelText('Loading the story')).toBeNull()
+    expect(screen.getByText('The story is beginning')).toBeInTheDocument()
+  })
+
   it('shows shimmering lines while the session loads', () => {
     const { container } = render(<StoryFeed board={board({ sessionLoading: true })} textSize="default" onExitToTitle={vi.fn()} onOpenBeatTarget={vi.fn()} />)
     expect(screen.getByLabelText('Loading the story')).toBeInTheDocument()
@@ -384,6 +408,11 @@ describe('StoryFeed beats from the server', () => {
     const hint = within(changes).getByRole('button', { name: /^Scripted narrator/ })
     expect(hint).toHaveClass('story-turn-note')
     expect(hint).not.toHaveClass('story-label')
+    // Its line takes the column's width, so the one-line hint cannot widen the story on a phone.
+    expect(hint.parentElement).toHaveClass('story-turn-line')
+    expect(readFileSync(resolve(__dirname, '../styles/story-feed.css'), 'utf8')).toMatch(
+      /\.story-change-list \.story-turn-line \{[^}]*contain: inline-size;/,
+    )
   })
 
   it('shows an attack against the AC the roll itself carries, or just hit or miss without one', () => {

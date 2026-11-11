@@ -183,6 +183,24 @@ describe('StoryView', () => {
     expect(onDrawerOpenChange).toHaveBeenCalledWith(true, 'character')
   })
 
+  it('shows the chosen hero in the dock before the first chapter begins', () => {
+    const inspector = makeInspectorFixture()
+    const board = makeBoardFixture('empty')
+    renderView({ board: { ...board, activeSession: null, sessionState: null, activePlayers: [] }, inspector })
+
+    const party = screen.getByRole('group', { name: 'Party' })
+    const [hero, ...others] = within(party).getAllByRole('button')
+    expect(others).toEqual([])
+    expect(hero).toHaveAttribute('aria-label', 'Ysolde Marrow: Uninjured')
+    expect(hero.querySelector('img')).toHaveAttribute('src', inspector.characterAvatarSrc)
+    expect(within(party).getByText('Ysolde Marrow')).toBeInTheDocument()
+    expect(within(party).getByText('HP 24 / 24')).toBeInTheDocument()
+    // Narrow screens read the same hit points in the top bar.
+    expect(screen.getByRole('button', { name: 'HP 24 / 24' })).toBeInTheDocument()
+    // No chapter yet: the hidden heading names the adventure.
+    expect(screen.getByRole('heading', { level: 1, name: 'The Lantern Road' })).toBeInTheDocument()
+  })
+
   it('applies and remembers the text size in the console’s reading settings', () => {
     localStorage.setItem('aidm:chatTextSettings', JSON.stringify({ size: 'default', font: 'mono' }))
     renderView()

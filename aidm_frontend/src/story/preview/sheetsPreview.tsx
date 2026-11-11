@@ -10,7 +10,8 @@ import { PlayerEditDialog } from '../../PlayerEditDialog'
 import { ModalShell } from '../../ModalShell'
 import { CharacterJoinDialog } from '../../ProfileCharacterDialogs'
 import { profileIconSrcForCharacter } from '../../profileIcons'
-import type { Campaign, Player, SessionImportMode, SessionSummary, World } from '../../types'
+import { RuntimeSettingsDialog } from '../../RuntimeSettingsDialog'
+import type { Campaign, LlmProviderOption, Player, SessionImportMode, SessionSummary, World } from '../../types'
 import type { CampaignPackExample, CreateCampaignForm } from '../../useCampaignActions'
 import type { PlayerEditDialogState } from '../../usePlayerProfileActions'
 import type { RuntimeSettingsForm } from '../../useRuntimeSettings'
@@ -18,25 +19,32 @@ import { ShareSessionDialog } from '../../WorkspaceDialogs'
 import { AdventuresSheet } from '../sheets/AdventuresSheet'
 import { NewAdventureSheet } from '../sheets/NewAdventureSheet'
 import { StoryAccountSheet, type AccountAccessProps } from '../sheets/StoryAccountSheet'
-import { StorySettingsSheet } from '../sheets/StorySettingsSheet'
+import { StorySettingsSheet, type NarratorSetting } from '../sheets/StorySettingsSheet'
+import { StoryNoticeContext, type StoryNoticeLineState } from '../storyNoticeLine'
 import { StoryView } from '../StoryView'
 import type { StoryChromeProps } from '../types'
 import { makeBoardFixture, makeInspectorFixture } from './fixtures'
 
 /**
  * Development-only harness for the menu and dialog sheets (story-sheets-preview.html),
- * each over the Story stage: `?sheet=settings|account|account-signed-out|adventures|
- * new-adventure|new-adventure-step2|share|next-chapter|confirm-delete|edit-character|
- * choose-character|import-save|dice|pack-import`.
+ * each over the Story stage: `?sheet=settings|settings-no-narrator|settings-scripted|
+ * account|account-signed-out|adventures|new-adventure|new-adventure-scripted|
+ * new-adventure-step2|connection|share|next-chapter|confirm-delete|edit-character|
+ * choose-character|import-save|dice|pack-import`. `&notice=status|alert` shows the
+ * app's notice line at the sheet's foot.
  */
 
 const SHEETS = [
   'settings',
+  'settings-no-narrator',
+  'settings-scripted',
   'account',
   'account-signed-out',
   'adventures',
   'new-adventure',
+  'new-adventure-scripted',
   'new-adventure-step2',
+  'connection',
   'share',
   'next-chapter',
   'confirm-delete',
@@ -51,6 +59,7 @@ type PreviewSheet = (typeof SHEETS)[number]
 const params = new URLSearchParams(window.location.search)
 const sheetParam = params.get('sheet')
 const previewSheet: PreviewSheet = SHEETS.find((sheet) => sheet === sheetParam) ?? 'settings'
+const noticeParam = params.get('notice')
 
 const noop = () => {}
 const HOUR_MS = 60 * 60 * 1000
@@ -158,6 +167,41 @@ const SAVE_SESSION: SessionSummary = {
   play_now: false,
 }
 
+function provider(id: string, label: string, configured: boolean, models: Array<[string, string]>): LlmProviderOption {
+  return {
+    id,
+    label,
+    configured,
+    default_model: models[0][0],
+    models: models.map(([modelId, modelLabel]) => ({ id: modelId, label: modelLabel })),
+  }
+}
+
+const SCRIPTED = provider('fallback', 'Fallback', true, [['deterministic-v1', 'Deterministic Local Fallback']])
+const AI_PROVIDERS = [
+  provider('deepseek', 'DeepSeek', true, [['deepseek-v4-pro', 'DeepSeek V4 Pro'], ['deepseek-v4-flash', 'DeepSeek V4 Flash']]),
+  provider('gemini', 'Gemini', true, [['gemini-3-pro', 'Gemini 3 Pro']]),
+  provider('nvidia', 'NVIDIA', false, [['kimi-k3', 'Kimi K3']]),
+]
+
+const NARRATORS: Record<'ai' | 'none' | 'scripted', NarratorSetting> = {
+  ai: { current: { provider: 'deepseek', model: 'deepseek-v4-pro' }, providers: [SCRIPTED, ...AI_PROVIDERS], pending: false },
+  scripted: { current: { provider: 'fallback', model: 'deterministic-v1' }, providers: [SCRIPTED, ...AI_PROVIDERS], pending: false },
+  none: {
+    current: { provider: 'fallback', model: 'deterministic-v1' },
+    providers: [SCRIPTED, ...AI_PROVIDERS.map((option) => ({ ...option, configured: false }))],
+    pending: false,
+  },
+}
+
+const NOTICES: Record<string, StoryNoticeLineState> = {
+  status: { notice: { key: 'copied', text: 'Session link copied.', fades: true }, dismiss: noop },
+  alert: {
+    notice: { key: 'refused', text: 'Only the owner table admin can change global LLM runtime config.', tone: 'fail' },
+    dismiss: noop,
+  },
+}
+
 const EMPTY_RUNTIME_FORM: RuntimeSettingsForm = {
   baseUrl: '',
   workspaceToken: '',
@@ -242,7 +286,15 @@ function AccountAccessPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement 
   )
 }
 
-function NewAdventurePreview({ dialogRef, step2 }: { dialogRef: RefObject<HTMLElement | null>; step2: boolean }) {
+function NewAdventurePreview({
+  dialogRef,
+  scriptedNarrator,
+  step2,
+}: {
+  dialogRef: RefObject<HTMLElement | null>
+  scriptedNarrator: boolean
+  step2: boolean
+}) {
   const [form, setForm] = useState<CreateCampaignForm>({ title: '', description: '', worldId: '5', worldName: '', packId: '' })
   const opened = useRef(false)
   useEffect(() => {
@@ -260,8 +312,25 @@ function NewAdventurePreview({ dialogRef, step2 }: { dialogRef: RefObject<HTMLEl
       packOptions={PACKS}
       packOptionsPending={false}
       pending={false}
+      scriptedNarrator={scriptedNarrator}
       setForm={setForm}
       worlds={WORLDS}
+    />
+  )
+}
+
+function ConnectionPreview({ dialogRef }: { dialogRef: RefObject<HTMLElement | null> }) {
+  const [form, setForm] = useState<RuntimeSettingsForm>(EMPTY_RUNTIME_FORM)
+  return (
+    <RuntimeSettingsDialog
+      defaultBaseUrl=""
+      dialogRef={dialogRef}
+      error=""
+      form={form}
+      onClose={noop}
+      onFormChange={setForm}
+      onSubmit={(event) => event.preventDefault()}
+      open
     />
   )
 }
@@ -330,11 +399,15 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
   const dialogRef = useRef<HTMLElement | null>(null)
   switch (sheet) {
     case 'settings':
+    case 'settings-no-narrator':
+    case 'settings-scripted':
       return (
         <StorySettingsSheet
           dialogRef={dialogRef}
           onClose={noop}
           narration={{ enabled: true, problem: '' }}
+          narrator={NARRATORS[sheet === 'settings' ? 'ai' : sheet === 'settings-scripted' ? 'scripted' : 'none']}
+          onNarratorChange={noop}
           onNarrationChange={noop}
           view="story"
           onViewChange={noop}
@@ -381,8 +454,17 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
         />
       )
     case 'new-adventure':
+    case 'new-adventure-scripted':
     case 'new-adventure-step2':
-      return <NewAdventurePreview dialogRef={dialogRef} step2={sheet === 'new-adventure-step2'} />
+      return (
+        <NewAdventurePreview
+          dialogRef={dialogRef}
+          scriptedNarrator={sheet === 'new-adventure-scripted'}
+          step2={sheet === 'new-adventure-step2'}
+        />
+      )
+    case 'connection':
+      return <ConnectionPreview dialogRef={dialogRef} />
     case 'share':
       return (
         <ShareSessionDialog
@@ -476,10 +558,10 @@ function PreviewSheetView({ sheet }: { sheet: PreviewSheet }): ReactNode {
 
 export function SheetsPreview() {
   return (
-    <>
+    <StoryNoticeContext.Provider value={noticeParam ? NOTICES[noticeParam] ?? null : null}>
       <StoryBackdrop />
       <PreviewSheetView sheet={previewSheet} />
-    </>
+    </StoryNoticeContext.Provider>
   )
 }
 

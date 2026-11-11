@@ -43,6 +43,8 @@ type ResumeChapter = {
   scene: string | null
   lastPlayedAt: string | null
   continueLine: string | null
+  /** A turn has been played: the current chapter has turns, or it follows an earlier one. */
+  begun: boolean
 }
 
 type UsePlayNowOnboardingOptions = {
@@ -57,6 +59,8 @@ type UsePlayNowOnboardingOptions = {
   campaigns?: Campaign[]
   /** No AI provider is active, so the scripted narrator runs. */
   safeMode?: boolean
+  /** The Story view is the play view; without an adventure it has nothing to show, so the title screen does. */
+  storyView?: boolean
   openCampaignChooser?: () => void
   closeMobilePanels: () => void
   modalOpen: boolean
@@ -167,6 +171,7 @@ function resumeChapterFromWorkspace(campaignId: number, workspace: CampaignWorks
     scene: text(session?.scene_title) || text(workspace.campaign?.location) || null,
     lastPlayedAt: session?.latest_activity_at ?? null,
     continueLine: text(session?.continue_line) || null,
+    begun: Boolean(session && (session.turn_count > 0 || session.chapter_number > 1)),
   }
 }
 
@@ -180,6 +185,7 @@ export function usePlayNowOnboarding({
   campaignCount,
   campaigns = NO_CAMPAIGNS,
   safeMode = false,
+  storyView = false,
   openCampaignChooser,
   closeMobilePanels,
   modalOpen,
@@ -480,6 +486,7 @@ export function usePlayNowOnboarding({
     (
       titleRequested ||
       hostedFirstRun ||
+      (storyView && !selectedCampaignId) ||
       (
         !selectedCampaignId &&
         !selectedSessionId &&
@@ -536,6 +543,8 @@ export function usePlayNowOnboarding({
         scene: resumeChapterForCampaign?.scene ?? (text(resumeCampaign.location) || null),
         lastPlayedAt: resumeChapterForCampaign?.lastPlayedAt ?? campaignActivityAt(resumeCampaign),
         continueLine: resumeChapterForCampaign?.continueLine ?? null,
+        // Until its chapter is read, an adventure with chapters counts as begun.
+        begun: resumeChapterForCampaign ? resumeChapterForCampaign.begun : resumeCampaign.session_count > 0,
       }
     : null
 

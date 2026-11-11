@@ -77,15 +77,15 @@ export function RuntimeSettingsDialog({
 
   return (
     <ModalShell
-      closeLabel="Close backend settings"
+      closeLabel="Close connection settings"
       dialogRef={dialogRef}
       labelledBy="runtime-settings-title"
       onClose={onClose}
-      title="Backend Settings"
+      title="Connection"
     >
       <form className="story-dialog-body" onSubmit={onSubmit}>
         <label className="story-dialog-field">
-          <span className="story-label">Backend URL</span>
+          <span className="story-label">Game server address</span>
           <input
             autoFocus
             data-autofocus
@@ -125,7 +125,7 @@ export function RuntimeSettingsDialog({
             Cancel
           </button>
           <button type="submit" className="story-primary">
-            Save Settings
+            Save
           </button>
         </footer>
       </form>

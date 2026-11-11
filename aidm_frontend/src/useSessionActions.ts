@@ -193,14 +193,15 @@ export function useSessionActions({
     useState<StartChapterDialogState>(null)
   const [saveImportDialog, setSaveImportDialog] = useState<SaveImportDialogState>(null)
   const selectedCampaignIdRef = useRef(selectedCampaignId)
-  const startSessionPromisesRef = useRef<Map<number, Promise<void>>>(new Map())
+  const startSessionPromisesRef = useRef<Map<number, Promise<number | null>>>(new Map())
 
   useLayoutEffect(() => {
     selectedCampaignIdRef.current = selectedCampaignId
   }, [selectedCampaignId])
 
-  const startSession = ({ fresh = false, force = false }: StartChapterOptions = {}) => {
-    if (!selectedCampaignId) return Promise.resolve()
+  /** Starts the campaign's next chapter (its first, for a new campaign); resolves to the new chapter's id, or null. */
+  const startSession = ({ fresh = false, force = false }: StartChapterOptions = {}): Promise<number | null> => {
+    if (!selectedCampaignId) return Promise.resolve(null)
 
     const campaignId = selectedCampaignId
     const existingOperation = startSessionPromisesRef.current.get(campaignId)
@@ -223,9 +224,10 @@ export function useSessionActions({
           },
         )
         setStartChapterDialog(null)
-        if (selectedCampaignIdRef.current !== campaignId) return
+        if (selectedCampaignIdRef.current !== campaignId) return null
         setSelectedSessionId(result.session_id)
         await refreshCampaignWorkspace(campaignId)
+        return result.session_id
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         const unsettled = chapterStartErrorCode(error) === 'chapter_unsettled'
@@ -233,6 +235,7 @@ export function useSessionActions({
           current ? { ...current, pending: false, error: message, unsettled: current.unsettled || unsettled } : current,
         )
         if (!unsettled) pushError('persistence', `Could not start the next chapter: ${message}`)
+        return null
       } finally {
         startSessionPromisesRef.current.delete(campaignId)
       }
@@ -258,7 +261,7 @@ export function useSessionActions({
 
   const submitStartChapterDialog = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!startChapterDialog || startChapterDialog.pending) return Promise.resolve()
+    if (!startChapterDialog || startChapterDialog.pending) return Promise.resolve(null)
     const { fresh, force, unsettled } = startChapterDialog
     setStartChapterDialog((current) => (current ? { ...current, pending: true, error: '' } : current))
     return startSession({ fresh, force: unsettled && force })

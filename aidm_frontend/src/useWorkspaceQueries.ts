@@ -180,6 +180,7 @@ export function useWorkspaceQueries({
   const latest = useLatest({ sessions, onSessionLogLoaded, onUnauthorized, pendingSubmissionCampaignId, playerView })
   const rootRequestRef = useRef(0)
   const operatorRequestRef = useRef(0)
+  const llmConfigRequestRef = useRef(0)
   const operatorDataEnabledRef = useRef(operatorDataEnabled)
   const workspaceRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
@@ -211,6 +212,7 @@ export function useWorkspaceQueries({
     runtimeScopeRef.current = { auth, baseUrl }
     rootRequestRef.current += 1
     operatorRequestRef.current += 1
+    llmConfigRequestRef.current += 1
     workspaceRequestRef.current += 1
     const invalidatedSessionRequestId = ++sessionRequestRef.current
     olderLogRequestRef.current += 1
@@ -526,6 +528,32 @@ export function useWorkspaceQueries({
     sessionsCursor,
   ])
 
+  // The narrator configuration: Table tools reads it with the operator data, the Settings sheet whenever it opens.
+  const refreshLlmConfig = useCallback(async () => {
+    const requestId = ++llmConfigRequestRef.current
+    const requestAuth = auth
+    const requestBaseUrl = baseUrl
+    const requestAccessSnapshot = storedRuntimeAccessSnapshot(requestAuth)
+    const requestIsCurrent = () => isCurrentRequest(
+      llmConfigRequestRef,
+      requestId,
+      requestAuth,
+      requestBaseUrl,
+      requestAccessSnapshot,
+    )
+    try {
+      const config = await apiFetch<LlmRuntimeConfig>(
+        requestBaseUrl,
+        '/api/llm/config',
+        requestAuth,
+        { headers: runtimeConfigHeaders },
+      )
+      if (requestIsCurrent()) setLlmConfig(config)
+    } catch {
+      if (requestIsCurrent()) setLlmConfig(null)
+    }
+  }, [auth, baseUrl, isCurrentRequest, runtimeConfigHeaders, setLlmConfig])
+
   const refreshOperatorData = useCallback(async () => {
     if (!operatorDataEnabledRef.current) return
 
@@ -553,24 +581,12 @@ export function useWorkspaceQueries({
     }).catch(() => {
       if (requestIsCurrent()) setMetrics(null)
     })
-    const llmRequest = apiFetch<LlmRuntimeConfig>(
-      requestBaseUrl,
-      '/api/llm/config',
-      requestAuth,
-      { headers: runtimeConfigHeaders },
-    ).then((config) => {
-      if (requestIsCurrent()) setLlmConfig(config)
-    }).catch(() => {
-      if (requestIsCurrent()) setLlmConfig(null)
-    })
-
-    await Promise.allSettled([metricsRequest, llmRequest])
+    await Promise.allSettled([metricsRequest, refreshLlmConfig()])
   }, [
     auth,
     baseUrl,
     isCurrentRequest,
-    runtimeConfigHeaders,
-    setLlmConfig,
+    refreshLlmConfig,
     setMetrics,
   ])
 
@@ -578,6 +594,7 @@ export function useWorkspaceQueries({
     operatorDataEnabledRef.current = operatorDataEnabled
     if (!operatorDataEnabled) {
       operatorRequestRef.current += 1
+      llmConfigRequestRef.current += 1
       setMetrics(null)
       setLlmConfig(null)
       return
@@ -841,6 +858,7 @@ export function useWorkspaceQueries({
     olderSessionsLoading,
     refreshCampaignWorkspace,
     refreshCurrentWorkspace,
+    refreshLlmConfig,
     refreshRoot,
   }
 }

@@ -22,6 +22,8 @@ type NewAdventureSheetProps = {
   packOptions: CampaignPackExample[]
   packOptionsPending: boolean
   pending: boolean
+  /** The scripted narrator runs the table: it can tell a ready-made adventure, not a blank page. */
+  scriptedNarrator: boolean
   setForm: Dispatch<SetStateAction<CreateCampaignForm>>
   worlds: World[]
 }
@@ -39,6 +41,7 @@ export function NewAdventureSheet({
   packOptions,
   packOptionsPending,
   pending,
+  scriptedNarrator,
   setForm,
   worlds,
 }: NewAdventureSheetProps) {
@@ -137,6 +140,11 @@ export function NewAdventureSheet({
               <span className="story-dialog-row-copy">
                 <span className="story-dialog-row-name">A blank page</span>
                 <span className="story-dialog-row-meta">You and the Dungeon Master make it up.</span>
+                {scriptedNarrator ? (
+                  <span className="story-dialog-row-meta story-dialog-row-note">
+                    Needs an AI narrator — choose one in Settings
+                  </span>
+                ) : null}
               </span>
               <span className="story-dialog-row-actions">
                 <button
@@ -144,8 +152,8 @@ export function NewAdventureSheet({
                   type="button"
                   className="story-link"
                   aria-label="Begin with a blank page"
-                  data-autofocus={packOptions.length ? undefined : true}
-                  disabled={pending}
+                  data-autofocus={packOptions.length || scriptedNarrator ? undefined : true}
+                  disabled={pending || scriptedNarrator}
                   onClick={beginBlankPage}
                 >
                   Begin

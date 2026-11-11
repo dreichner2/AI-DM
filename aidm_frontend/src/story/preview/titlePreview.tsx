@@ -7,11 +7,11 @@ import type { TitleHero, TitleHeroesStatus } from '../TitleHeroes'
 
 /**
  * Development-only harness for the title screen (story-title-preview.html).
- * `?state=new|returning|starting|signed-out|heroes-failed`, plus optional
- * `safe=1` (no AI provider) and `heroes=loading`.
+ * `?state=new|returning|not-yet-begun|starting|signed-out|heroes-failed`, plus
+ * optional `safe=1` (no AI provider) and `heroes=loading`.
  */
 
-const PREVIEW_STATES = ['new', 'returning', 'starting', 'signed-out', 'heroes-failed'] as const
+const PREVIEW_STATES = ['new', 'returning', 'not-yet-begun', 'starting', 'signed-out', 'heroes-failed'] as const
 type TitlePreviewState = (typeof PREVIEW_STATES)[number]
 
 const params = new URLSearchParams(window.location.search)
@@ -59,6 +59,17 @@ const RESUME: TitleResume = {
   scene: 'The Lantern Post Inn',
   lastPlayedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
   continueLine: 'The Lantern Post Inn — At dusk, an empty caravan rolls into the Lantern Post.',
+  begun: true,
+}
+
+// A blank-page adventure created a moment ago, before its first turn.
+const NOT_YET_BEGUN: TitleResume = {
+  title: 'The Salt Road',
+  chapterNumber: null,
+  scene: null,
+  lastPlayedAt: new Date().toISOString(),
+  continueLine: null,
+  begun: false,
 }
 
 const heroesStatus: TitleHeroesStatus =
@@ -81,7 +92,7 @@ export function TitlePreview() {
         heroesStatus={heroesStatus}
         selectedHeroId={heroesStatus === 'ready' ? selectedHeroId : null}
         onSelectHero={setSelectedHeroId}
-        resume={previewState === 'returning' ? RESUME : null}
+        resume={previewState === 'returning' ? RESUME : previewState === 'not-yet-begun' ? NOT_YET_BEGUN : null}
         safeMode={params.get('safe') === '1'}
         onPlayNow={({ fresh }) => {
           console.info(`[title preview] play now${fresh ? ' (fresh)' : ''}`)

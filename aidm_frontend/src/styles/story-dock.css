@@ -847,6 +847,11 @@
 
 @media (max-width: 899px) {
   .story-shell .story-dock-hint { display: none; }
+  /* Suggestions may take a second line here before the rest wait behind More… (useChipsThatFit). */
+  .story-shell .story-suggestions {
+    --story-chip-rows: 2;
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 700px) {

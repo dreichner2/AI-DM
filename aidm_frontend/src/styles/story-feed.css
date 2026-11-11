@@ -384,8 +384,11 @@
 }
 .story-shell .story-change-list .story-chip { white-space: normal; }
 .story-shell .story-change-list button.story-chip { cursor: pointer; }
-/* A server beat that is not a chip: a quiet line, or a hint (one quiet line that opens Settings). */
-.story-shell .story-change-list .story-turn-line { flex-basis: 100%; min-width: 0; }
+/*
+ * A server beat that is not a chip: a quiet line, or a hint (one quiet line that opens Settings).
+ * Its width comes from the column, never from its text, so a long hint cannot widen the story on a phone.
+ */
+.story-shell .story-change-list .story-turn-line { flex-basis: 100%; min-width: 0; contain: inline-size; }
 .story-shell .story-turn-hint {
   display: block;
   max-width: 100%;

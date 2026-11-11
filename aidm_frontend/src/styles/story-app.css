@@ -62,6 +62,17 @@
 }
 .story-shell .story-notice[data-tone='fail'] { color: var(--story-fail); }
 .story-shell .story-notice .story-link { font-size: 0.84rem; color: var(--story-ink); }
+/* The notice itself: plain text that dismisses it when clicked. */
+.story-shell .story-notice-dismiss {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
 
 /* ---- the dock beside an open drawer ---- */
 

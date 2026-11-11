@@ -7,6 +7,8 @@ import {
   type RollMode,
 } from './gameActions'
 import type {
+  ActivePlayerHealth,
+  ActivePlayerHealthTone,
   CampaignSegment,
   JsonRecord,
   MapItem,
@@ -16,6 +18,27 @@ import type {
   TimelineEntry,
   TimelineRole,
 } from './types'
+
+const ACTIVE_PLAYER_HEALTH_LABELS: Record<ActivePlayerHealthTone, string> = {
+  uninjured: 'Uninjured',
+  wounded: 'Wounded',
+  'badly-wounded': 'Badly wounded',
+  dead: 'Dead',
+}
+
+/** A party member's health from their hit points: a quarter of the maximum or less is badly wounded. */
+export function activePlayerHealth(currentHp: number, maxHp: number): ActivePlayerHealth | null {
+  if (!Number.isFinite(currentHp) || !Number.isFinite(maxHp) || maxHp <= 0) return null
+  let tone: ActivePlayerHealthTone = 'wounded'
+  if (currentHp <= 0) {
+    tone = 'dead'
+  } else if (currentHp >= maxHp) {
+    tone = 'uninjured'
+  } else if (currentHp / maxHp <= 0.25) {
+    tone = 'badly-wounded'
+  }
+  return { tone, label: ACTIVE_PLAYER_HEALTH_LABELS[tone], currentHp, maxHp }
+}
 
 export type InventoryRow = {
   id: string

@@ -78,6 +78,8 @@ describe('dialog styles stay inside dialogs', () => {
       <StorySettingsSheet
         dialogRef={createRef<HTMLElement>()}
         onClose={vi.fn()}
+        narrator={null}
+        onNarratorChange={vi.fn()}
         narration={{ enabled: false, problem: '' }}
         onNarrationChange={vi.fn()}
         view="story"

@@ -231,6 +231,8 @@ export type SessionBoardProps = {
   clarificationRequest: ClarificationRequest | null
   resolveClarification: (selectedItemId: string) => void
   onStartAdventure: () => void
+  /** A blank-page adventure's first chapter is being created; its opening follows. */
+  adventureBeginning?: boolean
   actionComposerProps: ActionComposerProps
   /** Set when the open session is an ended chapter: it is read-only and offers the current chapter. */
   endedChapter?: { onContinue: () => void } | null

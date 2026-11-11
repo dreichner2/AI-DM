@@ -2,8 +2,16 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { App, appTestState, loadConsoleChunks, renderStoryApp, setupAppTest, teardownAppTest } from '../../App.testHarness'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  App,
+  appTestState,
+  jsonResponse,
+  loadConsoleChunks,
+  renderStoryApp,
+  setupAppTest,
+  teardownAppTest,
+} from '../../App.testHarness'
 
 beforeAll(() => {
   Element.prototype.scrollTo = () => {}
@@ -12,6 +20,25 @@ beforeAll(() => {
 function openMenuItem(name: string) {
   fireEvent.click(screen.getAllByRole('button', { name: 'Adventure menu' })[0]!)
   fireEvent.click(screen.getByRole('menuitem', { name }))
+}
+
+function narratorUpdates() {
+  return appTestState.fetchCalls.filter((call) => call.method === 'PATCH' && call.path === '/api/llm/config')
+}
+
+/** Answers narrator updates with `refusals` in turn, then lets the harness accept them. */
+function refuseNarratorUpdates(...refusals: Array<{ error: string; error_code: string; status: number }>) {
+  const harnessFetch = globalThis.fetch
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input), 'http://localhost:3000').pathname
+    if (init?.method === 'PATCH' && path === '/api/llm/config' && refusals.length) {
+      // Through the harness first, so the request is recorded like any other.
+      await harnessFetch(input, init)
+      const { status, ...payload } = refusals.shift()!
+      return jsonResponse(payload, { status })
+    }
+    return harnessFetch(input, init)
+  }))
 }
 
 describe('Sheets opened from the Story menu', () => {
@@ -43,7 +70,7 @@ describe('Sheets opened from the Story menu', () => {
     fireEvent.click(within(settings).getByText('Table and connection'))
     fireEvent.click(within(settings).getByRole('button', { name: 'Connection settings' }))
 
-    const connection = await screen.findByRole('dialog', { name: 'Backend Settings' })
+    const connection = await screen.findByRole('dialog', { name: 'Connection' })
     expect(within(connection).getByText('Only change this if you run the game server somewhere else.')).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument()
   })
@@ -104,5 +131,90 @@ describe('Sheets opened from the Story menu', () => {
     const newAdventure = await screen.findByRole('dialog', { name: 'New adventure' })
     expect(within(newAdventure).getByRole('heading', { name: 'Choose a beginning' })).toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: 'Your adventures' })).not.toBeInTheDocument()
+    expect(within(newAdventure).getByRole('button', { name: 'Begin with a blank page' })).toBeEnabled()
+  })
+
+  it('offers no blank page while the scripted narrator runs the table', async () => {
+    appTestState.health.llm!.provider = 'fallback'
+    appTestState.health.llm!.model = 'deterministic-v1'
+    await renderStoryApp()
+
+    openMenuItem('Switch adventure')
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Your adventures' })).getByRole('button', { name: 'New adventure' }))
+    const newAdventure = await screen.findByRole('dialog', { name: 'New adventure' })
+    expect(within(newAdventure).getByText('Needs an AI narrator — choose one in Settings')).toBeInTheDocument()
+    expect(within(newAdventure).getByRole('button', { name: 'Begin with a blank page' })).toBeDisabled()
+  })
+
+  it('opens Settings on the narrator and changes it with the table’s update request', async () => {
+    await renderStoryApp()
+    const reads = () => appTestState.fetchCalls.filter((call) => call.method === 'GET' && call.path === '/api/llm/config').length
+    const readsBefore = reads()
+
+    openMenuItem('Settings')
+    const settings = await screen.findByRole('dialog', { name: 'Settings' })
+    await waitFor(() => expect(reads()).toBe(readsBefore + 1))
+    const narrator = within(settings).getByRole('region', { name: 'Narrator' })
+    expect(narrator).toHaveTextContent('DeepSeek · DeepSeek V4 Pro')
+    const choices = within(narrator).getByRole('group', { name: 'Narrator' })
+    expect(within(choices).getAllByRole('button').map((choice) => choice.textContent)).toEqual(['Scripted narrator', 'DeepSeek'])
+
+    fireEvent.click(within(choices).getByRole('button', { name: 'Scripted narrator' }))
+    await waitFor(() => expect(narrator).toHaveTextContent('NarratorScripted narrator'))
+    expect(narratorUpdates().map((call) => call.body)).toEqual([
+      { provider: 'fallback', model: 'deterministic-v1', persist: true },
+    ])
+  })
+
+  it('keeps the narrator and shows the server’s refusal at the foot of the open sheet', async () => {
+    await renderStoryApp()
+    refuseNarratorUpdates({
+      error: 'Only the owner table admin can change global LLM runtime config.',
+      error_code: 'runtime_config_admin_required',
+      status: 403,
+    })
+
+    openMenuItem('Settings')
+    const settings = await screen.findByRole('dialog', { name: 'Settings' })
+    const narrator = within(settings).getByRole('region', { name: 'Narrator' })
+    fireEvent.click(within(narrator).getByRole('button', { name: 'Scripted narrator' }))
+
+    await waitFor(() =>
+      expect(within(settings).getByRole('status')).toHaveTextContent(
+        'Only the owner table admin can change global LLM runtime config.',
+      ),
+    )
+    expect(narratorUpdates()).toHaveLength(1)
+    expect(narrator).toHaveTextContent('DeepSeek · DeepSeek V4 Pro')
+    expect(within(narrator).getByRole('button', { name: 'DeepSeek' })).toHaveAttribute('aria-pressed', 'true')
+    // The sheet carries the line; the dock behind it does not repeat it.
+    expect(document.querySelector('.story-composer-slot .story-notices')).toBeNull()
+
+    fireEvent.click(within(settings).getByRole('button', { name: 'Close settings' }))
+    const dockLine = document.querySelector('.story-composer-slot .story-notices') as HTMLElement
+    expect(within(dockLine).getByRole('status')).toHaveTextContent(
+      'Only the owner table admin can change global LLM runtime config.',
+    )
+  })
+
+  it('applies the narrator for this run when the server may not save the choice', async () => {
+    await renderStoryApp()
+    refuseNarratorUpdates({
+      error: 'Persisting LLM config from the API is disabled outside local/test environments.',
+      error_code: 'llm_config_persist_disabled',
+      status: 403,
+    })
+
+    openMenuItem('Settings')
+    const settings = await screen.findByRole('dialog', { name: 'Settings' })
+    const narrator = within(settings).getByRole('region', { name: 'Narrator' })
+    fireEvent.click(within(narrator).getByRole('button', { name: 'Scripted narrator' }))
+
+    await waitFor(() => expect(narrator).toHaveTextContent('NarratorScripted narrator'))
+    expect(narratorUpdates().map((call) => call.body)).toEqual([
+      { provider: 'fallback', model: 'deterministic-v1', persist: true },
+      { provider: 'fallback', model: 'deterministic-v1', persist: false },
+    ])
+    expect(within(settings).getByRole('status')).toBeEmptyDOMElement()
   })
 })

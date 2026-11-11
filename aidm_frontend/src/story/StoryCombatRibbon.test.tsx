@@ -508,22 +508,25 @@ describe('StoryCombatRibbon', () => {
     })
   })
 
-  it('orders the combatants by initiative, with range and health under each enemy, and links the viewer to its melee foes', () => {
+  it('orders the combatants by initiative, with range and health under each enemy and no range under the viewer, and links the viewer to its melee foes', () => {
     const combat = testCombat()
     combat.allies[0] = { ...combat.allies[0], rangeBand: 'melee', engagedWith: ['goblin_1'] }
+    combat.allies.push({ ...combat.allies[0], id: 'player_31', name: 'Brannoc', rangeBand: 'near', engagedWith: [] })
     combat.enemies[0] = { ...combat.enemies[0], rangeBand: 'melee', engagedWith: ['player_30'], hp: { current: 4, max: 7 } }
     combat.enemies[1] = { ...combat.enemies[1], rangeBand: 'distant' }
     combat.turnOrder = [
       { id: 'goblin_1', name: 'Goblin Sentry', team: 'enemy', isCurrent: false },
       { id: 'player_30', name: 'Ysolde Marrow', team: 'player', isCurrent: true },
+      { id: 'player_31', name: 'Brannoc', team: 'player', isCurrent: false },
     ]
     renderRibbon(combat)
 
     const combatants = within(screen.getByRole('list', { name: 'Combatants' })).getAllByRole('listitem')
-    expect(combatants.map((item) => item.getAttribute('data-combatant-id'))).toEqual(['goblin_1', 'player_30', 'archer_1'])
+    expect(combatants.map((item) => item.getAttribute('data-combatant-id'))).toEqual(['goblin_1', 'player_30', 'player_31', 'archer_1'])
     expect(combatants.map((item) => item.querySelector('.story-combatant-range')?.textContent)).toEqual([
       'melee · Wounded · 4/7',
-      'melee',
+      undefined,
+      'near',
       'distant · Unhurt',
     ])
     expect(document.querySelector('.story-combatant-divider')).toBeNull()

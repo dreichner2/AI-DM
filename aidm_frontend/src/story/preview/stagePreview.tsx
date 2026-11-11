@@ -9,7 +9,8 @@ import { isStoryPreviewState, makeBoardFixture, makeInspectorFixture, STREAMING_
 
 /**
  * Development-only harness for the Story stage (story-stage-preview.html).
- * `?state=empty|opening|exploration|streaming|combat|ended`, plus optional
+ * `?state=empty|opening|exploration|streaming|combat|ended`, or `not-begun` (an
+ * adventure with no chapter yet; `beginning=1` after Begin), plus optional
  * `drawer=character|pack|magic|journal|map`, `connection=connecting|reconnecting|offline`,
  * `safe=1` and `operator=1`.
  */
@@ -17,7 +18,8 @@ import { isStoryPreviewState, makeBoardFixture, makeInspectorFixture, STREAMING_
 const noop = () => {}
 const params = new URLSearchParams(window.location.search)
 const stateParam = params.get('state')
-const previewState: StoryPreviewState = isStoryPreviewState(stateParam) ? stateParam : 'exploration'
+const notBegun = stateParam === 'not-begun'
+const previewState: StoryPreviewState = notBegun ? 'empty' : isStoryPreviewState(stateParam) ? stateParam : 'exploration'
 const drawerParam = params.get('drawer')
 const DRAWER_TABS: StoryDrawerTab[] = ['character', 'pack', 'magic', 'journal', 'map']
 const initialDrawer = DRAWER_TABS.find((tab) => tab === drawerParam) ?? null
@@ -65,6 +67,16 @@ function streamTo(board: SessionBoardProps, length: number): SessionBoardProps {
 export function StagePreview() {
   const [board, setBoard] = useState(() => {
     const fixture = makeBoardFixture(previewState)
+    // No chapter: no session, so nobody has joined the realtime table yet.
+    if (notBegun) {
+      return {
+        ...fixture,
+        activeSession: null,
+        sessionState: null,
+        activePlayers: [],
+        adventureBeginning: params.get('beginning') === '1',
+      }
+    }
     // The streamed reply arrives a moment after the action, as it does at the table.
     return previewState === 'streaming' ? { ...fixture, currentResponseEntry: null } : fixture
   })
