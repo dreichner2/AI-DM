@@ -4,7 +4,9 @@ Deterministic, from the turn's rules hint and its engine brief
 (``state_pipeline.engineBrief``):
 
 1. Outside the opening, a final sentence that is only a prompt to act ("What do
-   you do?", "What do you do next?", "What now?", quoted or not) is dropped.
+   you do?", "What do you do next?", "What now?", quoted or not) is dropped; so
+   is the narrator's own unquoted closing question to the player ("What do you
+   do with it, and do you answer the reeve?").
 2. Markdown the Story view does not render is removed, keeping the words:
    asterisks, underscores used as emphasis, backticks and a leading ``#``.
 3. When the turn's results already report coins, XP or items, a sentence that
@@ -38,6 +40,14 @@ PROMPT_TO_ACT = re.compile(
     r'^["“‘\']?\s*(?:(?:so|now|well),?\s+)?'
     r'(?:what\s+(?:do|will|would|shall)\s+you\s+do(?:\s+(?:next|now))?|what\s+now|what\s+next)'
     r'(?:,\s*[^?]{1,40})?\s*\?\s*["”’\']?$',
+    re.IGNORECASE,
+)
+# The narrator's own closing question to the player ("What do you do with it, and do you answer
+# the reeve?"). Never a spoken line: a sentence with a quotation mark in it is left alone.
+PLAYER_QUESTION = re.compile(
+    r'^(?:(?:so|now|well|and|but),?\s+)?'
+    r'(?:(?:what|how|where|who|whom|which(?:\s+\w+){0,2})\s+(?:do|will|would|shall)\s+you\b|(?:do|will|would)\s+you\b)'
+    r'[^"“”‘]{0,200}\?$',
     re.IGNORECASE,
 )
 HEADING = re.compile(r'^\s*#{1,6}\s*')
@@ -215,7 +225,7 @@ def clean_ai_narration(text: str, rules_hint: dict[str, Any]) -> CleanNarration:
 
     if not is_opening_rules_hint(rules_hint):
         last = next((line for line in reversed(lines) if line['sentences']), None)
-        if last is not None and PROMPT_TO_ACT.match(last['sentences'][-1]):
+        if last is not None and (PROMPT_TO_ACT.match(last['sentences'][-1]) or PLAYER_QUESTION.match(last['sentences'][-1].strip())):
             last['sentences'] = last['sentences'][:-1]
             last['changed'] = True
 

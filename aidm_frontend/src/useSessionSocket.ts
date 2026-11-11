@@ -90,6 +90,8 @@ type MusicStatePayload = {
 }
 
 type SocketErrorCategory = 'connection' | 'workspace'
+/** How long the next action waits for a turn's log update after its narration ends, at most. */
+const TURN_SETTLE_TIMEOUT_MS = 30_000
 const TERMINAL_SESSION_ERROR_CODES = new Set([
   'session_not_found',
   'session_archived',
@@ -500,6 +502,9 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
   const latest = useLatest(options)
   const lastWorldSnapshotRefreshRef = useRef<{ sessionId: number; turnId: number } | null>(null)
   const lastJoinedSessionRef = useRef<number | null>(null)
+  // The turn whose narration has ended while the engine is still applying it. The next action
+  // waits for that turn's log update, so actions from before the turn are never offered.
+  const settlingTurnRef = useRef<{ turnId: number; timer: number } | null>(null)
 
   useEffect(() => {
     if (!selectedSessionId || !selectedPlayerId || !selectedCampaignId) {
@@ -538,6 +543,15 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
         .finally(() => {
           refreshInFlight = false
         })
+    }
+
+    /** Stop waiting on the settling turn (that turn only, when an id is given); true when one was released. */
+    const releaseSettlingTurn = (turnId?: number | null) => {
+      const settling = settlingTurnRef.current
+      if (!settling || (typeof turnId === 'number' && turnId !== settling.turnId)) return false
+      window.clearTimeout(settling.timer)
+      settlingTurnRef.current = null
+      return true
     }
 
     socket.on('connect', () => {
@@ -744,7 +758,18 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
         ttsQueueSuppressedRef,
       } = latest.current
       const ok = payload.ok !== false
-      setSendPending(false)
+      const endedTurnId = Number(payload.turn_id)
+      releaseSettlingTurn()
+      if (ok && payload.requires_roll !== true && Number.isInteger(endedTurnId) && endedTurnId > 0) {
+        settlingTurnRef.current = {
+          turnId: endedTurnId,
+          timer: window.setTimeout(() => {
+            if (releaseSettlingTurn(endedTurnId)) latest.current.setSendPending(false)
+          }, TURN_SETTLE_TIMEOUT_MS),
+        }
+      } else {
+        setSendPending(false)
+      }
       setStreamingTurn((current) => {
         const payloadTurnId = Number(payload.turn_id)
         const turnId = Number.isInteger(payloadTurnId) && payloadTurnId > 0
@@ -816,15 +841,19 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
       }
     })
 
-    socket.on('session_log_update', (payload: { session_id?: number }) => {
+    socket.on('session_log_update', (payload: { session_id?: number; turn_id?: number | null }) => {
       if (payload.session_id !== selectedSessionId) return
       const { loadSessionData, pushError, setStreamingTurn } = latest.current
+      const settledTurnId = typeof payload.turn_id === 'number' ? payload.turn_id : null
       loadSessionData(selectedSessionId)
         .then(() => {
           setStreamingTurn(null)
         })
         .catch((error: unknown) => {
           pushError('workspace', `Log refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
+        .finally(() => {
+          if (releaseSettlingTurn(settledTurnId)) latest.current.setSendPending(false)
         })
     })
 
@@ -841,7 +870,11 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
         setTurnStoryBeats,
       } = latest.current
       if (turnStatusAllowsNextSend(status, payload.details)) {
-        setSendPending(false)
+        // A settling turn is released by its log update, once the fresh state has loaded.
+        if (status === 'failed' || settlingTurnRef.current?.turnId !== payload.turn_id) {
+          releaseSettlingTurn(payload.turn_id)
+          setSendPending(false)
+        }
       }
       const storyBeats = postTurnStoryBeats(status, payload.details)
       if (storyBeats) {
@@ -995,6 +1028,7 @@ export function useSessionSocket(options: UseSessionSocketOptions) {
       // Detach every handler first: socket.io fires 'disconnect' synchronously
       // from disconnect(), and our own teardown is not a dropped connection.
       socket.removeAllListeners()
+      releaseSettlingTurn()
       socket.emit('leave_session', {
         session_id: selectedSessionId,
         player_id: selectedPlayerId,

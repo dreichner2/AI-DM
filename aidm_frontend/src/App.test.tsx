@@ -501,7 +501,47 @@ describe('App user workflow regressions', () => {
     expect(within(rendered.container.querySelector('.turn-row.current') as HTMLElement).getByText('Latest Response'))
       .toBeInTheDocument()
     fireEvent.change(screen.getByLabelText(/Your Action/i), { target: { value: 'I step onto the bridge.' } })
-    expect(screen.getByRole('button', { name: /Send/i })).toBeEnabled()
+    // The narration has ended, but the engine is still applying the turn: the next action waits.
+    expect(screen.getByRole('button', { name: /Send/i })).toBeDisabled()
+
+    // A status from the narration stage does not release it; the turn's log update does.
+    await act(async () => {
+      socketHandler<{ session_id: number; turn_id: number; status: string; details: { stage: string } }>('turn_status')({
+        session_id: 20,
+        turn_id: 79,
+        status: 'saved',
+        details: { stage: 'dm_response' },
+      })
+    })
+    expect(screen.getByRole('button', { name: /Send/i })).toBeDisabled()
+    await act(async () => {
+      socketHandler<{ session_id?: number; turn_id?: number }>('session_log_update')({ session_id: 20, turn_id: 79 })
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send/i })).toBeEnabled())
+  })
+
+  it('releases the next action when a turn fails after its narration', async () => {
+    await renderLoadedApp()
+    await act(async () => {
+      socketHandler<{ turn_id: number; turn_number?: number }>('dm_response_start')({ turn_id: 81, turn_number: 7 })
+    })
+    await act(async () => {
+      socketHandler<{ turn_id: number; text: string; ok: boolean }>('dm_response_end')({
+        turn_id: 81,
+        text: 'The rope holds.',
+        ok: true,
+      })
+    })
+    fireEvent.change(screen.getByLabelText(/Your Action/i), { target: { value: 'I climb.' } })
+    expect(screen.getByRole('button', { name: /Send/i })).toBeDisabled()
+    await act(async () => {
+      socketHandler<{ session_id: number; turn_id: number; status: string }>('turn_status')({
+        session_id: 20,
+        turn_id: 81,
+        status: 'failed',
+      })
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Send/i })).toBeEnabled())
   })
 
   it('uses completed response text even when start and chunk events were missed', async () => {

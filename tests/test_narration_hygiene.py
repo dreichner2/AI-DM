@@ -87,6 +87,14 @@ def test_gains_are_told_once_by_the_beats_and_only_when_they_happened(text, brie
         ('What will you do, Arden?', ''),
         ('"What do you want?" Mara asks.', '"What do you want?" Mara asks.'),
         ('What do you do? The bell rings again.', 'What do you do? The bell rings again.'),
+        (
+            'The key lies in your palm. What do you do with it, and do you answer the reeve?',
+            'The key lies in your palm.',
+        ),
+        ('The road forks at the cairn. Which way do you go?', 'The road forks at the cairn.'),
+        ('Osric waits. Do you answer him?', 'Osric waits.'),
+        ('Osric plants his feet. "Do you answer to anyone, stranger?"', 'Osric plants his feet. "Do you answer to anyone, stranger?"'),
+        ('The light gutters. Whose road is this?', 'The light gutters. Whose road is this?'),
     ],
 )
 def test_a_closing_prompt_to_act_is_dropped_outside_the_opening(text, expected):
