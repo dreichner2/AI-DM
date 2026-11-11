@@ -10,6 +10,8 @@ resistances, and raises ``damage_taken`` for whatever damage remains.
 from __future__ import annotations
 
 from copy import deepcopy
+from fractions import Fraction
+import math
 import random
 import re
 from typing import Any, Callable, Iterable, Mapping
@@ -58,6 +60,15 @@ MAIN_HAND_SLOTS = {'main hand', 'two hands'}
 
 def _text(value: Any) -> str:
     return str(value or '').strip()
+
+
+def party_scaled_damage(attacker: Mapping[str, Any] | None, amount: int) -> int:
+    """An enemy's damage roll under its encounter's party scaling: rounded down, at least 1."""
+
+    multiplier = attacker.get('partyDamageMultiplier') if isinstance(attacker, Mapping) else None
+    if amount <= 0 or not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool) or multiplier == 1:
+        return amount
+    return max(1, math.floor(amount * Fraction(multiplier).limit_denominator(100)))
 
 
 def roll_die(sides: int, roller: Roller | None) -> int:
@@ -423,7 +434,7 @@ def resolve_attack(
                     component['oncePerTurn'] = _text(extra['oncePerTurn'])
                     once_per_turn.append(component['oncePerTurn'])
                 components.append(component)
-    damage_total = sum(int(component['total']) for component in components)
+    damage_total = party_scaled_damage(attacker, sum(int(component['total']) for component in components))
     reactions: list[dict[str, Any]] = []
     hit_cancelled_by = None
     if hit:
@@ -555,7 +566,7 @@ def resolve_enemy_ability(
             if damage.get('dice')
             else {'dice': None, 'rolls': [], 'bonus': 0, 'total': 0}
         )
-        damage_total = int_or_default(damage_roll.get('total'), default=0)
+        damage_total = party_scaled_damage(enemy, int_or_default(damage_roll.get('total'), default=0))
         if save_succeeded:
             damage_total = damage_total // 2 if save['effectOnSuccess'] in {'half', 'half_damage'} else 0
         damage_total = apply_damage_multiplier(damage_total, damage_multiplier(target, damage_type))

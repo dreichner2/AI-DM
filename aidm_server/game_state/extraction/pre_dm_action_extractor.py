@@ -640,6 +640,33 @@ def _castable_rules_backed_spells(current_state: dict[str, Any], actor_id: str) 
     ]
 
 
+def _extract_from_free_text_intents(
+    intents: list[dict[str, Any]],
+    *,
+    actor_id: str,
+    player_message: str,
+) -> dict[str, Any] | None:
+    """The declared actions of the typed intents a free-text message named, with no roll to ask for."""
+
+    actions: list[dict[str, Any]] = []
+    for intent in intents:
+        payload = _extract_from_action_intent(intent, actor_id=actor_id, player_message=player_message) or {}
+        for action in payload.get('declaredActions') or []:
+            actions.append({**action, 'id': _next_id(actions)})
+    if not actions:
+        return None
+    return {
+        'declaredActions': actions,
+        'notes': ['free_text_action_pre_dm'],
+        # The engine resolves (and rolls for) what the words named, as it does for the button.
+        'rollRequirement': {
+            'requiresRoll': False,
+            'confidence': 1.0,
+            'reason': 'The words name an action the engine resolves.',
+        },
+    }
+
+
 def extract_pre_dm_actions(
     *,
     current_state: dict[str, Any],
@@ -647,9 +674,20 @@ def extract_pre_dm_actions(
     recent_timeline: list[dict[str, Any]],
     actor_id: str,
     action_intent: dict[str, Any] | None = None,
+    free_text_intents: list[dict[str, Any]] | None = None,
     force_helper: bool = False,
     before_provider_call: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
+    free_text_payload = (
+        _extract_from_free_text_intents(free_text_intents, actor_id=actor_id, player_message=player_message)
+        if free_text_intents
+        else None
+    )
+    if free_text_payload:
+        return _attach_debug(
+            normalize_pre_extraction(free_text_payload, fallback_actor_id=actor_id),
+            _empty_helper_debug(source='free_text', reason='free_text_action'),
+        )
     intent_payload = _extract_from_action_intent(action_intent, actor_id=actor_id, player_message=player_message)
     if intent_payload:
         return _attach_debug(

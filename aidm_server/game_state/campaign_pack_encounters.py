@@ -14,14 +14,27 @@ from fractions import Fraction
 import math
 from typing import Any
 
+from aidm_server.combat.attacks import ability_attack_bonus, ability_damage, ability_save
 from aidm_server.combat.difficulty import normalize_combat_difficulty_ai
-from aidm_server.combat.state import default_battlefield, instantiate_creature, player_combat_participant
+from aidm_server.combat.state import (
+    combat_ability_resolution_mode,
+    default_battlefield,
+    instantiate_creature,
+    player_combat_participant,
+)
 from aidm_server.game_state.models import stable_change_id, stable_slug
 from aidm_server.game_state.quest_engine import CONSEQUENCE_CHANGE_TYPES
 
 MAX_CAMPAIGN_PACK_ENEMIES_PER_GROUP = 12
 MAX_CAMPAIGN_PACK_ENEMY_PARTICIPANTS = 24
 AUTHORED_PARTY_SIZE = 4
+# Present heroes -> (enemy HP x, enemy damage x, enemy attack bonus and save DC, most enemies).
+# A lone hero's damage multiplier is 0.40, tuned by scripts/solo_balance.py.
+PARTY_SCALING = {
+    1: (Fraction(2, 5), Fraction(2, 5), -2, 2),
+    2: (Fraction(3, 5), Fraction(7, 10), -1, 3),
+    3: (Fraction(4, 5), Fraction(17, 20), 0, 4),
+}
 ENCOUNTER_TRIGGER_TYPES = ('on_enter', 'on_checkpoint', 'on_flag', 'on_interactable')
 # Applied change types that can make an event trigger due.
 TRIGGER_EVENT_CHANGE_TYPES = frozenset({'scene.move_location', 'scene.interactable.action', 'flag.set'})
@@ -122,26 +135,43 @@ def materialize_campaign_pack_combat_start(state: dict[str, Any], change: dict[s
 def party_scaling(encounter: dict[str, Any], *, party_size: int) -> dict[str, Any]:
     """How an encounter authored for four PCs scales to the present party.
 
-    Each group keeps ``max(1, round(count * party / 4))`` enemies (halves round
-    up) and every enemy's HP is multiplied by ``0.55 + 0.1125 * party``,
-    rounded up. A full party, an empty one, or ``scaling: false`` changes
-    nothing.
+    ``PARTY_SCALING`` gives, by present heroes, the enemy HP multiplier (HP
+    rounds up), the damage multiplier (every enemy damage roll, rounded down,
+    at least 1), the change to enemy attack bonuses and save DCs, and the most
+    enemies. Each group keeps ``max(1, round(count * party / 4))`` enemies
+    (halves round up); while the total exceeds the most enemies, whole groups
+    are dropped from the end (never the first), then the last remaining group
+    loses enemies. A party of four or more, an empty one, or
+    ``scaling: false`` changes nothing.
     """
 
     applied = encounter.get('scaling') is not False and 1 <= party_size < AUTHORED_PARTY_SIZE
-    hp_multiplier = Fraction(55, 100) + Fraction(1125, 10000) * party_size if applied else Fraction(1)
+    hp_multiplier, damage_multiplier, attack_and_dc, max_enemies = (
+        PARTY_SCALING[party_size] if applied else (Fraction(1), Fraction(1), 0, None)
+    )
+    groups = [
+        {
+            'enemyId': enemy_id,
+            'authoredCount': count,
+            'count': _scaled_count(count, party_size) if applied else count,
+        }
+        for enemy_id, count in _encounter_enemy_specs(encounter)
+    ]
+    dropped: list[dict[str, Any]] = []
+    if max_enemies is not None:
+        while len(groups) > 1 and sum(group['count'] for group in groups) > max_enemies:
+            dropped.insert(0, groups.pop())
+        if groups:
+            groups[-1]['count'] = max(1, groups[-1]['count'] - max(0, sum(group['count'] for group in groups) - max_enemies))
     return {
         'partySize': party_size,
         'applied': applied,
         'hpMultiplier': float(hp_multiplier),
-        'groups': [
-            {
-                'enemyId': enemy_id,
-                'authoredCount': count,
-                'count': _scaled_count(count, party_size) if applied else count,
-            }
-            for enemy_id, count in _encounter_enemy_specs(encounter)
-        ],
+        'damageMultiplier': float(damage_multiplier),
+        'attackAndDcAdjustment': attack_and_dc,
+        'maxEnemies': max_enemies,
+        'groups': groups,
+        'droppedGroups': dropped,
     }
 
 
@@ -153,8 +183,24 @@ def _scaled_hp(max_hp: Any, scaling: dict[str, Any]) -> int:
     hp = max(0, _positive_int(max_hp) or 0)
     if not scaling.get('applied'):
         return hp
-    multiplier = Fraction(55, 100) + Fraction(1125, 10000) * int(scaling['partySize'])
-    return math.ceil(Fraction(hp) * multiplier)
+    return math.ceil(Fraction(hp) * PARTY_SCALING[int(scaling['partySize'])][0])
+
+
+def _scaled_abilities(abilities: Any, scaling: dict[str, Any], participant: dict[str, Any]) -> list[Any]:
+    """The enemy's abilities with the party's attack-bonus and save-DC adjustment folded in."""
+
+    adjustment = int(scaling.get('attackAndDcAdjustment') or 0)
+    scaled = deepcopy(abilities) if isinstance(abilities, list) else []
+    if not adjustment:
+        return scaled
+    for ability in scaled:
+        if not isinstance(ability, dict):
+            continue
+        if ability_damage(ability).get('dice') and combat_ability_resolution_mode(ability) in {'attack', 'attack_with_save'}:
+            ability['attackBonus'] = ability_attack_bonus(participant, ability) + adjustment
+        if isinstance(ability.get('save'), dict):
+            ability['save'] = {**ability['save'], 'dc': max(1, ability_save(ability)['dc'] + adjustment)}
+    return scaled
 
 
 def _present_player(participant: dict[str, Any]) -> bool:
@@ -264,16 +310,26 @@ def _instantiate_pack_enemies(
         enemy = _pack_record(pack, 'enemies', group['enemyId'])
         if not enemy:
             continue
-        for _index in range(min(group['count'], remaining)):
+        count = min(group['count'], remaining)
+        # One creature of a group is named by its singular name; several are numbered.
+        singular = _text(enemy.get('singularName')) or _text(enemy.get('name'))
+        for index in range(count):
             participant = instantiate_creature(
                 enemy,
                 instance_id=f"enemy_{stable_slug(group['enemyId'])}_{sequence}",
                 team='enemy',
                 current_turn=turn_id,
             )
+            if singular:
+                participant['name'] = singular if count == 1 else f'{singular} {index + 1}'
+            if enemy.get('proper') is True:
+                participant['proper'] = True
             max_hp = _scaled_hp(participant['hp']['max'], scaling)
             participant['hp'] = {**participant['hp'], 'current': max_hp, 'max': max_hp}
             participant['stats'] = {**participant['stats'], 'maxHp': max_hp}
+            participant['abilities'] = _scaled_abilities(participant.get('abilities'), scaling, participant)
+            if scaling.get('applied') and float(scaling.get('damageMultiplier') or 1) != 1:
+                participant['partyDamageMultiplier'] = scaling['damageMultiplier']
             participant['source'] = 'campaign_pack'
             participant['campaignPackEnemyId'] = _record_id(enemy)
             participant['campaignPackEncounterId'] = _record_id(encounter)

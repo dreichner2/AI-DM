@@ -38,6 +38,7 @@ from aidm_server.game_state.change_types import (
     SNAPSHOT_REFRESH_CHANGE_TYPES,
     WORLD_STATE_CHANGE_TYPES,
 )
+from aidm_server.game_state.orchestration.story_beats import record_turn_story_beats
 from aidm_server.game_state.orchestration.turn_pipeline import (
     augment_rules_hint_with_state_packet,
     post_dm_pipeline,
@@ -1097,6 +1098,15 @@ class TurnEngine:
     def _typed_action_rejection(command: TurnCommand, pre_pipeline_result: dict) -> dict | None:
         intent = command.action_intent if isinstance(command.action_intent, dict) else {}
         intent_kind = str(intent.get('kind') or '').strip().lower()
+        actor_down = pre_pipeline_result.get('actorDown')
+        if isinstance(actor_down, dict):
+            # A hero who is down cannot act, whatever was typed or clicked.
+            return {
+                'intent_kind': intent_kind or 'message',
+                'action_id': None,
+                'action_type': 'actor.down',
+                'reason': str(actor_down.get('reason') or '').strip(),
+            }
         pre_validation = pre_pipeline_result.get('preValidation')
         pre_validation = pre_validation if isinstance(pre_validation, dict) else {}
         if intent_kind in {'', 'message'} and any(
@@ -1140,7 +1150,7 @@ class TurnEngine:
             'intent_kind': intent_kind,
             'action_id': rejected.get('actionId') or normalized.get('id') or original.get('id'),
             'action_type': normalized.get('type') or original.get('type'),
-            'reason': str(rejected.get('reason') or 'That action is not legal now.').strip(),
+            'reason': str(rejected.get('reason') or "That can't be done right now.").strip(),
         }
 
     @staticmethod
@@ -1224,6 +1234,7 @@ class TurnEngine:
             'combatDebug': pipeline.get('combatDebug') or {},
             'dmContextPacket': pipeline.get('dmContextPacket') or {},
             'openingEnemyTurns': pipeline.get('openingEnemyTurns') is True,
+            'actorDown': pipeline.get('actorDown'),
             'stateLog': pipeline.get('stateLog') or {},
             'clarificationRequests': pre_validation.get('clarificationRequests') or [],
         }
@@ -2521,8 +2532,8 @@ class TurnEngine:
         rejection: dict,
         start_time: float,
     ) -> None:
-        reason = str(rejection.get('reason') or 'That action is not legal now.').strip()
-        response = f'That action is not legal: {reason}'
+        reason = str(rejection.get('reason') or "That can't be done right now.").strip()
+        response = reason
         metadata = safe_json_loads(turn.metadata_json, {})
         metadata = metadata if isinstance(metadata, dict) else {}
         metadata['rules_rejection'] = {
@@ -3214,6 +3225,7 @@ class TurnEngine:
         state_log: dict = {}
         post_pipeline_result: dict = {}
         campaign_pack_progress_changed = False
+        story_beats: list[dict] = []
         state_failure_details: dict | None = None
         if dm_succeeded and turn_lifecycle_phase(turn) == LIFECYCLE_NARRATION_SAVED:
             dm_response_text = str(turn.dm_output or '')
@@ -3246,6 +3258,7 @@ class TurnEngine:
                     commit=False,
                 )
                 campaign_pack_progress_changed = bool(progress_result.changed)
+                story_beats = record_turn_story_beats(turn, _session_obj)
                 # Effects, snapshot, pack progress and the marker commit together,
                 # so a resumed turn never applies the effects twice.
                 set_turn_lifecycle(turn, LIFECYCLE_EFFECTS_APPLIED)
@@ -3437,7 +3450,12 @@ class TurnEngine:
                 state_failure_details or {'stage': 'state_application'},
             )
         else:
-            self._emit_turn_status(outcome.session_id, outcome.turn_id, 'saved', {'stage': 'post_turn'})
+            self._emit_turn_status(
+                outcome.session_id,
+                outcome.turn_id,
+                'saved',
+                {'stage': 'post_turn', 'storyBeats': story_beats},
+            )
 
         if turn_completed_safely:
             telemetry_metric('socket.send_message.success_total', 1)

@@ -7,9 +7,10 @@ import re
 import pytest
 import requests
 
+from aidm_server.game_state.orchestration.story_beats import HINT_TEXT
 from aidm_server.llm_providers import DeterministicFallbackProvider
 from aidm_server.models import DmTurn, safe_json_loads
-from aidm_server.scripted_narrator import requests_roll
+from aidm_server.scripted_narrator import TEMPLATES, requests_roll
 
 
 ROLL_REQUEST_RE = re.compile(r'Make an? (?P<label>[A-Za-z ()\']+) check, DC (?P<dc>\d+)\.$')
@@ -21,6 +22,20 @@ def _payload(received, name):
 
 def _payloads(received, name):
     return [event['args'][0] for event in received if event['name'] == name and event['args']]
+
+
+NOTHING_LINES = TEMPLATES['nothing_happens']
+
+
+def _story_beats(received):
+    """The beats of the turn, from its completion event."""
+
+    completed = next(
+        payload
+        for payload in _payloads(received, 'turn_status')
+        if payload['status'] == 'saved' and payload['details'].get('stage') == 'post_turn'
+    )
+    return completed['details']['storyBeats']
 
 
 @pytest.fixture()
@@ -120,9 +135,13 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
     assert _payloads(plain, 'roll_required') == []
     assert not [error for error in _payloads(plain, 'error') if error.get('error_code') == 'roll_required']
     assert 'I walk over to the wagons' not in plain_text
-    assert plain_text.startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
-    assert 'Mara Reedwake' in plain_text.split('\n\n')[-1]
+    # Words that name no action get one short line, and once per session a quiet hint.
+    assert plain_text in NOTHING_LINES
+    assert _story_beats(plain) == [{'kind': 'hint', 'text': HINT_TEXT}]
     assert _latest_turn(app, ids['session_id'])['roll_gate'] is None
+    again = _send(socket_client, ids, 'I wait by the wagons.', client_message_id='turn-2b')
+    assert _payload(again, 'dm_response_end')['text'] in NOTHING_LINES
+    assert _story_beats(again) == []
 
     sneak = _send(socket_client, ids, 'I sneak around behind the last wagon.', client_message_id='turn-3')
     sneak_text = _payload(sneak, 'dm_response_end')['text']
@@ -154,7 +173,7 @@ def test_safe_mode_plays_the_play_now_opening_actions_and_rolls_without_network(
 
     assert re.match(rf'Dexterity \(Stealth\): -?\d+ against DC {stated_dc} — (success|failure)\.', resolved_text), resolved_text
     assert 'Make a' not in resolved_text
-    narrated_turns = 4
+    narrated_turns = 5
     assert generate_calls.count('deterministic-v1') == narrated_turns
     assert set(generate_calls) <= {'deterministic-v1', 'state-helper-fallback-v1'}
 
@@ -176,7 +195,7 @@ def test_safe_mode_attack_with_no_opponent_asks_for_no_roll(app, socketio, safe_
     assert _payloads(swing, 'roll_required') == []
     # Striking an object is an ordinary action, not a fight with no one in it.
     assert not swing_text.startswith(('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.'))
-    assert 'Mara Reedwake' in swing_text
+    assert swing_text in NOTHING_LINES
     assert requests_roll(swing_text) is False
     assert swing_turn['outcome_status'] != 'deferred'
     assert swing_turn['roll_gate'] is None

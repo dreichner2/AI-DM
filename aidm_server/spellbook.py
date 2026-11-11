@@ -1528,6 +1528,9 @@ def class_spells_for_level(class_name: str | None, level: int = 1) -> list[dict[
     if not archetype:
         return []
     character_level = max(1, min(20, int(level or 1)))
+    # Paladins and rangers know no spells before their first spell slot.
+    if character_level < catalog_unlock_level(archetype, 1):
+        return []
     spells = _spell_specs_to_payloads(
         CLASS_STARTING_SPELLS.get(archetype, []),
         source_type='class',

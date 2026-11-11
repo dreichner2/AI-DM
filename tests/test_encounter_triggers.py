@@ -5,6 +5,9 @@ from copy import deepcopy
 import pytest
 
 import aidm_server.game_state.orchestration.turn_pipeline as turn_pipeline_module
+from aidm_server.combat.attacks import resolve_enemy_ability
+from aidm_server.combat.defeat import party_defeat_recovery
+from aidm_server.combat.end_conditions import combat_end_change
 from aidm_server.combat.pipeline import prepare_combat_for_turn
 from aidm_server.combat.state import instantiate_creature, player_combat_participant
 from aidm_server.creatures.core_bestiary import core_creature
@@ -14,6 +17,7 @@ from aidm_server.game_state.campaign_pack_encounters import (
     TRIGGERED_ENCOUNTERS_FLAG,
     due_encounter,
     materialize_campaign_pack_combat_start,
+    party_scaling,
 )
 from aidm_server.game_state.orchestration.combat_resolution import settle_engine_controlled_turns
 from aidm_server.game_state.validation.validator import (
@@ -292,16 +296,16 @@ def test_travel_into_a_triggered_location_hands_narration_the_started_combat(cli
 
 
 @pytest.mark.parametrize(
-    ('players', 'counts', 'hp'),
+    ('players', 'counts', 'hp', 'numbers', 'dropped'),
     [
-        (1, (1, 1), 14),
-        (2, (2, 1), 16),
-        (3, (3, 2), 18),
-        (4, (4, 2), 20),
-        (5, (4, 2), 20),
+        (1, (1, 1), 8, (0.4, 0.4, -2, 2), []),
+        (2, (2, 1), 12, (0.6, 0.7, -1, 3), []),
+        (3, (3, 0), 16, (0.8, 0.85, 0, 4), ['archer']),
+        (4, (4, 2), 20, (1.0, 1.0, 0, None), []),
+        (5, (4, 2), 20, (1.0, 1.0, 0, None), []),
     ],
 )
-def test_encounters_scale_to_the_present_party(players, counts, hp):
+def test_encounters_scale_to_the_present_party(players, counts, hp, numbers, dropped):
     encounter = _encounter('enc_scaled', {'type': 'on_enter', 'locationId': 'bridge'})
     encounter['enemyGroups'] = [{'enemyId': 'bandit', 'count': 4}, {'enemyId': 'archer', 'count': 2}]
     state = _state([encounter], players=players)
@@ -318,7 +322,67 @@ def test_encounters_scale_to_the_present_party(players, counts, hp):
     scaling = change['combat']['flags']['partyScaling']
     assert scaling['partySize'] == players
     assert scaling['applied'] is (players < 4)
-    assert [group['count'] for group in scaling['groups']] == list(counts)
+    assert (
+        scaling['hpMultiplier'],
+        scaling['damageMultiplier'],
+        scaling['attackAndDcAdjustment'],
+        scaling['maxEnemies'],
+    ) == numbers
+    assert [group['enemyId'] for group in scaling['droppedGroups']] == dropped
+    assert [group['count'] for group in scaling['groups']] == [count for count in counts if count]
+
+
+def test_a_lone_hero_faces_at_most_two_enemies_and_the_first_group_is_never_dropped():
+    encounter = _encounter('enc_horde', {'type': 'on_enter', 'locationId': 'bridge'})
+    encounter['enemyGroups'] = [{'enemyId': 'bandit', 'count': 12}, {'enemyId': 'archer', 'count': 2}]
+    state = _state([encounter], players=1)
+
+    scaling = party_scaling(encounter, party_size=1)
+    change = materialize_campaign_pack_combat_start(state, {'type': 'combat.start', 'campaignPackEncounterId': 'enc_horde', 'combat': {}})
+
+    assert scaling['groups'] == [{'enemyId': 'bandit', 'authoredCount': 12, 'count': 2}]
+    assert scaling['droppedGroups'] == [{'enemyId': 'archer', 'authoredCount': 2, 'count': 1}]
+    assert [enemy['name'] for enemy in change['combat']['participants'] if enemy['team'] == 'enemy'] == ['Bandit 1', 'Bandit 2']
+
+
+def test_party_scaling_lowers_enemy_attack_bonus_save_dc_and_every_damage_roll():
+    encounter = _encounter('enc_hard', {'type': 'on_enter', 'locationId': 'bridge'})
+    encounter['enemyGroups'] = [{'enemyId': 'bandit', 'count': 1}]
+    state = _state([encounter], players=1)
+    state['campaignPack']['catalog']['enemies'][0]['abilities'] = [
+        {'id': 'cut', 'name': 'Cut', 'type': 'attack', 'attackBonus': 6, 'damage': {'dice': '1d4+9', 'type': 'slashing'}},
+        {
+            'id': 'hex',
+            'name': 'Hex',
+            'type': 'spell',
+            'save': {'ability': 'wisdom', 'dc': 14},
+            'damage': {'dice': '1d4', 'type': 'psychic'},
+        },
+    ]
+
+    change = materialize_campaign_pack_combat_start(state, {'type': 'combat.start', 'campaignPackEncounterId': 'enc_hard', 'combat': {}})
+    combat = change['combat']
+    enemy = next(participant for participant in combat['participants'] if participant['team'] == 'enemy')
+    hero = next(participant for participant in combat['participants'] if participant['team'] == 'player')
+    cut, hex_ability = enemy['abilities']
+
+    assert (enemy['name'], cut['attackBonus'], hex_ability['save']['dc']) == ('Bandit', 4, 12)
+    hit = resolve_enemy_ability(
+        enemy={**enemy, 'abilities': [cut]},
+        target={**hero, 'armorClass': 1},
+        ability=cut,
+        combat=combat,
+        state=state,
+        roller=lambda sides: 20 if sides == 20 else 1,
+        event_id='cut',
+        turn_id=1,
+    )
+    save = resolve_enemy_ability(
+        enemy=enemy, target=hero, ability=hex_ability, combat=combat, state=state, roller=lambda _sides: 1, event_id='hex', turn_id=1,
+    )
+    # A natural 20 doubles the die: 2d4+9 rolls 11; times 0.4 rounded down is 4. A psychic 1 stays at least 1.
+    assert hit['damageTotal'] == 4
+    assert save['damageTotal'] == 1
 
 
 def test_scaling_false_keeps_authored_counts_and_hp():
@@ -627,7 +691,9 @@ def test_opening_turns_that_down_the_only_hero_end_the_fight(app, camp, monkeypa
     _pipeline, state = _play_turn(app, ids, 'I attack the bandit.', 'The bandit strikes first.')
 
     assert (state['combat']['status'], state['combat']['flags']['endReason']) == ('ended', 'objective_failed')
-    assert state['playerCharacters'][0]['health']['currentHp'] == 0
+    # The beaten hero wakes later with 1 HP, and the bandit is gone.
+    assert state['playerCharacters'][0]['health']['currentHp'] == 1
+    assert [participant['team'] for participant in state['combat']['participants']] == ['player']
 
 
 def test_an_operator_started_fight_resolves_the_enemies_opening_turns(client, app, monkeypatch):
@@ -704,3 +770,125 @@ def test_the_engine_plays_every_non_player_turn_ahead_of_the_hero(monkeypatch):
     assert (combat['status'], combat['flags']['activeActorId'], combat['round']) == ('active', 'player_1', 1)
     assert settled.validation['rejected'] == []
 
+
+
+def _beaten_state(trigger: dict, *, flags: dict | None = None, **encounter_fields) -> dict:
+    """A combat that just ended with the only hero down (dying, then stabilized by the end) and prone."""
+
+    state = _state(
+        [_encounter('enc_raid', trigger, **encounter_fields)],
+        flags={TRIGGERED_ENCOUNTERS_FLAG: ['enc_raid'], **(flags or {})},
+    )
+    state['clock'] = {'day': 1, 'phase': 'evening'}
+    start = materialize_campaign_pack_combat_start(state, {'type': 'combat.start', 'campaignPackEncounterId': 'enc_raid', 'combat': {}})
+    state = apply_state_changes(state, [{**start, 'id': 'start_raid'}])['nextState']
+    hero = next(participant for participant in state['combat']['participants'] if participant['team'] == 'player')
+    hero.update({'hp': {'current': 0, 'max': 12, 'temp': 0}, 'conditions': ['unconscious', 'dying', 'prone'],
+                 'deathSaves': {'successes': 1, 'failures': 2}, 'isConscious': False})
+    state['playerCharacters'][0]['health'].update({'currentHp': 0, 'conditions': ['unconscious', 'dying']})
+    return apply_state_changes(state, [combat_end_change(30, 'objective_failed')])['nextState']
+
+
+@pytest.mark.parametrize(
+    'trigger',
+    [
+        {'type': 'on_enter', 'locationId': 'bridge'},
+        {'type': 'on_interactable', 'targetId': 'toll_chest', 'action': 'search'},
+    ],
+    ids=['travel', 'object'],
+)
+def test_a_beaten_party_wakes_later_and_the_encounter_can_fire_again(trigger):
+    state = _beaten_state(trigger)
+    cause = (
+        {'id': 'again', 'type': 'scene.move_location', 'locationId': 'bridge'}
+        if trigger['type'] == 'on_enter'
+        else {'id': 'again', 'type': 'scene.interactable.action', 'targetId': 'toll_chest', 'objectAction': 'search', 'event': {'type': 'interactable.searched'}}
+    )
+    assert due_encounter(state, [cause]) is None
+
+    change = party_defeat_recovery(state, turn_id=31)
+
+    hero = state['playerCharacters'][0]
+    participant = state['combat']['participants'][0]
+    assert change['type'] == 'combat.defeat_recovery'
+    assert (hero['health']['currentHp'], hero['health']['conditions']) == (1, [])
+    assert (participant['hp']['current'], participant['conditions'], participant['deathSaves']) == (1, [], {'successes': 0, 'failures': 0})
+    assert participant['isConscious'] is True
+    # The clock moved one phase, the enemies left, and the encounter is armed again.
+    assert state['clock']['phase'] == 'night' and state['clock']['day'] == 1
+    assert [participant['team'] for participant in state['combat']['participants']] == ['player']
+    assert 'enc_raid' not in state['flags'][TRIGGERED_ENCOUNTERS_FLAG]
+    assert due_encounter(state, [cause])['id'] == 'enc_raid'
+    assert (change['departedEnemies'], change['departedEnemiesPlural']) == ('the bandit', False)
+    # The defeat is the encounter's recorded outcome, and it paid nothing.
+    assert [(entry['encounterId'], entry['combatOutcome']) for entry in state['combatRewardLedger']] == [('enc_raid', 'defeat')]
+    assert party_defeat_recovery(state, turn_id=32) is None
+
+
+def test_a_lethal_encounter_leaves_the_party_down():
+    state = _beaten_state({'type': 'on_enter', 'locationId': 'bridge'}, lethalDefeat=True)
+
+    assert party_defeat_recovery(state, turn_id=31) is None
+    assert state['playerCharacters'][0]['health']['currentHp'] == 0
+
+
+def test_a_defeat_then_a_victory_pays_the_once_only_reward_once(app, camp, client, monkeypatch):
+    pack = _travel_pack()
+    pack['encounters'] = [
+        _encounter('enc_bridge', {'type': 'on_enter', 'locationId': 'bridge'}, scaling=False,
+                   enemyGroups=[{'enemyId': 'bandit', 'count': 1}], rewards={'xp': 50, 'gp': 10}),
+    ]
+    ids = camp(pack, current_hp=1, hp_current=1, max_hp=12, hp_max=12)
+    # The bandit wins initiative and every engine die rolls its highest: the hero goes down at once.
+    _enemies_go_first(monkeypatch, roll=lambda sides: sides)
+
+    pipeline, beaten = _play_turn(app, ids, 'go to the bridge', 'You set out for the bridge.')
+    hero = beaten['playerCharacters'][0]
+    recovery = next(change for change in pipeline['postAppliedChanges'] if change['type'] == 'combat.defeat_recovery')
+
+    assert pipeline['dmContextPacket']['narration']['partyDefeat'] == {'enemies': 'the bandit', 'plural': False}
+    assert (beaten['combat']['flags']['endReason'], hero['health']['currentHp']) == ('objective_failed', 1)
+    assert recovery['clock']['phase'] != pipeline['stateBeforeDm'].get('clock', {}).get('phase')
+    assert 'enc_bridge' not in beaten['flags'][TRIGGERED_ENCOUNTERS_FLAG]
+    assert [participant['team'] for participant in beaten['combat']['participants']] == ['player']
+
+    _enemies_go_first(monkeypatch)
+    _play_turn(app, ids, 'go to the camp', 'You limp back to camp.')
+    _pipeline, again = _play_turn(app, ids, 'go to the bridge', 'You return to the bridge.')
+    assert again['combat']['status'] == 'active'
+    assert again['flags'][TRIGGERED_ENCOUNTERS_FLAG] == ['enc_bridge']
+
+    response = client.post(
+        f"/api/sessions/{ids['session_id']}/combat/apply-state-changes",
+        json={'changes': [{'type': 'combat.end', 'status': 'ended', 'endReason': 'all_enemies_defeated'}]},
+    )
+    assert response.status_code == 200, response.get_json()
+    with app.app_context():
+        won = safe_json_loads(db.session.get(Session, ids['session_id']).state_snapshot, {})
+    rewards = [(entry['encounterId'], entry['combatOutcome']) for entry in won['combatRewardLedger']]
+    currency = won['playerCharacters'][0]['inventory']['currency']
+
+    assert rewards == [('enc_bridge', 'defeat'), ('enc_bridge', 'victory')]
+    assert (won['playerCharacters'][0]['xp']['current'], currency.get('gp')) == (50, 10)
+
+
+def test_pack_enemies_are_named_by_their_singular_name_and_numbered_in_groups():
+    encounter = _encounter('enc_named', {'type': 'on_enter', 'locationId': 'bridge'}, scaling=False)
+    encounter['enemyGroups'] = [{'enemyId': 'cutthroats', 'count': 2}, {'enemyId': 'marshal', 'count': 1}, {'enemyId': 'bandit', 'count': 1}]
+    state = _state([encounter], players=1)
+    state['campaignPack']['catalog']['enemies'].extend(
+        [
+            {'id': 'cutthroats', 'name': 'Ashmarked Cutthroats', 'singularName': 'Ashmarked Cutthroat', 'stats': {'maxHp': 18}},
+            {'id': 'marshal', 'name': 'The Hollow Marshal', 'proper': True, 'stats': {'maxHp': 88}},
+        ]
+    )
+
+    change = materialize_campaign_pack_combat_start(state, {'type': 'combat.start', 'campaignPackEncounterId': 'enc_named', 'combat': {}})
+    enemies = [participant for participant in change['combat']['participants'] if participant['team'] == 'enemy']
+
+    assert [(enemy['name'], enemy.get('proper', False)) for enemy in enemies] == [
+        ('Ashmarked Cutthroat 1', False),
+        ('Ashmarked Cutthroat 2', False),
+        ('The Hollow Marshal', True),
+        ('Bandit', False),
+    ]

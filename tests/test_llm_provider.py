@@ -35,6 +35,24 @@ from aidm_server.llm_providers import (
     helper_provider_name,
 )
 from aidm_server.prompt_templates import build_dm_stream_request
+from aidm_server.scripted_narrator import TEMPLATES
+
+NOTHING_LINES = TEMPLATES['nothing_happens']
+# A scene the hero looks around: long enough to stream in several windows.
+LOOK_CONTEXT = json.dumps(
+    {
+        'live_world_state': {
+            'currentScene': {
+                'description': (
+                    'Rain hammers the gatehouse roof and runs in sheets from the broken gutters. '
+                    'The portcullis hangs a hand above the mud, chained and rusted in place.'
+                ),
+                'visibleDetails': ['A lantern swings from the arch.', 'Fresh boot prints lead under the gate.'],
+            }
+        }
+    }
+)
+LOOK_HINT = {'requires_roll': False, 'turn_number': 3, 'state_pipeline': {'narration': {'freeText': {'kind': 'look'}}}}
 from aidm_server.provider_registry import provider_capabilities, provider_default_model, provider_runtime_model
 
 
@@ -664,8 +682,8 @@ def test_fallback_provider_narrates_parsed_prompt_and_holds_on_unparsed_prompt()
     text = provider.generate(request).text
 
     assert '"I walk to the altar."' not in text
-    assert text.startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
-    assert 'A cracked censer lies on its side.' in text
+    # Words that map to nothing get one short line, with no scene padding.
+    assert text in NOTHING_LINES
     assert provider.generate(ProviderRequest(prompt='hello')).text == 'The moment holds. What do you do?'
 
 
@@ -694,8 +712,7 @@ def test_emergency_fallback_uses_scripted_narrator_when_context_and_hint_are_ava
     assert len(narrated) == 1
     assert isinstance(narrated[0], EmergencyFallbackChunk)
     assert '"I knock on the gate."' not in narrated[0]
-    assert narrated[0].startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
-    assert 'Rain hammers the gatehouse roof.' in narrated[0]
+    assert narrated[0] in NOTHING_LINES
     assert 'model' not in narrated[0].lower()
     assert 'reconnect' not in narrated[0].lower()
     assert 'primary model reconnects' in without_hint[0]
@@ -2165,11 +2182,11 @@ def test_buffered_stream_delay_override_paces_chunks(monkeypatch, tmp_path):
 
 def test_buffered_stream_chunk_size_override_produces_multiple_render_windows(monkeypatch):
     provider = DeterministicFallbackProvider(model_name='deterministic-v1')
-    expected_text = provider.generate(build_dm_stream_request('open the gate', '{"campaign":"test"}')).text
+    expected_text = provider.generate(build_dm_stream_request('look around', LOOK_CONTEXT, rules_hint=LOOK_HINT)).text
     monkeypatch.setenv('AIDM_BUFFERED_STREAM_CHUNK_CHARS', '48')
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
 
-    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+    chunks = list(query_dm_function_stream('look around', LOOK_CONTEXT, rules_hint=LOOK_HINT))
 
     assert len(chunks) >= 3
     assert all(0 < len(chunk) <= 48 for chunk in chunks)
@@ -2354,15 +2371,15 @@ def test_intentionally_configured_deterministic_provider_is_not_emergency_fallba
     provider = DeterministicFallbackProvider(model_name='deterministic-v1')
     monkeypatch.setattr('aidm_server.llm.get_provider', lambda: provider)
 
-    chunks = list(query_dm_function_stream('open the gate', '{"campaign":"test"}'))
+    chunks = list(query_dm_function_stream('look around', LOOK_CONTEXT, rules_hint=LOOK_HINT))
 
     assert len(chunks) >= 2
     assert all(0 < len(chunk) <= DISPLAY_STREAM_CHUNK_CHARS for chunk in chunks)
     assert not any(isinstance(chunk, EmergencyFallbackChunk) for chunk in chunks)
     text = ''.join(chunks)
-    assert '"open the gate."' not in text
-    assert text.startswith(('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'))
-    assert text.endswith('What do you do?')
+    assert '"look around."' not in text
+    assert text.startswith('Rain hammers the gatehouse roof')
+    assert not text.endswith('What do you do?')
 
 
 def test_get_provider_uses_phase_timeout_env(monkeypatch):

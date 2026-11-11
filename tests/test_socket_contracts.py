@@ -1,3 +1,5 @@
+import pytest
+
 from aidm_server.socket_contracts import (
     SEND_MESSAGE_REQUIRED_FIELDS,
     dm_chunk_payload,
@@ -247,6 +249,7 @@ def test_outgoing_status_and_side_effect_payload_contracts_are_stable():
         'mode': 'advantage',
         'rolls': [8, 17],
         'kept': 17,
+        'bonus_dice': [],
         'modifier': 4,
         'total': 21,
         'reason': 'persuade the guard',
@@ -347,3 +350,30 @@ def test_new_message_payload_contract_is_stable():
         'action_intent': {'kind': 'action'},
         'client_message_id': 'client-12',
     }
+
+
+@pytest.mark.parametrize('include_private_provenance', [True, False])
+def test_roll_resolved_carries_the_bless_dice_so_its_total_adds_up(include_private_provenance):
+    bless = {'expression': '+1d4', 'rolls': [3], 'total': 3}
+    payload = roll_resolved_payload(
+        session_id=4,
+        turn_id=10,
+        player_id=3,
+        client_message_id='roll-10',
+        pending_turn_id=None,
+        roll={
+            'rule_type': 'attack',
+            'die': 'd20',
+            'mode': 'normal',
+            'rolls': [12],
+            'kept': 12,
+            'bonus_dice': [bless],
+            'modifier': 5,
+            'total': 20,
+            'result_visibility': 'hidden_until_landed',
+        },
+        include_private_provenance=include_private_provenance,
+    )
+
+    assert payload['bonus_dice'] == [bless]
+    assert payload['kept'] + payload['modifier'] + sum(item['total'] for item in payload['bonus_dice']) == payload['total']

@@ -2,8 +2,13 @@
 
 Narrates engine-resolved results and authored scene content from the same
 CONTEXT, RULES_HINT and player input the live DM model receives, without any
-network call. Phrasing varies by turn without randomness: each template has a
-few variants chosen by ``sha1(f"{turn_number}:{template_key}")``.
+network call. It says only what happened: a reply is the result paragraphs,
+with the scene paragraph only in the opening, on arrival and when the hero
+looks around, and the closing question only in the opening. The pipeline's
+``narration`` packet (``RULES_HINT.state_pipeline.narration``) names the
+objects acted on, the person talked to, how typed words mapped, who acts next
+in a fight and a party defeat. Phrasing varies by turn without randomness:
+each template has a few variants chosen by ``sha1(f"{turn_number}:{template_key}")``.
 
 Only one case ever asks for a roll: a turn whose rules hint requires a roll that
 has not been made yet. Every other sentence is kept free of roll-request
@@ -22,13 +27,17 @@ from aidm_server.turn_roll_policy import TurnRollPolicy
 from aidm_server.turn_rules import response_mentions_roll_request
 
 
-MIN_WORDS = 40
-MAX_WORDS = 110
 MAX_OPENING_WORDS = 220
-MAX_LEADS = 3
 MAX_OPENING_DETAILS = 3
 OPENING_CLOSING_LINE = 'What do you do?'
 OPENING_MESSAGE_KIND = 'opening'
+ONE_THING_AT_A_TIME = 'One thing at a time — the rest is still yours to do.'
+DEFEAT_PARAGRAPH = (
+    'Darkness takes you. When you come to, the light has changed and {enemies} {be} gone. You are alive — barely.'
+)
+COIN_CODES = frozenset({'pp', 'gp', 'ep', 'sp', 'cp'})
+# After a failed check for an object action, said after the action's sentence.
+FAILED_CHECK_LINES = {'search': 'You come up empty.', 'inspect': 'You come up empty.'}
 
 ABILITY_NAMES = ('strength', 'dexterity', 'constitution', 'intelligence', 'wisdom', 'charisma')
 RULE_TYPE_LABELS = {
@@ -53,29 +62,12 @@ CURRENCY_NAMES = {'gp': 'gold', 'sp': 'silver', 'cp': 'copper', 'ep': 'electrum'
 FIRST_NAME_STOPWORDS = frozenset(
     {'the', 'old', 'young', 'sir', 'lady', 'lord', 'captain', 'brother', 'sister', 'master', 'mother', 'father'}
 )
-DISPOSITION_MANNERS = {
-    'friendly': 'with an easy warmth',
-    'helpful': 'readily',
-    'cautious_helpful': 'carefully, weighing each word before giving it',
-    'cautious': 'carefully, weighing each word',
-    'neutral': 'evenly',
-    'curious': 'with open curiosity',
-    'suspicious': 'with a narrow, measuring look',
-    'wary': 'warily, keeping some distance',
-    'afraid': 'in a low, uneasy voice',
-    'frightened': 'in a low, uneasy voice',
-    'hostile': 'coldly, making no effort to hide it',
-}
-
 TEMPLATES: dict[str, tuple[str, ...]] = {
     'opening_npcs': (
         '{npcs} {verb} here with you.',
         'Close at hand {verb} {npcs}.',
         'Within earshot {verb} {npcs}.',
     ),
-    'invalid': ('That will not work: {reason}',),
-    'closing_invalid': ('What do you do instead?', 'What do you try instead?', 'What is your next move?'),
-    'closing': ('What do you do?', 'What do you do next?', 'What now?', 'Where do you go from here?'),
     'player_attack_hit': (
         '{actor} {weapon} finds {target}: {total} against AC {ac}, a hit for {damage} {damage_type} damage.',
         '{actor} {weapon} lands on {target} with {total} against AC {ac}, a hit for {damage} {damage_type} damage.',
@@ -191,16 +183,10 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
     'xp': ('You gain {amount} XP.', 'The experience is worth {amount} XP.', 'You earn {amount} XP.'),
     'currency_gain': ('You gain {amount} {currency}.', '{amount} {currency} goes into your purse.', 'You pocket {amount} {currency}.'),
     'currency_spend': ('You spend {amount} {currency}.', '{amount} {currency} leaves your purse.', 'You pay {amount} {currency}.'),
-    'interactable_contents': ('Inside you find {items}.', 'It holds {items}.', 'Within lies {items}.'),
     'roll_success_investigation': (
         'You find what the others missed.',
         'Something gives itself away.',
         'Your attention catches on one thing.',
-    ),
-    'roll_success_detail': (
-        'Your eye settles on one thing.',
-        'One detail stands out.',
-        'You notice it now.',
     ),
     'roll_failure_investigation': (
         'You look again, but nothing new reveals itself.',
@@ -283,29 +269,13 @@ TEMPLATES: dict[str, tuple[str, ...]] = {
         'You draw a slow breath and make your move, knowing the next few heartbeats will show whether you judged this right.',
     ),
     'no_target': ('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.'),
-    'npc_manner': (
-        '{name}{role} answers {manner}.',
-        '{name}{role} meets your eyes and answers {manner}.',
-        '{name}{role} sets everything else aside and answers {manner}.',
-    ),
     'npc_knows': (
         '"{fact}" {first} tells you.',
         '"{fact}" {first} says, voice low.',
         '"{fact}" {first} says after a moment.',
     ),
-    'npc_nothing': (
-        '{first} listens, but has nothing new to give you yet.',
-        '{first} hears you out and offers nothing more for now.',
-        '{first} thinks it over, then shakes their head.',
-    ),
-    'action': ('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.'),
-    'leads': ('Within reach are {leads}.', 'Close at hand: {leads}.', 'Your options sit nearby: {leads}.'),
-    'fill': (
-        'The air is still, and every small sound seems to carry.',
-        'For a moment nothing moves, as if the place itself is waiting on you.',
-        'Somewhere close, a board creaks and settles again.',
-        'The light shifts while the moment stretches, waiting on your choice.',
-    ),
+    'nothing_happens': ('Nothing comes of it yet.', 'The moment holds, and nothing changes.', 'No answer comes.'),
+    'scene_present': ('{npcs} {verb} here.', 'Close at hand {verb} {npcs}.', 'Within earshot {verb} {npcs}.'),
 }
 
 
@@ -339,6 +309,10 @@ class NarrationInput:
         return _dicts(self.pipeline.get('stateChangesAlreadyApplied'))
 
     @property
+    def facts(self) -> dict:
+        return _dict(self.pipeline.get('narration'))
+
+    @property
     def relevant_records(self) -> dict:
         return _dict(_dict(self.context.get('campaign_pack_director')).get('relevantRecords'))
 
@@ -359,6 +333,18 @@ class NarrationInput:
     def is_speaker(self, name: Any) -> bool:
         return bool(self.speaker) and _text(name).casefold() == _text(self.speaker).casefold()
 
+    def creature(self, name: Any) -> str:
+        """An enemy's name in prose: ``the wardbound beast``; a proper name keeps its capitals."""
+
+        text = _text(name)
+        for enemy in _dicts(self.facts.get('enemies')):
+            if _text(enemy.get('name')).casefold() != text.casefold():
+                continue
+            if enemy.get('proper') is True:
+                return f'the {text[4:]}' if text.lower().startswith('the ') else text
+            return f'the {text.lower()}'
+        return text
+
 
 def narrate(
     context: dict[str, Any],
@@ -378,27 +364,33 @@ def narrate(
         return _narrate_opening(turn)
     invalid_actions = _dicts(turn.pipeline.get('invalidActions'))
     if invalid_actions:
-        return _narrate_invalid(turn, invalid_actions)
-    result_lines = [
-        *_combat_lines(turn),
-        *_spell_lines(turn),
-        *_capability_lines(turn),
-        *_change_lines(turn),
-    ]
+        return _compose(turn, [_refusals(invalid_actions)])
+    # The place first, then the hero's own result, then the fight, then what it brought.
+    arrival = _text(turn.facts.get('arrival'))
+    blocks: list[list[str]] = _arrival_blocks(turn, {'locationName': _the(arrival)}) if arrival else []
+    own_blocks, aftermath = _change_blocks(turn)
+    blocks.append([*_spell_lines(turn), *_capability_lines(turn)])
+    blocks.extend(own_blocks)
+    blocks.append(_combat_lines(turn))
+    blocks.append(aftermath)
     roll_paragraphs = _resolved_roll_paragraphs(turn)
-    if result_lines or roll_paragraphs:
-        if roll_paragraphs:
-            result_lines.append(roll_paragraphs[0])
-        blocks = [result_lines, roll_paragraphs[1:]]
-        return _compose(turn, blocks, fill=_scene_fill(turn), closing=turn.pick('closing'))
+    if roll_paragraphs:
+        blocks.extend([[roll_paragraphs[0]], roll_paragraphs[1:]])
+    if any(blocks) or turn.facts.get('partyDefeat'):
+        return _compose(turn, blocks)
     if turn.rules_hint.get('no_target') is True:
-        return _narrate_action(turn, turn.pick('no_target'))
+        return _compose(turn, [[turn.pick('no_target')]])
     if turn.rules_hint.get('requires_roll') is True and turn.rules_hint.get('roll_value') is None:
         return _narrate_roll_request(turn)
+    talk = _dict(turn.facts.get('talk'))
+    if talk:
+        return _compose(turn, [[_talk_line(turn, talk)]])
     npc = _addressed_npc(turn)
     if npc:
-        return _narrate_npc_talk(turn, npc)
-    return _narrate_action(turn, turn.pick('action'))
+        return _compose(turn, [[_npc_talk_line(turn, npc)]])
+    if _dict(turn.facts.get('freeText')).get('kind') == 'look':
+        return _compose(turn, _scene_paragraphs(turn))
+    return _compose(turn, [[turn.pick('nothing_happens')]])
 
 
 # Cases ------------------------------------------------------------------------------------------------------------
@@ -425,61 +417,69 @@ def _narrate_opening(turn: NarrationInput) -> str:
     if npcs:
         listed = _join_words(npcs)
         blocks.append(_safe_sentences([turn.pick('opening_npcs', npcs=listed, verb='is' if len(npcs) == 1 else 'are')]))
-    return _compose(
-        turn,
-        [block for block in blocks if block],
-        fill=[],
-        closing=OPENING_CLOSING_LINE,
-        max_words=MAX_OPENING_WORDS,
-    )
+    blocks = _clip_blocks([block for block in blocks if block], MAX_OPENING_WORDS - _word_count(OPENING_CLOSING_LINE))
+    return '\n\n'.join(' '.join(block) for block in [*blocks, [OPENING_CLOSING_LINE]])
 
 
-def _narrate_invalid(turn: NarrationInput, invalid_actions: list[dict]) -> str:
+def _refusals(invalid_actions: list[dict]) -> list[str]:
+    # A refusal is the plain sentence the rules gave, with no prefix.
     lines = []
     for action in invalid_actions[:2]:
-        reason = _text(action.get('reason') or action.get('summary')) or 'it is not possible right now'
-        lines.append(_sentence(turn.pick('invalid', reason=_clip(reason, 200))))
-    return _compose(turn, [_safe_sentences(lines)], fill=_scene_fill(turn), closing=turn.pick('closing_invalid'))
+        reason = _text(action.get('reason') or action.get('summary')) or 'That can\'t be done right now.'
+        lines.append(_sentence(_clip(reason, 200)))
+    return _safe_sentences(lines)
 
 
 def _narrate_roll_request(turn: NarrationInput) -> str:
     # The player's own words sit directly above this narration, so they are never quoted back.
-    return _compose(turn, [[turn.pick('roll_ack')]], fill=_scene_fill(turn), closing=_roll_request_line(turn))
+    return _compose(turn, [[turn.pick('roll_ack')], [_roll_request_line(turn)]])
 
 
-def _narrate_npc_talk(turn: NarrationInput, npc: dict) -> str:
-    name = _text(npc.get('name'))
+def _talk_line(turn: NarrationInput, talk: dict) -> str:
+    name = _text(talk.get('name'))
+    fact = _text(talk.get('fact'))
+    if not fact:
+        return f'{name or "They"} has nothing more to add.'
     first = _first_name(name) or name
-    role = _humanize(npc.get('role'))
-    manner = DISPOSITION_MANNERS.get(_key(npc.get('disposition')), 'evenly')
-    lines = [turn.pick('npc_manner', name=name, role=f', the {role},' if role else '', manner=manner)]
+    return turn.pick('npc_knows', fact=_speech(fact), first=first)
+
+
+def _npc_talk_line(turn: NarrationInput, npc: dict) -> str:
+    """Without the pipeline's talk record: the person's next fact by how often they were addressed."""
+
+    name = _text(npc.get('name'))
     knows = _npc_knows(turn, npc)
-    if knows:
-        mentions = sum(1 for recent in _dicts(turn.context.get('recent_turns')) if _mentions_npc(recent, npc))
-        fact = knows[min(mentions, len(knows) - 1)]
-        lines.append(turn.pick('npc_knows', fact=_speech(fact), first=first))
-    else:
-        lines.append(turn.pick('npc_nothing', first=first))
-    return _compose(turn, [_safe_sentences(lines)], fill=_scene_fill(turn), closing=turn.pick('closing'))
+    if not knows:
+        return f'{name} has nothing more to add.'
+    mentions = sum(1 for recent in _dicts(turn.context.get('recent_turns')) if _mentions_npc(recent, npc))
+    if mentions >= len(knows):
+        return f'{name} has nothing more to add.'
+    return turn.pick('npc_knows', fact=_speech(knows[mentions]), first=_first_name(name) or name)
 
 
-def _narrate_action(turn: NarrationInput, acknowledgement: str) -> str:
-    # The player's own words sit directly above this narration, so they are never quoted back.
-    details = _unused_scene_details(turn)
-    leads = _leads_sentence(turn)
-    ending = ' '.join(sentence for sentence in (leads, turn.pick('closing')) if sentence)
-    # A second scene detail joins the first when one detail is not enough to reach the word floor.
-    shown = 2 if _word_count(' '.join([acknowledgement, *details[:1], ending])) < MIN_WORDS else 1
-    return _compose(turn, [[acknowledgement, *details[:shown]]], fill=details[shown:], closing=ending)
+def _scene_paragraphs(turn: NarrationInput) -> list[list[str]]:
+    scene = turn.scene
+    lead = _split_sentences(_text(scene.get('summary')) or _text(scene.get('description')))
+    details = [_sentence(detail) for detail in _string_items(scene.get('visibleDetails'))]
+    npcs = [_text(npc.get('name')) for npc in turn.present_npcs]
+    present = (
+        [turn.pick('scene_present', npcs=_join_words(npcs), verb='is' if len(npcs) == 1 else 'are')] if npcs else []
+    )
+    return [_safe_sentences(lead), _safe_sentences(details), _safe_sentences(present)]
 
 
 # Mechanical results ---------------------------------------------------------------------------------------------
 
 
 def _combat_lines(turn: NarrationInput) -> list[str]:
+    """The fight in order: it starts, the hero's move or attack, the enemies' turns, who fell, death saves, its end."""
+
     combat_state = _dict(turn.pipeline.get('combatState'))
-    lines: list[str] = []
+    lines = [turn.pick('combat_start') for change in turn.applied_changes if _text(change.get('type')) == 'combat.start'][:1]
     targets: list[str] = []
+    tactical = _text(_dict(combat_state.get('playerResolvedCombatAction')).get('outcome'))
+    if tactical:
+        lines.append(_sentence(tactical))
     player_action = _dict(combat_state.get('playerResolvedAction'))
     attacks = [player_action] if player_action else []
     for event in _dicts(combat_state.get('trustedDamageEvents')):
@@ -499,9 +499,7 @@ def _combat_lines(turn: NarrationInput) -> list[str]:
     lines.extend(_defeat_lines(turn, targets))
     for change in turn.applied_changes:
         change_type = _text(change.get('type'))
-        if change_type == 'combat.start':
-            lines.append(turn.pick('combat_start'))
-        elif change_type == 'combat.end':
+        if change_type == 'combat.end':
             status = _key(change.get('combatStatus'))
             outcome = f': {_humanize(status)}' if status and status not in {'ended', 'none', 'complete', 'completed'} else ''
             lines.append(turn.pick('combat_end', outcome=outcome))
@@ -529,7 +527,7 @@ def _player_attack_line(turn: NarrationInput, attack: dict) -> str:
 
 
 def _enemy_action_line(turn: NarrationInput, action: dict) -> str | None:
-    enemy = _text(action.get('enemyName')) or 'The enemy'
+    enemy = turn.creature(action.get('enemyName')) or 'The enemy'
     target = _target_ref(turn, action.get('targetName'))
     ability = _text(action.get('abilityName')) or 'an attack'
     if action.get('resolvedWithoutRoll') is True:
@@ -594,7 +592,7 @@ def _defeat_lines(turn: NarrationInput, target_names: list[str]) -> list[str]:
         if not down:
             continue
         if _key(participant.get('team')) == 'enemy':
-            lines.append(turn.pick('defeated', target=name))
+            lines.append(_sentence(turn.pick('defeated', target=turn.creature(name))))
         else:
             lines.append(_sentence(turn.pick('player_down', **_person(turn, name))))
     return lines
@@ -702,17 +700,33 @@ def _capability_lines(turn: NarrationInput) -> list[str]:
     return lines
 
 
-def _change_lines(turn: NarrationInput) -> list[str]:
+def _change_blocks(turn: NarrationInput) -> tuple[list[list[str]], list[str]]:
+    """The hero's own results (arrival, objects, what was taken, a rest), and the other results after them."""
+
+    facts = turn.facts
+    blocks: list[list[str]] = []
     lines: list[str] = []
+    taken = [_text(phrase) for phrase in facts.get('taken') or [] if _text(phrase)]
+    if taken:
+        blocks.append([f'You take {_join_words(taken)}.'])
+    rest = _dict(facts.get('rest'))
+    if rest:
+        blocks.append([turn.pick('rest_hp', amount=rest['hp']) if isinstance(rest.get('hp'), int) and rest['hp'] > 0 else turn.pick('rest_plain')])
+    object_facts = _dicts(facts.get('objects'))
     for change in turn.applied_changes:
         change_type = _text(change.get('type'))
         item = _text(change.get('itemName'))
         amount = change.get('amount')
         quest = _text(change.get('questTitle'))
         if change_type == 'scene.move_location':
-            lines.extend(_travel_lines(turn, change))
+            if not _text(facts.get('arrival')):
+                blocks.extend(_arrival_blocks(turn, change))
         elif change_type == 'scene.interactable.action':
-            lines.extend(_interactable_lines(turn, change))
+            fact = next(
+                (fact for fact in object_facts if _text(fact.get('targetId')) == _text(change.get('targetId'))),
+                None,
+            )
+            blocks.extend(_object_blocks(fact) if fact else [[_object_sentence(change)]])
         elif change_type == 'inventory.add' and item:
             if isinstance(amount, int) and amount > 1:
                 lines.append(turn.pick('item_gain_many', amount=amount, item=item))
@@ -728,7 +742,7 @@ def _change_lines(turn: NarrationInput) -> list[str]:
             lines.append(turn.pick('item_unequip', item=item))
         elif change_type == 'scene.item.add' and item:
             lines.append(_sentence(turn.pick('scene_item', item=item)))
-        elif change_type == 'rest.complete':
+        elif change_type == 'rest.complete' and not rest:
             if isinstance(amount, int) and amount > 0:
                 lines.append(turn.pick('rest_hp', amount=amount))
             else:
@@ -748,50 +762,90 @@ def _change_lines(turn: NarrationInput) -> list[str]:
             lines.append(turn.pick(key, amount=amount, currency=currency))
         elif change_type == 'spell.cast' and not change.get('spellResolution') and change.get('spellName'):
             lines.append(turn.pick('spell_cast', spell=_text(change.get('spellName'))))
-    return _safe_sentences(lines)
+    return [_safe_sentences(block) for block in blocks], _safe_sentences(lines)
 
 
-def _travel_lines(turn: NarrationInput, change: dict) -> list[str]:
+def _arrival_blocks(turn: NarrationInput, change: dict) -> list[list[str]]:
     scene = turn.scene
     place = _text(change.get('locationName')) or _text(scene.get('name')) or 'a new place'
-    lines = [turn.pick('travel', place=place)]
     description = _text(scene.get('summary')) or _text(scene.get('description'))
-    lines.extend(_split_sentences(description)[:2])
+    lines = [turn.pick('travel', place=place), *_split_sentences(description)[:2]]
     npcs = [_text(npc.get('name')) for npc in turn.present_npcs]
     if npcs:
         lines.append(turn.pick('travel_present', npcs=_join_words(npcs), verb='is' if len(npcs) == 1 else 'are'))
-    return lines
+    return [lines]
 
 
-def _interactable_lines(turn: NarrationInput, change: dict) -> list[str]:
-    interactable = next(
-        (
-            item
-            for item in _dicts(turn.scene.get('interactables'))
-            if _text(item.get('id')) and _text(item.get('id')) == _text(change.get('targetId'))
-        ),
-        {},
-    )
-    name = _text(change.get('targetName')) or _text(interactable.get('name')) or _humanize(change.get('targetId')) or 'it'
-    action = _key(change.get('objectAction'))
-    sentences = {
-        'open': f'You open the {name}.',
-        'close': f'You close the {name}.',
-        'unlock': f'The {name} unlocks with a click.',
-        'lock': f'You lock the {name}.',
-        'search': f'You search the {name}.',
-        'inspect': f'You look the {name} over closely.',
-        'use': f'You use the {name}.',
-        'break': f'The {name} breaks under your hands.',
-        'disarm': f'You disarm the {name}.',
-        'trigger': f'The {name} goes off.',
-    }
-    lines = [sentences.get(action) or _sentence(f'You {_humanize(action) or "work at"} the {name}')]
-    if action in {'open', 'search', 'inspect'}:
-        contents = [_text(item.get('name')) for item in _dicts(interactable.get('contents')) if _text(item.get('name'))]
-        if contents:
-            lines.append(turn.pick('interactable_contents', items=_join_words(contents)))
-    return lines
+def _object_blocks(fact: dict) -> list[list[str]]:
+    """What one object action did: its steps, its sentence, the description told once, what a search found."""
+
+    name = _text(fact.get('name'))
+    action = _key(fact.get('action'))
+    opening = []
+    steps = _dicts(fact.get('steps'))
+    if steps:
+        opening.append(_steps_sentence(steps, _text(fact.get('keyName'))))
+    opening.append(_text(fact.get('actionText')) or _label_sentence(_text(fact.get('label')), fact.get('labelAuthored') is True, action, name))
+    if fact.get('failed') is True:
+        return [_safe_sentences([*(_sentence(line) for line in opening), FAILED_CHECK_LINES.get(action, 'It will not give.')])]
+    blocks = [_safe_sentences([_sentence(line) for line in opening])]
+    description = _text(fact.get('description'))
+    if description:
+        blocks.append(_split_sentences(description))
+    if action == 'search':
+        blocks.append([_found_sentence(fact.get('found'))])
+    elif fact.get('nothingNew') is True:
+        blocks.append([f'You find nothing new on {_the(name)}.'])
+    return blocks
+
+
+def _label_sentence(label: str, authored: bool, action: str, name: str) -> str:
+    """``Ring the wagon bell`` -> ``You ring the wagon bell.``; a default label names the object with an article."""
+
+    if authored and label:
+        return _sentence(f'You {label[:1].lower()}{label[1:]}')
+    verb = label.split(' ', 1)[0].lower() if label else action
+    return _sentence(f'You {verb} {_the(name)}')
+
+
+def _steps_sentence(steps: list[dict], key_name: str) -> str:
+    """``You unlock the strongbox with the Caravan Strongbox Key and lift the lid.``"""
+
+    first = steps[0]
+    action = _key(first.get('action'))
+    label = _text(first.get('label'))
+    sentence = f'You {label[:1].lower()}{label[1:]}' if label else f'You {action} it'
+    if action == 'unlock' and key_name:
+        sentence += f' with {_the(key_name)}'
+    if action == 'unlock' and any(_key(step.get('action')) == 'open' for step in steps[1:]):
+        sentence += ' and lift the lid'
+    return _sentence(sentence)
+
+
+def _found_sentence(found: Any) -> str:
+    items = [_text(item) for item in (found if isinstance(found, list) else []) if _text(item)]
+    if not items:
+        return 'You find nothing more.'
+    coins = [item for item in items if item.split()[-1].lower() in COIN_CODES]
+    return f'You find {_join_words([*coins, *(item for item in items if item not in coins)])}.'
+
+
+def _object_sentence(change: dict) -> str:
+    """Without the pipeline's object record: one plain sentence about the action."""
+
+    name = _text(change.get('targetName')) or _humanize(change.get('targetId')) or 'it'
+    action = _key(change.get('objectAction')) or 'work at'
+    return _sentence(f'You {_humanize(action)} {_the(name)}')
+
+
+def _the(name: str) -> str:
+    """``the Driver's Bench``; a name that already starts with "The" keeps it, lower-cased."""
+
+    if not name:
+        return 'it'
+    if name.lower().startswith('the '):
+        return f'the {name[4:]}'
+    return f'the {name}'
 
 
 def _resolved_roll_paragraphs(turn: NarrationInput) -> list[str]:
@@ -827,9 +881,6 @@ def _roll_outcome_lines(turn: NarrationInput, rule_type: str, *, success: bool) 
         clue = _unused_clue(turn)
         if clue:
             return _safe_sentences([turn.pick('roll_success_investigation'), _sentence(clue)])
-        details = _unused_scene_details(turn)
-        if details:
-            return [turn.pick('roll_success_detail'), details[0]]
         return [turn.pick('roll_success_generic')]
     family = (
         'stealth'
@@ -860,68 +911,6 @@ def _roll_request_line(turn: NarrationInput) -> str:
 
 
 # Scene material ---------------------------------------------------------------------------------------------------
-
-
-def _scene_details(turn: NarrationInput) -> list[str]:
-    scene = turn.scene
-    details = [_sentence(detail) for detail in _string_items(scene.get('visibleDetails'))]
-    details.extend(_split_sentences(_text(scene.get('description'))))
-    details.extend(_split_sentences(_text(scene.get('summary'))))
-    return _safe_sentences(list(dict.fromkeys(detail for detail in details if detail)))
-
-
-def _unused_scene_details(turn: NarrationInput) -> list[str]:
-    details = _scene_details(turn)
-    previous = _normalized(turn.previous_narration)
-    unused = [detail for detail in details if _normalized(detail) not in previous]
-    if unused:
-        return unused
-    if not details:
-        return []
-    offset = turn.turn_number % len(details)
-    return details[offset:] + details[:offset]
-
-
-def _scene_fill(turn: NarrationInput) -> list[str]:
-    leads = _leads_sentence(turn)
-    return [*_unused_scene_details(turn)[:2], *([leads] if leads else [])]
-
-
-def _leads_sentence(turn: NarrationInput) -> str | None:
-    npcs = [_text(npc.get('name')) for npc in turn.present_npcs]
-    interactables = [
-        f'the {re.sub(r"^the ", "", _text(item.get("name")), flags=re.IGNORECASE)}'
-        for item in _dicts(turn.scene.get('interactables'))
-        if _text(item.get('name'))
-    ]
-    exits = [f'the way to {name}' for name in _exit_names(turn)]
-    leads: list[str] = []
-    for index in range(MAX_LEADS):
-        for group in (npcs, interactables, exits):
-            if index < len(group) and len(leads) < MAX_LEADS:
-                leads.append(group[index])
-    if not leads:
-        return None
-    sentence = turn.pick('leads', leads=_join_words(leads))
-    return None if requests_roll(sentence) else sentence
-
-
-def _exit_names(turn: NarrationInput) -> list[str]:
-    location_id = _text(turn.scene.get('locationId'))
-    known_locations = [
-        location
-        for location in _dicts(turn.live_state.get('recentLocations'))
-        if _text(location.get('id')) and _text(location.get('name'))
-    ]
-    known_locations.extend(
-        location
-        for location in _dicts(turn.relevant_records.get('locations'))
-        if location.get('knownToPlayers') is True and _text(location.get('id')) and _text(location.get('name'))
-    )
-    names_by_id = {_text(location.get('id')): _text(location.get('name')) for location in reversed(known_locations)}
-    current = next((location for location in known_locations if _text(location.get('id')) == location_id), {})
-    connected = _string_items(current.get('connectedLocationIds'))
-    return [names_by_id[location] for location in connected if location in names_by_id]
 
 
 def _unused_clue(turn: NarrationInput) -> str | None:
@@ -993,7 +982,7 @@ def _original_action(turn: NarrationInput) -> str:
 def _target_ref(turn: NarrationInput, name: Any) -> str:
     if turn.is_speaker(name):
         return 'you'
-    return _text(name) or 'the target'
+    return turn.creature(name) or 'the target'
 
 
 def _person(turn: NarrationInput, name: Any) -> dict[str, str]:
@@ -1002,7 +991,7 @@ def _person(turn: NarrationInput, name: Any) -> dict[str, str]:
         forms = dict(target='You', target_lower='you', target_object='you', be='are')
         verbs = ('take', 'recover', 'gain', 'resist', 'fight', 'cling', 'manage', 'shake', 'drop')
         return {**forms, **{verb: verb for verb in verbs}}
-    display = _text(name) or 'the target'
+    display = turn.creature(name) or 'the target'
     return {
         'target': display[:1].upper() + display[1:],
         'target_lower': display,
@@ -1023,50 +1012,39 @@ def _person(turn: NarrationInput, name: Any) -> dict[str, str]:
 # Composition --------------------------------------------------------------------------------------------------------
 
 
-def _compose(
-    turn: NarrationInput,
-    blocks: list[list[str]],
-    *,
-    fill: list[str],
-    closing: str,
-    max_words: int = MAX_WORDS,
-    min_words: int = MIN_WORDS,
-) -> str:
-    """Join sentences into short paragraphs within the word bounds, ending on ``closing``."""
-    budget = max_words - _word_count(closing)
+def _compose(turn: NarrationInput, blocks: list[list[str]]) -> str:
+    """The reply's paragraphs, then a defeat, the fight's next actor and the one-action reminder."""
+
+    paragraphs = [block for block in blocks if block]
+    facts = turn.facts
+    defeat = _dict(facts.get('partyDefeat'))
+    if defeat:
+        enemies = _text(defeat.get('enemies')) or 'the enemies'
+        paragraphs.append([DEFEAT_PARAGRAPH.format(enemies=enemies, be='are' if defeat.get('plural') is not False else 'is')])
+    elif _text(facts.get('nextActorLine')):
+        paragraphs.append([_text(facts.get('nextActorLine'))])
+    if _dict(facts.get('freeText')).get('more') is True:
+        paragraphs.append([ONE_THING_AT_A_TIME])
+    return '\n\n'.join(' '.join(paragraph) for paragraph in paragraphs)
+
+
+def _clip_blocks(blocks: list[list[str]], budget: int) -> list[list[str]]:
+    """Keep whole sentences while they fit ``budget`` words; a first sentence too long alone is clipped."""
+
+    kept: list[list[str]] = []
     used = 0
-    paragraphs: list[list[str]] = []
-    stop = False
     for block in blocks:
-        kept: list[str] = []
+        paragraph = []
         for sentence in block:
             words = _word_count(sentence)
             if used + words > budget:
-                if not paragraphs and not kept:
-                    kept.append(_clip_words(sentence, budget))
-                    used = budget
-                stop = True
-                break
-            kept.append(sentence)
+                if not kept and not paragraph:
+                    paragraph.append(_clip_words(sentence, budget))
+                return [*kept, paragraph] if paragraph else kept
+            paragraph.append(sentence)
             used += words
-        if kept:
-            paragraphs.append(kept)
-        if stop:
-            break
-    tail: list[str] = []
-    first_fill = turn.pick('fill')
-    generic_fill = [first_fill, *(line for line in TEMPLATES['fill'] if line != first_fill)]
-    for sentence in [*fill, *generic_fill]:
-        if used + _word_count(closing) >= min_words:
-            break
-        words = _word_count(sentence)
-        if used + words > budget or any(sentence in paragraph for paragraph in paragraphs) or sentence in tail:
-            continue
-        tail.append(sentence)
-        used += words
-    tail.append(closing)
-    paragraphs.append(tail)
-    return '\n\n'.join(' '.join(paragraph) for paragraph in paragraphs)
+        kept.append(paragraph)
+    return kept
 
 
 def requests_roll(text: str) -> bool:

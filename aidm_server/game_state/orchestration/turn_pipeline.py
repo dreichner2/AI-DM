@@ -19,6 +19,7 @@ from aidm_server.combat.pipeline import (
     record_combat_debug_from_prepare,
     sync_combat_encounter_record,
 )
+from aidm_server.combat.defeat import enemies_phrase, party_defeat_recovery, party_is_beaten
 from aidm_server.combat.state import (
     combat_summary_for_dm,
     combat_turn_context,
@@ -26,6 +27,7 @@ from aidm_server.combat.state import (
     ensure_combat_turn_economy,
     normalize_combat_state,
 )
+from aidm_server.combat.vitality import VITALITY_CONDITIONS, is_dead, is_stable
 from aidm_server.database import db
 from aidm_server.game_state import STATE_PIPELINE_METADATA_KEY, STATE_PIPELINE_VERSION
 from aidm_server.game_state.application.applier import (
@@ -33,6 +35,8 @@ from aidm_server.game_state.application.applier import (
     legacy_immediate_summary_from_applied,
     persist_state_to_database,
 )
+from aidm_server.game_state.campaign_pack_encounters import catalog_record
+from aidm_server.game_state.extraction.free_text_actions import FreeTextAction, free_text_action, name_words
 from aidm_server.game_state.extraction.post_dm_outcome_extractor import extract_post_dm_outcomes
 from aidm_server.game_state.extraction.pre_dm_action_extractor import extract_pre_dm_actions
 from aidm_server.game_state.logging.state_log_builder import build_state_log, state_log_message
@@ -44,6 +48,8 @@ from aidm_server.game_state.orchestration.combat_resolution import (
     settle_engine_controlled_turns,
     without_trusted_damage_overlaps,
 )
+from aidm_server.game_state.orchestration.narration_facts import enemy_names, next_actor_line, object_facts, plain_results
+from aidm_server.game_state.orchestration.story_beats import BEAT_BASIS_KEY, beat_basis
 from aidm_server.game_state.models import (
     compact_state_for_extraction,
     display_actor_id,
@@ -107,6 +113,9 @@ CURRENCY_TRANSFER_CONFIRMATION_PATTERN = re.compile(
     r'\b(?:give|gives|gave|pay|pays|paid|hand over|hands over|handed over)\b',
     re.IGNORECASE,
 )
+DOWNED_ACTOR_REFUSAL = 'You are down and cannot act.'
+
+
 def _sentences(text: str) -> list[str]:
     return [sentence.strip() for sentence in re.split(r'(?<=[.!?])\s+|\n+', text or '') if sentence.strip()]
 
@@ -384,7 +393,7 @@ def _with_rejected_pre_dm_changes(
                 str(change.get('type') or '').strip(),
                 str(change.get('actorId') or change.get('actor_id') or '').strip(),
             )
-        ] = str(rejection.get('reason') or 'The action is not legal now.')
+        ] = str(rejection.get('reason') or "That can't be done right now.")
     payload['immediateChanges'] = [
         change
         for change in (payload.get('immediateChanges') or [])
@@ -1076,6 +1085,7 @@ def _without_applied_immediate_overlaps(
 
     applied = [change for change in applied_immediate if isinstance(change, dict)]
     applied_items = [change for change in applied if change.get('type') == 'item.use']
+    applied_adds = [change for change in applied if change.get('type') == 'inventory.add']
     applied_trades = [change for change in applied if change.get('type') in {'shop.buy', 'shop.sell'}]
     intent_kind = str((action_intent or {}).get('kind') or '').strip().lower()
     inventory_action = str((action_intent or {}).get('inventory_action') or '').strip().lower()
@@ -1165,6 +1175,11 @@ def _without_applied_immediate_overlaps(
             continue
         if change_type in {'inventory.add', 'scene.item.remove'} and any(
             _names_revealed_item(change, item) for item in revealed_items
+        ):
+            continue
+        if change_type == 'inventory.add' and any(
+            _change_actor_id(change) == _change_actor_id(added) and _confirmed_item_reference_matches(change, added)
+            for added in applied_adds
         ):
             continue
         if change_type == 'currency.add' and (
@@ -1456,6 +1471,257 @@ def augment_rules_hint_with_state_packet(rules_hint_payload: dict[str, Any], dm_
     return updated
 
 
+def _is_free_text(action_intent: dict[str, Any] | None, player_message: str) -> bool:
+    kind = str((action_intent or {}).get('kind') or '').strip().lower() if isinstance(action_intent, dict) else ''
+    return bool(str(player_message or '').strip()) and kind in {'', 'message'}
+
+
+def _combat_is_running(state: dict[str, Any]) -> bool:
+    combat = state.get('combat') if isinstance(state.get('combat'), dict) else {}
+    return str(combat.get('status') or '').strip().lower() in {'starting', 'active'}
+
+
+def _actor_down_refusal(
+    state: dict[str, Any],
+    *,
+    actor_id: str,
+    action_intent: dict[str, Any] | None,
+    free_text: FreeTextAction | None,
+    player_message: str,
+) -> str | None:
+    """The refusal for a hero at 0 HP who is dying, stable, unconscious or dead; None when they may act.
+
+    An out-of-character message always goes through, and a stable hero may rest
+    outside a fight. The opening narration is not the hero's action.
+    """
+
+    kind = str((action_intent or {}).get('kind') or '').strip().lower() if isinstance(action_intent, dict) else ''
+    if kind in {'ooc', 'admin'} or (not kind and not str(player_message or '').strip()):
+        return None
+    actor = find_actor(state, actor_id) or {}
+    health = actor.get('health') if isinstance(actor.get('health'), dict) else {}
+    conditions = {str(condition or '').strip().lower() for condition in health.get('conditions') or []}
+    down = is_dead(actor) or (
+        int_or_default(health.get('currentHp'), default=1) <= 0 and bool(conditions & set(VITALITY_CONDITIONS))
+    )
+    if not down:
+        return None
+    resting = kind == 'rest' or (free_text is not None and free_text.kind == 'rest')
+    if resting and is_stable(actor) and not _combat_is_running(state):
+        return None
+    return DOWNED_ACTOR_REFUSAL
+
+
+def _spoken(text: Any) -> str:
+    return ' '.join(re.sub(r'[\'"“”‘’.,;:!?]', ' ', str(text or '').lower()).split())
+
+
+def _present_npc_named(state: dict[str, Any], message: str) -> dict[str, Any] | None:
+    """The one present NPC the message names by full or first name."""
+
+    scene = state.get('currentScene') if isinstance(state.get('currentScene'), dict) else {}
+    present = {str(value) for value in scene.get('activeNpcIds') or []}
+    words = name_words(message)
+    named = []
+    for key in ('knownNpcs', 'partyNpcs'):
+        for npc in state.get(key) or []:
+            if not isinstance(npc, dict) or str(npc.get('id') or '') not in present:
+                continue
+            name = name_words(npc.get('name'))
+            candidates = [name, name[:1]] if name and len(name[0]) >= 3 else [name]
+            if any(
+                candidate and words[index:index + len(candidate)] == candidate
+                for candidate in candidates
+                for index in range(len(words))
+            ):
+                named.append(npc)
+    return named[0] if len(named) == 1 else None
+
+
+def _talk_facts(*, session_obj: Session, turn: DmTurn, state: dict[str, Any], npc: dict[str, Any]) -> dict[str, Any]:
+    """The person talked to and the next thing they know that has not been told in this session."""
+
+    record = catalog_record(state, 'npcs', npc.get('id')) or npc
+    knows = [str(fact).strip() for fact in record.get('knows') or [] if str(fact or '').strip()]
+    told = ' '.join(
+        _spoken(text)
+        for (text,) in DmTurn.query.with_entities(DmTurn.dm_output).filter(
+            DmTurn.session_id == session_obj.session_id,
+            DmTurn.turn_id != turn.turn_id,
+        )
+    )
+    return {
+        'npcId': str(npc.get('id') or ''),
+        'name': str(npc.get('name') or record.get('name') or '').strip(),
+        'fact': next((fact for fact in knows if _spoken(fact) not in told), None),
+    }
+
+
+def _foreseen_party_defeat(
+    *,
+    state: dict[str, Any],
+    dm_context: dict[str, Any],
+    actor_id: str,
+    turn_id: int,
+    already_applied: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """The party defeat the engine-resolved enemy turns in ``dm_context`` will bring once applied."""
+
+    if not _combat_is_running(state):
+        return None
+    trusted = derive_trusted_damage_changes(
+        state=state,
+        dm_context_packet=dm_context,
+        actor_id=actor_id,
+        turn_id=turn_id,
+        already_applied_changes=already_applied,
+    ).all_changes
+    if not trusted:
+        return None
+    projected = apply_state_changes(
+        state, validated_changes_for_application(validate_state_changes(state=state, changes=trusted))
+    )['nextState']
+    reason = check_combat_end(projected.get('combat') if isinstance(projected.get('combat'), dict) else {})
+    if reason != 'objective_failed':
+        return None
+    ended = apply_state_changes(
+        projected,
+        validated_changes_for_application(
+            validate_state_changes(state=projected, changes=[combat_end_change(turn_id, reason)])
+        ),
+    )['nextState']
+    if not party_is_beaten(ended):
+        return None
+    phrase, several = enemies_phrase(state)
+    return {'enemies': phrase, 'plural': several}
+
+
+def _narration_packet(
+    *,
+    session_obj: Session,
+    turn: DmTurn,
+    state_before: dict[str, Any],
+    state_after: dict[str, Any],
+    applied_changes: list[dict[str, Any]],
+    actor_id: str,
+    player_message: str,
+    action_intent: dict[str, Any] | None,
+    free_text: FreeTextAction | None,
+    declared_actions: list[dict[str, Any]],
+    turn_ends: bool,
+) -> dict[str, Any]:
+    """What exactly happened this turn, for a narrator that only tells what happened."""
+
+    packet: dict[str, Any] = {
+        'objects': object_facts(
+            state_before=state_before,
+            state_after=state_after,
+            applied_changes=applied_changes,
+            actor_id=actor_id,
+        ),
+        'enemies': enemy_names(state_after),
+        **plain_results(state_after, applied_changes, actor_id=actor_id),
+    }
+    free = _is_free_text(action_intent, player_message)
+    talk_npc = free_text.npc if free_text is not None and free_text.kind == 'talk' else None
+    target = (action_intent or {}).get('target') if isinstance((action_intent or {}).get('target'), dict) else {}
+    if (action_intent or {}).get('kind') == 'interact' and target.get('kind') == 'npc' and target.get('npc_id'):
+        talk_npc = next(
+            (
+                npc
+                for key in ('knownNpcs', 'partyNpcs')
+                for npc in state_before.get(key) or []
+                if isinstance(npc, dict) and str(npc.get('id') or '') == str(target.get('npc_id'))
+            ),
+            None,
+        )
+    if free and free_text is None and not declared_actions:
+        talk_npc = _present_npc_named(state_before, player_message)
+    if talk_npc:
+        packet['talk'] = _talk_facts(session_obj=session_obj, turn=turn, state=state_before, npc=talk_npc)
+    if free_text is not None:
+        packet['freeText'] = {'kind': free_text.kind, 'more': free_text.more}
+    elif free and not declared_actions and not talk_npc and not turn.requires_roll:
+        packet['freeText'] = {'kind': None, 'unmatched': True, 'more': False}
+    line = next_actor_line(state_after, actor_id=actor_id, turn_ends=turn_ends)
+    if line:
+        packet['nextActorLine'] = line
+    recovery = next(
+        (change for change in applied_changes if isinstance(change, dict) and change.get('type') == 'combat.defeat_recovery'),
+        None,
+    )
+    if recovery:
+        packet['partyDefeat'] = {'enemies': recovery.get('departedEnemies'), 'plural': recovery.get('departedEnemiesPlural') is True}
+    return packet
+
+
+def _downed_actor_result(
+    *,
+    turn: DmTurn,
+    state: dict[str, Any],
+    actor_id: str,
+    players_by_id: dict[int, Player],
+    refusal: str,
+) -> dict[str, Any]:
+    """A turn refused before narration because its hero is down: nothing is extracted or applied."""
+
+    pre_extraction = {'declaredActions': [], 'notes': ['actor_down']}
+    pre_validation = {
+        'validatedActions': [
+            {'status': 'invalid', 'reason': refusal, 'originalAction': {'type': 'actor.down', 'actorId': actor_id}}
+        ],
+        'pendingRolls': [],
+        'immediateChanges': [],
+        'clarificationRequests': [],
+    }
+    empty_validation: dict[str, Any] = {'accepted': [], 'modified': [], 'rejected': []}
+    dm_context = _dm_context_packet(state=state, player_message='', pre_validation=pre_validation, applied_changes=[])
+    state_log = build_state_log(turn_id=turn.turn_id, pre_validation=pre_validation, immediate_validation=empty_validation)
+    actor_down = {'reason': refusal}
+    metadata = _metadata(turn)
+    metadata[STATE_PIPELINE_METADATA_KEY] = {
+        'version': STATE_PIPELINE_VERSION,
+        'actorId': actor_id,
+        'stateBeforePreDm': compact_state_for_extraction(state),
+        'stateBeforeDm': state,
+        'preDmExtraction': pre_extraction,
+        'preDmValidation': pre_validation,
+        'immediateValidation': empty_validation,
+        'pendingImmediateChanges': [],
+        'pendingImmediateValidation': empty_validation,
+        'immediateAppliedChanges': [],
+        'combatPreDmChanges': [],
+        'combatPreDmValidation': empty_validation,
+        'combatAppliedChanges': [],
+        'combatDebug': {},
+        'dmContextPacket': dm_context,
+        'openingEnemyTurns': False,
+        'actorDown': actor_down,
+        'stateLog': state_log,
+        'managedDomains': MANAGED_STATE_DOMAINS,
+    }
+    _set_metadata(turn, metadata)
+    db.session.flush()
+    return {
+        'stateBeforeDm': state,
+        'playersById': players_by_id,
+        'preExtraction': pre_extraction,
+        'preValidation': pre_validation,
+        'immediateValidation': empty_validation,
+        'pendingImmediateValidation': empty_validation,
+        'pendingImmediateChanges': [],
+        'immediateAppliedChanges': [],
+        'combatValidation': empty_validation,
+        'combatAppliedChanges': [],
+        'combatDebug': {},
+        'dmContextPacket': dm_context,
+        'openingEnemyTurns': False,
+        'actorDown': actor_down,
+        'stateLog': state_log,
+        'clarificationRequests': [],
+    }
+
+
 def pre_dm_pipeline(
     *,
     turn: DmTurn,
@@ -1486,6 +1752,21 @@ def pre_dm_pipeline(
     )
     recent_timeline = recent_timeline_for_session(session_obj.session_id, limit=5)
     actor_id = display_actor_id(player.player_id)
+    # Words that clearly name one action take exactly the path of that action's button.
+    free_text = (
+        free_text_action(state, actor_id=actor_id, player_id=player.player_id, message=player_message)
+        if not declared_actions_override and _is_free_text(action_intent, player_message)
+        else None
+    )
+    down_refusal = _actor_down_refusal(
+        state,
+        actor_id=actor_id,
+        action_intent=action_intent,
+        free_text=free_text,
+        player_message=player_message,
+    )
+    if down_refusal:
+        return _downed_actor_result(turn=turn, state=state, actor_id=actor_id, players_by_id=players_by_id, refusal=down_refusal)
 
     if declared_actions_override:
         pre_extraction = {
@@ -1507,6 +1788,7 @@ def pre_dm_pipeline(
             recent_timeline=recent_timeline,
             actor_id=actor_id,
             action_intent=action_intent,
+            free_text_intents=list(free_text.intents) if free_text is not None else None,
             force_helper=_turn_awaits_player_roll(turn),
             before_provider_call=_before_provider_call if before_helper_call else None,
         )
@@ -1673,6 +1955,9 @@ def pre_dm_pipeline(
                     trusted_player_changes = [*trusted_player_changes, *engine_end_apply['appliedChanges']]
                     combat_context_for_dm = combat_summary_for_dm(state_before_dm['combat'])
                 combat_validation = _merge_validation_results(combat_validation, engine_end_validation)
+    defeat_recovery = party_defeat_recovery(state_before_dm, turn_id=turn.turn_id)
+    if defeat_recovery:
+        applied_combat = [*applied_combat, defeat_recovery]
     finalize_combat_prepare(
         session_obj=session_obj,
         campaign=campaign,
@@ -1716,12 +2001,60 @@ def pre_dm_pipeline(
     )
     if trusted_player_changes:
         dm_context['trustedStateChanges'] = deepcopy(trusted_player_changes)
+    dm_context['narration'] = _narration_packet(
+        session_obj=session_obj,
+        turn=turn,
+        state_before=state,
+        state_after=state_before_dm,
+        applied_changes=[*applied_immediate, *applied_combat],
+        actor_id=actor_id,
+        player_message=player_message,
+        action_intent=action_intent,
+        free_text=free_text,
+        declared_actions=pre_extraction.get('declaredActions') or [],
+        turn_ends=opening_enemy_turns or enemy_deferred_reason is None,
+    )
+    if free_text is not None and free_text.refusal:
+        # Words that name nothing here change nothing; only the narrator says so.
+        dm_context['invalidActions'].append(
+            {'status': 'invalid', 'summary': player_message, 'type': 'scene.item.pickup', 'reason': free_text.refusal}
+        )
+    if free_text is not None and free_text.more:
+        dm_context['dmInstructions'].append(
+            'The player named more than one action and only the first was taken: end the reply with '
+            '"One thing at a time — the rest is still yours to do."'
+        )
+    foreseen_defeat = None if defeat_recovery else _foreseen_party_defeat(
+        state=state_before_dm,
+        dm_context=dm_context,
+        actor_id=actor_id,
+        turn_id=turn.turn_id,
+        already_applied=[*applied_immediate, *applied_combat],
+    )
+    if foreseen_defeat:
+        dm_context['narration']['partyDefeat'] = foreseen_defeat
+        dm_context['narration'].pop('nextActorLine', None)
+        dm_context['dmInstructions'].append(
+            'The enemy turns resolved here put down every hero: after narrating them, tell that darkness '
+            'takes the party and they wake later, alive but barely, with the enemies gone.'
+        )
     state_log = build_state_log(
         turn_id=turn.turn_id,
         pre_validation=pre_validation,
         immediate_validation=immediate_validation,
     )
     metadata = _metadata(turn)
+    metadata[BEAT_BASIS_KEY] = beat_basis(state, actor_id=actor_id)
+    if free_text is not None and free_text.intents:
+        # The turn records the mapped intent, so it is handled exactly as the button's turn.
+        metadata['action_intent'] = deepcopy(free_text.intents[0])
+    if free_text is not None:
+        metadata['free_text_action'] = {
+            'kind': free_text.kind,
+            'intents': deepcopy(list(free_text.intents)),
+            'more': free_text.more,
+            **({'refusal': free_text.refusal} if free_text.refusal else {}),
+        }
     metadata[STATE_PIPELINE_METADATA_KEY] = {
         'version': STATE_PIPELINE_VERSION,
         'actorId': actor_id,
@@ -1928,6 +2261,9 @@ def post_dm_pipeline(
             post_validation=post_validation,
             post_extraction=post_extraction,
         )
+        defeat_recovery = party_defeat_recovery(final_state, turn_id=turn.turn_id)
+        if defeat_recovery:
+            applied_post = [*applied_post, defeat_recovery]
         if applied_post:
             persist_state_to_database(session_obj=session_obj, state=final_state, players_by_id=players_by_id)
             sync_combat_encounter_record(
@@ -2228,6 +2564,9 @@ def post_dm_pipeline(
             post_validation=post_validation,
             post_extraction=post_extraction,
         )
+        defeat_recovery = party_defeat_recovery(final_state, turn_id=turn.turn_id)
+        if defeat_recovery:
+            applied_post = [*applied_post, defeat_recovery]
         finalized_encounter = finalize_combat_prepare(
             session_obj=session_obj,
             campaign=campaign,

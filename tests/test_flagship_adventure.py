@@ -382,8 +382,8 @@ def test_the_careful_route_renews_the_ward(table):
 
     fight = table.fight()
     assert fight.snapshot['combat']['status'] == 'ended'
-    # Wounded and alone, the cutthroat yields: a successful outcome, rewarded once.
-    assert _rewards(fight.snapshot) == [('enc_empty_caravan_pressure', 'negotiation')]
+    # Scaled for a lone hero, the cutthroat falls before it can yield: a victory, rewarded once.
+    assert _rewards(fight.snapshot) == [('enc_empty_caravan_pressure', 'victory')]
     assert (fight.gp, fight.xp, fight.items['Ash-Marked Token']) == (25, 100, 1)
     assert table.take('road_stone_fragment', 'Pale Road-Stone Fragment').items['Pale Road-Stone Fragment'] == 1
     coins = table.take('inn_wagon_strongbox_coins', '15 gp')
@@ -480,11 +480,11 @@ def test_the_careful_route_renews_the_ward(table):
 
     binding = table.act('valley_last_road_stone', 'inspect', 'The Last Road-Stone')
     assert binding.encounter == 'enc_final_binding'
-    assert _enemies(binding.snapshot) == [
-        'enemy_ashmarked_cutthroats',
-        'enemy_cinder_scribe',
-        'enemy_hollow_marshal',
+    # A lone hero faces at most two: the last groups (the roadwarden and the Marshal) stay away.
+    assert _enemies(binding.snapshot) == ['enemy_ashmarked_cutthroats', 'enemy_cinder_scribe']
+    assert [group['enemyId'] for group in binding.snapshot['combat']['flags']['partyScaling']['droppedGroups']] == [
         'enemy_name_eaten_roadwardens',
+        'enemy_hollow_marshal',
     ]
     victory = table.end_combat('all_enemies_defeated')
     assert victory.flags == {'cinder_scribe_resolved': True}
@@ -503,7 +503,7 @@ def test_the_careful_route_renews_the_ward(table):
     assert _active_checkpoint(renewal.snapshot) == FINAL_CHECKPOINT['id']
     assert _ending(renewal.snapshot) == ENDING
     assert _rewards(renewal.snapshot) == [
-        ('enc_empty_caravan_pressure', 'negotiation'),
+        ('enc_empty_caravan_pressure', 'victory'),
         ('enc_final_binding', 'victory'),
         ('enc_pale_lantern_detour', 'victory'),
         ('enc_roadwarden_judgment', 'negotiation'),
@@ -672,3 +672,28 @@ def test_one_search_opens_the_locked_strongbox_when_the_hero_holds_its_key(table
         'road_stone_fragment': 'Take the Pale Road-Stone Fragment',
         'inn_wagon_strongbox_coins': 'Take 15 gp',
     }
+
+
+def _assert_both_views_have_the_hero_acting(table: Table) -> None:
+    hero = _hero(table.snapshot())
+    state = f"/api/sessions/{table.ids['session_id']}/state"
+    full = table.client.get(state).get_json()['state_snapshot']['combat']
+    story = table.client.get(f"{state}?view=player&player_id={hero['playerId']}").get_json()['state_snapshot']['combat']
+    assert story['turnIndex'] == full['turnIndex']
+    for combat in (full, story):
+        assert combat['flags']['activeActorId'] == hero['id']
+        assert combat['turnOrder'][combat['turnIndex']]['id'] == hero['id']
+        assert [entry['id'] for entry in combat['turnOrder'] if entry['isCurrent']] == [hero['id']]
+
+
+def test_the_story_view_and_the_full_view_agree_whose_turn_it_is(table):
+    road = table.travel('loc_old_north_road', 'The Old North Road')
+    # Enemies win initiative and take their opening turns; then the hero acts.
+    assert road.snapshot['combat']['initiative'][0]['participantId'].startswith('enemy_')
+    _assert_both_views_have_the_hero_acting(table)
+
+    table._hud('Arden Vale ends the turn.', 'combat.end_turn')
+
+    combat = table.snapshot()['combat']
+    assert (combat['round'], bool(combat['flags']['lastEnemyTurnBlock'])) == (2, True)
+    _assert_both_views_have_the_hero_acting(table)

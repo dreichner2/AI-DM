@@ -173,6 +173,8 @@ def roll_resolved_payload(
         'mode': projected_roll.get('mode'),
         'rolls': list(projected_roll.get('rolls') or []),
         'kept': projected_roll.get('kept'),
+        # Bless/Bane dice are already in ``total``; the client shows them so the sum adds up.
+        'bonus_dice': list(projected_roll.get('bonus_dice') or []),
         'modifier': projected_roll.get('modifier'),
         'total': projected_roll.get('total'),
         'reason': projected_roll.get('reason'),

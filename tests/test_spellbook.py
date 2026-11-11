@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aidm_server.spellbook import (
+    class_spells_for_level,
     ensure_character_sheet_spellbook,
     merge_spellbooks,
     normalize_spell,
@@ -209,3 +210,12 @@ def test_respec_removes_only_automatic_spell_provenance_and_is_idempotent():
     )
     assert changed_again is False
     assert repeated == reconciled
+
+
+def test_paladins_and_rangers_know_no_spells_before_their_first_slot():
+    assert class_spells_for_level('Paladin', 1) == []
+    assert class_spells_for_level('Ranger', 1) == []
+    assert 'Cure Wounds' in {spell['name'] for spell in class_spells_for_level('Paladin', 2)}
+    assert "Hunter's Mark" in {spell['name'] for spell in class_spells_for_level('Ranger', 2)}
+    # Artificers cast from level 1.
+    assert 'Grease' in {spell['name'] for spell in class_spells_for_level('Artificer', 1)}

@@ -114,10 +114,16 @@ def _words(text):
     return len(text.split())
 
 
-def _assert_turn_shape(text, *, max_words=110):
-    assert 40 <= _words(text) <= max_words, (_words(text), text)
-    for banned in ('AI', 'model', 'reconnect', 'Safe Mode', 'narration'):
+DELETED_LINES = ('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.')
+NOTHING_LINES = ('Nothing comes of it yet.', 'The moment holds, and nothing changes.', 'No answer comes.')
+
+
+def _assert_turn_shape(text, *, max_words=220):
+    assert 1 <= _words(text) <= max_words, (_words(text), text)
+    for banned in ('AI', 'model', 'reconnect', 'Safe Mode', 'narration', *DELETED_LINES):
         assert banned not in text
+    # The closing question belongs to the opening only.
+    assert not text.endswith(('What do you do?', 'What now?', 'What do you do next?', 'Where do you go from here?'))
 
 
 def test_a_opening_narrates_authored_scene_and_present_npcs_without_a_roll():
@@ -142,7 +148,7 @@ def test_a_opening_narrates_authored_scene_and_present_npcs_without_a_roll():
 
     text = narrate(_context(), _hint(message_kind='opening', requires_roll=False), '(The adventure begins.)', SPEAKER, brief)
 
-    _assert_turn_shape(text, max_words=220)
+    assert _words(text) <= 220
     assert text.startswith('At dusk, an empty caravan rolls into the Lantern Post. Every name in its ledger is gone.')
     assert 'One wagon bell rings three times though no hand touches it.' in text
     assert "A cloth-wrapped chip of pale stone rests beneath the driver's bench." in text
@@ -170,7 +176,7 @@ def test_a_opening_names_the_cast_without_their_authoring_roles():
         assert role_word not in text
 
 
-def test_b_invalid_action_is_explained_plainly():
+def test_b_invalid_action_is_the_refusal_sentence_alone():
     hint = _hint(
         state_pipeline=_pipeline(
             invalidActions=[{'status': 'invalid', 'summary': 'drink potion', 'reason': 'Arden Vale has no Healing Potion.'}]
@@ -180,7 +186,7 @@ def test_b_invalid_action_is_explained_plainly():
     text = narrate(_context(), hint, 'I drink my healing potion.', SPEAKER)
 
     _assert_turn_shape(text)
-    assert text.startswith('That will not work: Arden Vale has no Healing Potion.')
+    assert text == 'Arden Vale has no Healing Potion.'
     assert requests_roll(text) is False
 
 
@@ -339,7 +345,7 @@ def test_f_travel_objects_items_rest_and_quests_are_narrated():
                     'type': 'scene.interactable.action',
                     'objectAction': 'search',
                     'targetId': 'obj_strongbox',
-                    'targetName': None,
+                    'targetName': 'Iron Strongbox',
                     'eventType': 'searched',
                 },
                 {'type': 'inventory.add', 'itemName': 'Tarnished Key', 'amount': 1},
@@ -354,7 +360,7 @@ def test_f_travel_objects_items_rest_and_quests_are_narrated():
     _assert_turn_shape(text)
     assert 'The Lantern Post' in text
     assert 'Mara Reedwake and Tovin Bell' in text
-    assert 'search the Iron Strongbox' in text
+    assert 'You search the Iron Strongbox.' in text
     assert 'Tarnished Key' in text
     assert '6 hit points' in text
     assert 'The Empty Caravan' in text
@@ -475,82 +481,62 @@ def test_h_roll_request_uses_rule_type_label_and_hint_or_base_dc(rule_type, dc_h
     assert requests_roll(text) is True
 
 
-def test_i_talking_to_a_present_npc_shares_what_they_know_in_order():
-    first = narrate(_context(), _hint(), 'I ask Mara what she saw.', SPEAKER)
-    later_context = _context(
-        recent_turns=[
-            {'turn_id': 2, 'player_input': 'I wave to Mara.', 'dm_output': 'Mara nods.'},
-            {'turn_id': 3, 'player_input': 'I look around.', 'dm_output': 'Rain falls.'},
-            {'turn_id': 4, 'player_input': 'Mara Reedwake, anything else?', 'dm_output': 'She thinks.'},
-        ]
-    )
-    capped = narrate(later_context, _hint(), 'Mara, tell me more.', SPEAKER)
+def test_i_talking_gives_the_next_untold_fact_in_their_voice_then_nothing_more():
+    first = narrate(_context(), _hint(state_pipeline=_pipeline(narration={'talk': {
+        'npcId': 'npc_mara', 'name': 'Mara Reedwake', 'fact': 'The caravan was expected before sunset.',
+    }})), 'Talk to Mara Reedwake', SPEAKER)
+    done = narrate(_context(), _hint(state_pipeline=_pipeline(narration={'talk': {
+        'npcId': 'npc_mara', 'name': 'Mara Reedwake', 'fact': None,
+    }})), 'Talk to Mara Reedwake', SPEAKER)
 
-    _assert_turn_shape(first)
-    _assert_turn_shape(capped)
-    assert first.startswith('Mara Reedwake, the innkeeper and local witness,')
-    assert 'weighing each word' in first
-    assert '"The caravan was expected before sunset,"' in first
-    assert '"The horses were calm, not panicked,"' in capped
-    for text in (first, capped):
+    assert first.startswith('"The caravan was expected before sunset," Mara ')
+    assert done == 'Mara Reedwake has nothing more to add.'
+    for text in (first, done):
+        _assert_turn_shape(text)
         assert MARA_SECRET not in text
         assert requests_roll(text) is False
 
 
-ACTION_ACKNOWLEDGEMENTS = ('You set to it.', 'You take your time over it.', 'Nothing stops you.', 'You do just that.')
+def test_i_without_a_talk_record_a_named_person_gives_facts_in_order_until_none_are_left():
+    first = narrate(_context(), _hint(), 'I ask Mara what she saw.', SPEAKER)
+    told_once = [{'turn_id': 2, 'player_input': 'Mara, hello.', 'dm_output': 'She nods.'}]
+    second = narrate(_context(recent_turns=told_once), _hint(), 'Mara, tell me more.', SPEAKER)
+    told_twice = [*told_once, {'turn_id': 3, 'player_input': 'Mara Reedwake, anything else?', 'dm_output': 'Hm.'}]
+    exhausted = narrate(_context(recent_turns=told_twice), _hint(), 'Mara, anything else?', SPEAKER)
+
+    assert '"The caravan was expected before sunset,"' in first
+    assert '"The horses were calm, not panicked,"' in second
+    assert exhausted == 'Mara Reedwake has nothing more to add.'
 
 
-def test_j_any_other_action_is_acknowledged_without_quoting_adds_a_fresh_detail_and_names_leads():
-    previous = 'At dusk, an empty caravan rolls in. One wagon bell rings though no hand touches it.'
-    context = _context(recent_turns=[{'turn_id': 3, 'player_input': 'I look.', 'dm_output': previous}])
+def test_j_words_that_map_to_nothing_get_one_short_line_and_no_padding():
+    lines = set()
+    for number in range(12):
+        text = narrate(_context(), _hint(turn_number=number), 'I walk slowly along the line of wagons.', SPEAKER)
+        assert text in NOTHING_LINES, text
+        lines.add(text)
 
-    text = narrate(context, _hint(), 'I walk slowly along the line of wagons, ' + 'looking closely ' * 20, SPEAKER)
-
-    _assert_turn_shape(text)
-    assert text.startswith(ACTION_ACKNOWLEDGEMENTS)
-    assert '"' not in text
-    assert 'line of wagons' not in text
-    assert 'looking closely' not in text
-    assert 'One wagon bell rings' not in text
-    assert 'The wheel rims are packed with cold road-mud.' in text
-    assert 'Mara Reedwake' in text
-    assert 'the Iron Strongbox' in text
-    assert 'the way to the Old North Road' in text
-    assert 'Hidden Barrow' not in text
-    assert requests_roll(text) is False
+    assert lines == set(NOTHING_LINES)
 
 
-def test_j_acknowledgement_is_chosen_by_turn_from_the_four_short_lines():
-    acknowledgements = set()
-    for number in range(10):
-        hint = _hint(turn_number=number)
-        text = narrate(_context(), hint, 'I look around.', SPEAKER)
-        assert text == narrate(_context(), hint, 'I look around.', SPEAKER)
-        acknowledgements.update(line for line in ACTION_ACKNOWLEDGEMENTS if text.startswith(line))
-
-    assert acknowledgements == set(ACTION_ACKNOWLEDGEMENTS)
+def test_j_the_deleted_acknowledgements_can_no_longer_be_produced():
+    assert not {line for templates in TEMPLATES.values() for line in templates} & set(DELETED_LINES)
+    assert {'action', 'fill', 'leads', 'closing'}.isdisjoint(TEMPLATES)
+    for number in range(20):
+        for words in ('I look around.', 'I hum a tune.', 'I get up and walk back to the inn.'):
+            text = narrate(_context(), _hint(turn_number=number), words, SPEAKER)
+            assert not any(line in text for line in DELETED_LINES)
 
 
-def test_j_second_scene_detail_is_added_only_when_the_word_floor_needs_it():
-    short_text = narrate(_context(), _hint(), 'I look around.', SPEAKER)
-    long_detail = (
-        'Every wagon in the line has been unhitched with care, its harness hung on the same peg and its lamp trimmed '
-        'and cold, as if the drivers meant to come back before dark.'
-    )
-    long_context = _context()
-    long_context['live_world_state']['currentScene']['visibleDetails'] = [long_detail, 'The wheel rims are packed with cold road-mud.']
-    long_text = narrate(long_context, _hint(), 'I look around.', SPEAKER)
+def test_j_the_scene_paragraph_is_told_only_for_looking_around():
+    plain = narrate(_context(), _hint(), 'I stretch.', SPEAKER)
+    looking = narrate(_context(), _hint(state_pipeline=_pipeline(narration={'freeText': {'kind': 'look'}})), 'look around', SPEAKER)
 
-    first_paragraph, leads_paragraph = short_text.split('\n\n')
-    assert first_paragraph.startswith(ACTION_ACKNOWLEDGEMENTS)
-    assert 'One wagon bell rings though no hand touches it.' in first_paragraph
-    assert 'The wheel rims are packed with cold road-mud.' in first_paragraph
-    assert leads_paragraph.startswith('Close at hand: Mara Reedwake, the Iron Strongbox, and the way to the Old North Road.')
-    assert long_text.split('\n\n')[0].endswith(long_detail)
-    assert 'cold road-mud' not in long_text
-    assert 'Close at hand: Mara Reedwake' in long_text.split('\n\n')[1]
-    _assert_turn_shape(short_text)
-    _assert_turn_shape(long_text)
+    assert 'wheel rims' not in plain and 'Mara Reedwake' not in plain
+    assert looking.startswith('At dusk, an empty caravan rolls into the Lantern Post.')
+    assert 'The wheel rims are packed with cold road-mud.' in looking
+    assert 'Mara Reedwake and Tovin Bell' in looking
+    assert not looking.endswith('?')
 
 
 def test_j_input_that_reads_as_a_roll_request_is_not_quoted():
@@ -564,18 +550,16 @@ def test_j_input_that_reads_as_a_roll_request_is_not_quoted():
 NO_TARGET_LINES = ('There is no one here to fight.', 'Your blade finds only air; no enemy stands before you.')
 
 
-def test_an_attack_with_no_opponent_present_says_so_and_names_the_leads_without_a_roll():
+def test_an_attack_with_no_opponent_present_says_so_without_a_roll():
     lines = set()
     for number in range(6):
         hint = _hint(turn_number=number, requires_roll=False, roll_type=None, no_target=True)
         text = narrate(_context(), hint, 'I draw my longsword and attack the nearest cutthroat.', SPEAKER)
 
         _assert_turn_shape(text)
-        assert text.startswith(NO_TARGET_LINES)
-        assert 'Mara Reedwake, the Iron Strongbox, and the way to the Old North Road.' in text
-        assert 'cutthroat' not in text
+        assert text in NO_TARGET_LINES
         assert requests_roll(text) is False
-        lines.update(line for line in NO_TARGET_LINES if text.startswith(line))
+        lines.add(text)
 
     assert lines == set(NO_TARGET_LINES)
 
@@ -635,10 +619,10 @@ def test_narration_is_deterministic_and_varies_by_turn_number():
     assert len(other_turns) > 1
 
 
-def test_sparse_context_still_meets_the_word_floor():
+def test_sparse_context_still_answers_plainly():
     text = narrate({}, {}, 'I wait.', None)
 
-    _assert_turn_shape(text)
+    assert text in NOTHING_LINES
     assert requests_roll(text) is False
 
 
@@ -654,3 +638,165 @@ def test_no_template_reads_as_a_roll_request(template_key):
         assert response_mentions_roll_request(text) is False, text
         assert TurnRollPolicy.response_requests_group_roll(text) is False, text
     assert response_mentions_roll_request(scripted_narrator.OPENING_CLOSING_LINE) is False
+
+
+LEDGER_TEXT = 'Every line that named a driver or guard has been struck through. The last entry says the bell sounded at the third mile.'
+
+
+def _object_turn(fact, *, more=False, change_target='inn_caravan_ledger', **pipeline):
+    narration = {'objects': [fact], **({'freeText': {'kind': 'object', 'more': True}} if more else {})}
+    return _hint(
+        state_pipeline=_pipeline(
+            stateChangesAlreadyApplied=[{'type': 'scene.interactable.action', 'targetId': change_target, 'objectAction': fact['action']}],
+            narration=narration,
+            **pipeline,
+        )
+    )
+
+
+def _fact(action, **fields):
+    return {'targetId': 'inn_caravan_ledger', 'name': 'Caravan Ledger', 'action': action, 'failed': False, **fields}
+
+
+def test_reading_prints_the_authored_description_verbatim_as_its_own_paragraph_once():
+    first = narrate(
+        _context(),
+        _object_turn(_fact('inspect', label='Read the caravan ledger', labelAuthored=True, description=LEDGER_TEXT, nothingNew=False)),
+        'read the ledger',
+        SPEAKER,
+    )
+    again = narrate(
+        _context(),
+        _object_turn(_fact('inspect', label='Read the caravan ledger', labelAuthored=True, description='', nothingNew=True)),
+        'read the ledger',
+        SPEAKER,
+    )
+
+    assert first.split('\n\n') == ['You read the caravan ledger.', LEDGER_TEXT]
+    assert again.split('\n\n') == ['You read the caravan ledger.', 'You find nothing new on the Caravan Ledger.']
+    # Nothing of the opening scene is repeated.
+    assert 'wheel rims' not in first and 'Rain taps' not in first
+
+
+@pytest.mark.parametrize(
+    ('found', 'line'),
+    [
+        (['a Caravan Strongbox Key'], 'You find a Caravan Strongbox Key.'),
+        (['a Pale Road-Stone Fragment', '15 gp'], 'You find 15 gp and a Pale Road-Stone Fragment.'),
+        (['The Last Road-Stone'], 'You find The Last Road-Stone.'),
+        ([], 'You find nothing more.'),
+    ],
+)
+def test_a_search_tells_the_description_then_lists_what_it_turned_up(found, line):
+    text = narrate(
+        _context(),
+        _object_turn(
+            _fact('search', name="Driver's Bench", label="Search under the driver's bench", labelAuthored=True,
+                  description='A knot of waxed cloth sits beneath it.', found=found)
+        ),
+        "search under the driver's bench",
+        SPEAKER,
+    )
+
+    assert text.split('\n\n') == ["You search under the driver's bench.", 'A knot of waxed cloth sits beneath it.', line]
+
+
+def test_authored_action_text_replaces_the_label_sentence_and_defaults_read_plainly():
+    authored = narrate(
+        _context(),
+        _object_turn(_fact('use', name='Wagon Bell', label='Ring the wagon bell', labelAuthored=True,
+                           actionText='The bell gives a low note, and a pale light answers on the hills.')),
+        'ring the bell',
+        SPEAKER,
+    )
+    labelled = narrate(_context(), _object_turn(_fact('use', name='Wagon Bell', label='Ring the wagon bell', labelAuthored=True)), 'ring', SPEAKER)
+    default = narrate(_context(), _object_turn(_fact('use', name='Wagon Bell', label='Use Wagon Bell', labelAuthored=False)), 'use', SPEAKER)
+
+    assert authored == 'The bell gives a low note, and a pale light answers on the hills.'
+    assert labelled == 'You ring the wagon bell.'
+    assert default == 'You use the Wagon Bell.'
+
+
+def test_chained_unlock_and_open_steps_are_told_in_one_sentence():
+    text = narrate(
+        _context(),
+        _object_turn(
+            _fact(
+                'search',
+                name='Wagon Strongbox',
+                label='Search the strongbox',
+                labelAuthored=True,
+                description='',
+                nothingNew=True,
+                found=['a Pale Road-Stone Fragment', '15 gp'],
+                steps=[{'action': 'unlock', 'label': 'Unlock the strongbox'}, {'action': 'open', 'label': 'Open the strongbox'}],
+                keyName='Caravan Strongbox Key',
+            )
+        ),
+        'search the strongbox',
+        SPEAKER,
+    )
+
+    assert text.split('\n\n') == [
+        'You unlock the strongbox with the Caravan Strongbox Key and lift the lid. You search the strongbox.',
+        'You find 15 gp and a Pale Road-Stone Fragment.',
+    ]
+
+
+def test_naming_more_than_one_action_does_the_first_and_says_so_last():
+    text = narrate(
+        _context(),
+        _object_turn(_fact('inspect', label='Read the caravan ledger', labelAuthored=True, description='', nothingNew=True), more=True),
+        'read the ledger and ring the bell',
+        SPEAKER,
+    )
+
+    assert text.endswith('One thing at a time — the rest is still yours to do.')
+
+
+def test_in_a_fight_the_reply_is_the_results_and_whose_turn_it_is():
+    combat_state = {
+        'enemyResolvedActions': [
+            {'enemyName': 'Wardbound Beast', 'targetName': SPEAKER, 'abilityName': 'Dust-Marked Pounce', 'attackTotal': 15,
+             'targetArmorClass': 13, 'hit': True, 'damageTotal': 4, 'damageType': 'piercing'},
+            {'enemyName': 'The Hollow Marshal', 'targetName': SPEAKER, 'abilityName': "Marshal's Verdict", 'attackTotal': 9,
+             'targetArmorClass': 13, 'hit': False, 'damageTotal': 0, 'damageType': 'necrotic'},
+        ],
+        'playerResolvedAction': {'sourceActorName': SPEAKER, 'targetName': 'Pale Lantern 2', 'weaponName': 'longsword',
+                                 'attackTotal': 16, 'targetArmorClass': 14, 'hit': True, 'damageTotal': 6, 'damageType': 'slashing'},
+    }
+    enemies = [{'name': 'Wardbound Beast', 'proper': False}, {'name': 'The Hollow Marshal', 'proper': True},
+               {'name': 'Pale Lantern 2', 'proper': False}]
+    mine = narrate(_context(), _hint(state_pipeline=_pipeline(combatState=combat_state, narration={
+        'enemies': enemies, 'nextActorLine': 'It is your turn.'})), 'I attack.', SPEAKER)
+    theirs = narrate(_context(), _hint(state_pipeline=_pipeline(combatState=combat_state, narration={
+        'enemies': enemies, 'nextActorLine': 'Tovan Ember is up next.'})), 'I attack.', SPEAKER)
+
+    assert mine.endswith('\n\nIt is your turn.')
+    assert theirs.endswith('\n\nTovan Ember is up next.')
+    assert 'the pale lantern 2' in mine
+    assert re.search(r'\bThe wardbound beast (strikes|lunges|answers)', mine)
+    assert 'The Hollow Marshal' in mine and 'the the' not in mine.lower()
+    for text in (mine, theirs):
+        _assert_turn_shape(text)
+        assert 'Mara Reedwake' not in text and 'Iron Strongbox' not in text and 'Old North Road' not in text
+
+
+@pytest.mark.parametrize(('enemies', 'plural', 'gone'), [
+    ('the wardbound beast', False, 'the wardbound beast is gone'),
+    ('the ashmarked cutthroats and the Hollow Marshal', True, 'the ashmarked cutthroats and the Hollow Marshal are gone'),
+])
+def test_a_beaten_party_is_told_it_wakes_later(enemies, plural, gone):
+    text = narrate(_context(), _hint(state_pipeline=_pipeline(narration={
+        'partyDefeat': {'enemies': enemies, 'plural': plural}, 'nextActorLine': 'It is your turn.'})), 'I attack.', SPEAKER)
+
+    assert text == f'Darkness takes you. When you come to, the light has changed and {gone}. You are alive — barely.'
+
+
+def test_the_heros_move_in_a_fight_is_told():
+    combat_state = {'playerResolvedCombatAction': {'outcome': 'Arden Vale closes into melee and engages Wardbound Beast.'}}
+
+    text = narrate(_context(), _hint(state_pipeline=_pipeline(combatState=combat_state, narration={
+        'nextActorLine': 'It is your turn.'})), 'I close in.', SPEAKER)
+
+    assert text == 'Arden Vale closes into melee and engages Wardbound Beast.\n\nIt is your turn.'
