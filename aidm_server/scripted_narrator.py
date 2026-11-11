@@ -885,8 +885,11 @@ def _object_blocks(fact: dict) -> list[list[str]]:
     steps = _dicts(fact.get('steps'))
     if steps:
         opening.append(_steps_sentence(steps, _text(fact.get('keyName'))))
-    opening.append(_text(fact.get('actionText')) or _label_sentence(_text(fact.get('label')), fact.get('labelAuthored') is True, action, name))
-    if fact.get('failed') is True:
+    failed = fact.get('failed') is True
+    label_sentence = _label_sentence(_text(fact.get('label')), fact.get('labelAuthored') is True, action, name)
+    # Authored action text tells what the action achieved, so a failed attempt never prints it.
+    opening.append(label_sentence if failed else _text(fact.get('actionText')) or label_sentence)
+    if failed:
         return [_safe_sentences([*(_sentence(line) for line in opening), FAILED_CHECK_LINES.get(action, 'It will not give.')])]
     blocks = [_safe_sentences([_sentence(line) for line in opening])]
     description = _text(fact.get('description'))

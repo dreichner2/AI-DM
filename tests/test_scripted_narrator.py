@@ -717,6 +717,20 @@ def test_authored_action_text_replaces_the_label_sentence_and_defaults_read_plai
     assert default == 'You use the Wagon Bell.'
 
 
+def test_a_failed_attempt_never_prints_the_authored_result_text():
+    text = narrate(
+        _context(),
+        _object_turn(
+            _fact('unlock', name='Culvert Grate', label='Force the culvert grate', labelAuthored=True, failed=True,
+                  actionText='Rust shrieks, the rotten pins give, and the iron swings wide.')
+        ),
+        'force the grate',
+        SPEAKER,
+    )
+
+    assert text == 'You force the culvert grate. It will not give.'
+
+
 def test_chained_unlock_and_open_steps_are_told_in_one_sentence():
     text = narrate(
         _context(),
